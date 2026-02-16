@@ -1,0 +1,65 @@
+[package]
+name = "rust_agent"
+version = "0.1.0"
+edition = "2021"
+description = "A CLI coding agent powered by LLM, similar to Claude Code"
+license = "MIT"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client for LLM API
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI interface
+clap = { version = "4", features = ["derive"] }
+
+# Terminal UI
+crossterm = "0.28"
+colored = "2"
+
+# Interactive line editor
+rustyline = "14"
+
+# Async streaming
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Environment & config
+dotenvy = "0.15"
+dirs = "5"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# UUID for message IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Regex for parsing
+regex = "1"
+
+# File watching / globbing
+glob = "0.3"
+
+# Syntax highlighting in terminal
+syntect = "5"
+
+# Markdown rendering in terminal
+termimad = "0.30"
+
+# Async trait support
+async-trait = "0.1"
