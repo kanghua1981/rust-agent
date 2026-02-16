@@ -248,6 +248,10 @@ pub fn print_help() {
         "/memory".bright_white()
     );
     println!(
+        "  {}  - View or generate project summary",
+        "/summary".bright_white()
+    );
+    println!(
         "  {}     - Exit the agent",
         "/quit".bright_white()
     );
@@ -281,11 +285,23 @@ fn truncate_output(output: &str, max_chars: usize) -> String {
         output.to_string()
     } else {
         let half = max_chars / 2;
+
+        // Find safe character boundaries
+        let mut start_idx = half;
+        while start_idx > 0 && !output.is_char_boundary(start_idx) {
+            start_idx -= 1;
+        }
+
+        let mut end_idx = output.len() - half;
+        while end_idx < output.len() && !output.is_char_boundary(end_idx) {
+            end_idx += 1;
+        }
+
         format!(
-            "{}... ({} chars truncated) ...{}",
-            &output[..half],
-            output.len() - max_chars,
-            &output[output.len() - half..]
+            "{}... ({} bytes truncated) ...{}",
+            &output[..start_idx],
+            end_idx - start_idx,
+            &output[end_idx..]
         )
     }
 }
@@ -301,4 +317,40 @@ fn format_number(n: usize) -> String {
         result.push(c);
     }
     result.chars().rev().collect()
+}
+
+/// Print that the agent is generating a project summary
+pub fn print_summary_generating() {
+    println!(
+        "\n{}  {}",
+        "📝",
+        "Generating project summary...".bright_cyan()
+    );
+}
+
+/// Print that the project summary has been saved
+pub fn print_summary_done() {
+    println!(
+        "{}  {}\n",
+        "✅",
+        "Project summary saved to .agent/summary.md".bright_green()
+    );
+}
+
+/// Print that an existing project summary was loaded
+pub fn print_summary_loaded() {
+    println!(
+        "{}  {}\n",
+        "📋",
+        "Project summary loaded from .agent/summary.md".dimmed()
+    );
+}
+
+/// Print a hint when no project summary exists
+pub fn print_summary_hint() {
+    println!(
+        "{}  {}\n",
+        "💡",
+        "No project summary found. Run /summary to generate one.".dimmed()
+    );
 }

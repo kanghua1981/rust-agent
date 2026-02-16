@@ -8,6 +8,7 @@ mod memory;
 mod persistence;
 mod skills;
 mod streaming;
+mod summary;
 mod tools;
 mod agent;
 mod conversation;

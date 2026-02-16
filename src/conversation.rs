@@ -123,6 +123,12 @@ impl Conversation {
         let mut system_prompt = Self::default_system_prompt();
 
         if let Ok(cwd) = std::env::current_dir() {
+            // Load project summary (from .agent/summary.md)
+            if let Some(summary) = crate::summary::load(&cwd) {
+                system_prompt.push_str(&crate::summary::to_system_prompt_section(&summary));
+                tracing::info!("Loaded project summary into system prompt");
+            }
+
             // Load project skills
             let loaded = crate::skills::load_skills(&cwd);
             if !loaded.is_empty() {

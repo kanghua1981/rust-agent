@@ -78,6 +78,15 @@ pub async fn run(
         Agent::new(config)
     };
 
+    // Check for project summary at startup
+    if let Ok(cwd) = std::env::current_dir() {
+        if crate::summary::exists(&cwd) {
+            ui::print_summary_loaded();
+        } else {
+            ui::print_summary_hint();
+        }
+    }
+
     // If an initial prompt is provided, process it first
     if let Some(prompt) = initial_prompt {
         println!("{} {}\n", "👤".to_string(), prompt);
@@ -116,6 +125,11 @@ pub async fn run(
 
                 // Handle slash commands
                 if input.starts_with('/') {
+                    // /summary needs async, handle it separately
+                    if input == "/summary" || input.starts_with("/summary ") {
+                        handle_summary_command(input, &mut agent).await;
+                        continue;
+                    }
                     let handled = handle_slash_command(input, &mut agent);
                     match handled {
                         SlashResult::Continue => continue,
@@ -314,6 +328,90 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             } else {
                 SlashResult::NotACommand
             }
+        }
+    }
+}
+
+/// Handle `/summary` command (async because generation calls the LLM).
+///
+/// - `/summary`            — show existing summary, or offer to generate
+/// - `/summary generate`   — force (re-)generate the project summary
+async fn handle_summary_command(input: &str, agent: &mut Agent) {
+    let subcommand = input.strip_prefix("/summary").unwrap_or("").trim();
+    let cwd = std::env::current_dir().unwrap_or_default();
+
+    match subcommand {
+        "generate" => {
+            // Force (re-)generate
+            if crate::summary::exists(&cwd) {
+                println!(
+                    "\n{}  {}",
+                    "⚠️",
+                    "A project summary already exists. Regenerating...".yellow()
+                );
+            }
+            ui::print_summary_generating();
+            match agent.generate_project_summary().await {
+                Ok(_) => {
+                    ui::print_summary_done();
+                }
+                Err(e) => {
+                    ui::print_error(&format!("Failed to generate summary: {}", e));
+                }
+            }
+        }
+        "" => {
+            // Show existing summary, or prompt to generate
+            if let Some(summary) = crate::summary::load(&cwd) {
+                println!("\n{}  {}:\n", "📋", "Project Summary".bright_cyan().bold());
+                let skin = termimad::MadSkin::default();
+                skin.print_text(&summary);
+                println!();
+                println!(
+                    "  {} Run {} to regenerate.",
+                    "💡".to_string().dimmed(),
+                    "/summary generate".bright_white()
+                );
+            } else {
+                println!(
+                    "\n{}  No project summary found.",
+                    "📋"
+                );
+                print!(
+                    "  Generate one now? {} ",
+                    "[y/N]".bright_white()
+                );
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+
+                // Read a single line for confirmation
+                let mut answer = String::new();
+                if std::io::stdin().read_line(&mut answer).is_ok() {
+                    let answer = answer.trim().to_lowercase();
+                    if answer == "y" || answer == "yes" {
+                        ui::print_summary_generating();
+                        match agent.generate_project_summary().await {
+                            Ok(_) => {
+                                ui::print_summary_done();
+                            }
+                            Err(e) => {
+                                ui::print_error(&format!("Failed to generate summary: {}", e));
+                            }
+                        }
+                    } else {
+                        println!("  {}", "Skipped.".dimmed());
+                    }
+                }
+            }
+        }
+        other => {
+            println!(
+                "\n{}  Unknown subcommand: {}. Usage: {} or {}",
+                "❓",
+                other.bright_red(),
+                "/summary".bright_white(),
+                "/summary generate".bright_white()
+            );
         }
     }
 }
