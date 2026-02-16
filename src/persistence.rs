@@ -64,7 +64,7 @@ fn generate_session_id() -> String {
 }
 
 /// Save a conversation to disk
-pub fn save_session(conversation: &Conversation, session_id: Option<&str>) -> Result<String> {
+pub fn save_session(conversation: &Conversation, session_id: Option<&str>, project_dir: &std::path::Path) -> Result<String> {
     let dir = sessions_dir().context("Cannot determine data directory")?;
     std::fs::create_dir_all(&dir)?;
 
@@ -95,9 +95,7 @@ pub fn save_session(conversation: &Conversation, session_id: Option<&str>) -> Re
             updated_at: now,
             message_count: conversation.messages.len(),
             summary,
-            working_dir: std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
+            working_dir: project_dir.display().to_string(),
         },
         system_prompt: conversation.system_prompt.clone(),
         messages: conversation.messages.clone(),
@@ -193,7 +191,10 @@ pub fn delete_session(session_id: &str) -> Result<()> {
 
 /// Restore a saved session into a Conversation
 pub fn restore_conversation(session: &SavedSession) -> Conversation {
-    let mut conv = Conversation::new();
+    let mut conv = Conversation {
+        messages: Vec::new(),
+        system_prompt: String::new(),
+    };
     conv.system_prompt = session.system_prompt.clone();
     conv.messages = session.messages.clone();
     conv

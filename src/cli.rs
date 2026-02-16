@@ -1,5 +1,6 @@
 //! CLI interaction loop with session management.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -51,6 +52,7 @@ pub fn list_sessions_and_exit() -> Result<()> {
 /// Main entry point for the CLI interaction loop
 pub async fn run(
     config: Config,
+    project_dir: PathBuf,
     initial_prompt: Option<String>,
     resume_id: Option<String>,
     output: Arc<dyn AgentOutput>,
@@ -70,21 +72,21 @@ pub async fn run(
                     session.meta.id.bright_yellow(),
                     msg_count.to_string().bright_white()
                 );
-                Agent::with_conversation(config, conversation, session.meta.id, output.clone())
+                Agent::with_conversation(config, project_dir.clone(), conversation, session.meta.id, output.clone())
             }
             Err(e) => {
                 ui::print_error(&format!("Failed to resume session: {}", e));
                 println!("Starting a new session instead.\n");
-                Agent::new(config, output.clone())
+                Agent::new(config, project_dir.clone(), output.clone())
             }
         }
     } else {
-        Agent::new(config, output.clone())
+        Agent::new(config, project_dir.clone(), output.clone())
     };
 
     // Check for project summary at startup
-    if let Ok(cwd) = std::env::current_dir() {
-        if crate::summary::exists(&cwd) {
+    {
+        if crate::summary::exists(&project_dir) {
             ui::print_summary_loaded();
         } else {
             ui::print_summary_hint();
@@ -206,7 +208,7 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             SlashResult::Continue
         }
         "/save" => {
-            match persistence::save_session(&agent.conversation, agent.session_id()) {
+            match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
                 Ok(id) => {
                     agent.set_session_id(id.clone());
                     println!(
@@ -257,8 +259,8 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             SlashResult::Continue
         }
         "/skills" => {
-            if let Ok(cwd) = std::env::current_dir() {
-                let loaded = crate::skills::load_skills(&cwd);
+            {
+                let loaded = crate::skills::load_skills(&agent.project_dir);
                 if loaded.is_empty() {
                     println!(
                         "\n{}  No skills found. Create {} or add Markdown files to {}",
@@ -342,7 +344,7 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
 /// - `/summary generate`   — force (re-)generate the project summary
 async fn handle_summary_command(input: &str, agent: &mut Agent) {
     let subcommand = input.strip_prefix("/summary").unwrap_or("").trim();
-    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = &agent.project_dir;
 
     match subcommand {
         "generate" => {
@@ -425,7 +427,7 @@ fn auto_save_session(agent: &mut Agent) {
     if agent.conversation.messages.is_empty() {
         return;
     }
-    match persistence::save_session(&agent.conversation, agent.session_id()) {
+    match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
         Ok(id) => {
             agent.set_session_id(id);
         }

@@ -1,6 +1,7 @@
 //! Agent core: orchestrates LLM calls, tool execution, streaming,
 //! context window management, and operation confirmation.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -18,6 +19,7 @@ use crate::tools::ToolExecutor;
 /// The main Agent that orchestrates LLM calls and tool execution
 pub struct Agent {
     pub config: Config,
+    pub project_dir: PathBuf,
     client: Box<dyn LlmClient>,
     tool_executor: ToolExecutor,
     pub conversation: Conversation,
@@ -29,40 +31,39 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(config: Config, output: Arc<dyn AgentOutput>) -> Self {
+    pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>) -> Self {
         let client = llm::create_client(&config);
-        let memory = Memory::load(
-            &std::env::current_dir().unwrap_or_default(),
-        );
+        let memory = Memory::load(&project_dir);
+        let conversation = Conversation::new(&project_dir);
         Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(),
-            conversation: Conversation::new(),
+            tool_executor: ToolExecutor::new(project_dir.clone()),
+            conversation,
             memory,
             total_input_tokens: 0,
             total_output_tokens: 0,
             session_id: None,
             output,
+            project_dir,
         }
     }
 
     /// Create agent with a restored conversation
-    pub fn with_conversation(config: Config, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>) -> Self {
+    pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>) -> Self {
         let client = llm::create_client(&config);
-        let memory = Memory::load(
-            &std::env::current_dir().unwrap_or_default(),
-        );
+        let memory = Memory::load(&project_dir);
         Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(),
+            tool_executor: ToolExecutor::new(project_dir.clone()),
             conversation,
             memory,
             total_input_tokens: 0,
             total_output_tokens: 0,
             session_id: Some(session_id),
             output,
+            project_dir,
         }
     }
 
@@ -234,7 +235,7 @@ impl Agent {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let resolved = resolve_tool_path(path);
+        let resolved = resolve_tool_path(path, &self.project_dir);
         let resolved_str = resolved.display().to_string();
 
         // Read old content if file exists
@@ -274,7 +275,7 @@ impl Agent {
                 status.estimated_tokens,
                 status.max_tokens,
             );
-            context::truncate_conversation(&mut self.conversation, &self.config.model);
+            context::truncate_conversation(&mut self.conversation, &self.config.model, &self.project_dir);
         }
     }
 
@@ -357,7 +358,7 @@ impl Agent {
     /// Scan the project directory and use the LLM to generate a project summary.
     /// The summary is saved to `.agent/summary.md` so subsequent sessions skip this step.
     pub async fn generate_project_summary(&mut self) -> Result<String> {
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = self.project_dir.clone();
 
         // Step 1: Scan directory structure (depth 2)
         let dir_result = self
@@ -433,7 +434,7 @@ Directory tree:
         );
 
         // Step 4: Send to LLM using a temporary conversation (don't pollute main one)
-        let mut summary_conversation = Conversation::new();
+        let mut summary_conversation = Conversation::new(&self.project_dir);
         summary_conversation.system_prompt =
             "You are a helpful assistant that generates concise project summaries. \
              Output only the summary content, no extra commentary."
@@ -491,13 +492,13 @@ Directory tree:
     }
 }
 
-/// Resolve a path (relative to cwd or absolute)
-fn resolve_tool_path(path: &str) -> std::path::PathBuf {
+/// Resolve a path (relative to project_dir or absolute)
+fn resolve_tool_path(path: &str, project_dir: &std::path::Path) -> std::path::PathBuf {
     let p = std::path::Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(p)
+        project_dir.join(p)
     }
 }
 

@@ -105,7 +105,7 @@ pub fn check_context(conversation: &Conversation, model: &str) -> ContextStatus 
 /// 2. Keep the first user message (provides session context)
 /// 3. Keep the most recent N messages
 /// 4. Remove middle messages, replacing with a summary
-pub fn truncate_conversation(conversation: &mut Conversation, model: &str) {
+pub fn truncate_conversation(conversation: &mut Conversation, model: &str, project_dir: &std::path::Path) {
     let max = max_context_tokens(model);
     let target = max * 60 / 100; // Target 60% usage after truncation
 
@@ -159,8 +159,8 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str) {
         );
 
         // Save summary to persistent memory
-        if let Ok(cwd) = std::env::current_dir() {
-            let mut mem = crate::memory::Memory::load(&cwd);
+        {
+            let mut mem = crate::memory::Memory::load(project_dir);
             mem.log_truncation_summary(&summary);
             if let Err(e) = mem.save() {
                 tracing::warn!("Failed to save truncation summary to memory: {}", e);

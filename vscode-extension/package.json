@@ -1,0 +1,110 @@
+{
+  "name": "rust-agent",
+  "displayName": "Rust Coding Agent",
+  "description": "Connect to the Rust Coding Agent WebSocket server — your LLM brain with VS Code as hands",
+  "version": "0.1.0",
+  "publisher": "kanghua",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "rustAgent.startServer",
+        "title": "Agent: Start Server"
+      },
+      {
+        "command": "rustAgent.stopServer",
+        "title": "Agent: Stop Server"
+      },
+      {
+        "command": "rustAgent.connect",
+        "title": "Agent: Connect to Server"
+      },
+      {
+        "command": "rustAgent.disconnect",
+        "title": "Agent: Disconnect"
+      },
+      {
+        "command": "rustAgent.sendMessage",
+        "title": "Agent: Send Message"
+      }
+    ],
+    "configuration": {
+      "title": "Rust Coding Agent",
+      "properties": {
+        "rustAgent.agentPath": {
+          "type": "string",
+          "default": "agent",
+          "description": "Path to the agent binary. Can be an absolute path or a command on PATH."
+        },
+        "rustAgent.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Agent WebSocket server host"
+        },
+        "rustAgent.port": {
+          "type": "number",
+          "default": 9527,
+          "description": "Agent WebSocket server port"
+        },
+        "rustAgent.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the agent server when connecting (uses workspace folder as --workdir)"
+        },
+        "rustAgent.autoConnect": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically connect on extension activation"
+        },
+        "rustAgent.model": {
+          "type": "string",
+          "default": "claude-sonnet-4-20250514",
+          "description": "LLM model to use"
+        },
+        "rustAgent.provider": {
+          "type": "string",
+          "default": "anthropic",
+          "enum": ["anthropic", "openai", "compatible"],
+          "description": "LLM API provider"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rust-agent",
+          "title": "Rust Agent",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "rust-agent": [
+        {
+          "type": "webview",
+          "id": "rustAgent.chatView",
+          "name": "Chat"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

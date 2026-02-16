@@ -27,7 +27,7 @@ impl Tool for ListDirTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let path = input
             .get("path")
             .and_then(|v| v.as_str())
@@ -37,7 +37,7 @@ impl Tool for ListDirTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let path = resolve_path(path);
+        let path = resolve_path(path, project_dir);
 
         if !path.exists() {
             return ToolResult::error(format!("Directory '{}' does not exist", path.display()));
@@ -147,11 +147,11 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-fn resolve_path(path: &str) -> std::path::PathBuf {
+fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(p)
+        project_dir.join(p)
     }
 }

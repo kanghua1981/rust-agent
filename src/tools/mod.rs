@@ -7,6 +7,7 @@ pub mod list_dir;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Definition of a tool that the LLM can use
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,19 +43,21 @@ impl ToolResult {
 /// The tool executor that manages all available tools
 pub struct ToolExecutor {
     tools: HashMap<String, Box<dyn Tool + Send + Sync>>,
+    project_dir: PathBuf,
 }
 
 /// Trait that all tools must implement
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult;
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult;
 }
 
 impl ToolExecutor {
-    pub fn new() -> Self {
+    pub fn new(project_dir: PathBuf) -> Self {
         let mut executor = ToolExecutor {
             tools: HashMap::new(),
+            project_dir,
         };
 
         // Register all built-in tools
@@ -82,7 +85,7 @@ impl ToolExecutor {
     /// Execute a tool by name
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolResult {
         match self.tools.get(name) {
-            Some(tool) => tool.execute(input).await,
+            Some(tool) => tool.execute(input, &self.project_dir).await,
             None => ToolResult::error(format!("Unknown tool: {}", name)),
         }
     }

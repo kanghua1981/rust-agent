@@ -1,4 +1,5 @@
 use super::{Tool, ToolDefinition, ToolResult};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -40,7 +41,7 @@ impl Tool for GrepSearchTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: pattern"),
@@ -106,6 +107,7 @@ impl Tool for GrepSearchTool {
 
         let output = Command::new(cmd_name)
             .args(&args)
+            .current_dir(project_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -158,7 +160,7 @@ impl Tool for FileSearchTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: pattern"),
@@ -185,6 +187,7 @@ impl Tool for FileSearchTool {
             .arg("*/.git/*")
             .arg("-type")
             .arg("f")
+            .current_dir(project_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use uuid::Uuid;
 
 /// Role in the conversation
@@ -119,29 +120,27 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    pub fn new() -> Self {
-        let mut system_prompt = Self::default_system_prompt();
+    pub fn new(project_dir: &Path) -> Self {
+        let mut system_prompt = Self::default_system_prompt(project_dir);
 
-        if let Ok(cwd) = std::env::current_dir() {
-            // Load project summary (from .agent/summary.md)
-            if let Some(summary) = crate::summary::load(&cwd) {
-                system_prompt.push_str(&crate::summary::to_system_prompt_section(&summary));
-                tracing::info!("Loaded project summary into system prompt");
-            }
+        // Load project summary (from .agent/summary.md)
+        if let Some(summary) = crate::summary::load(project_dir) {
+            system_prompt.push_str(&crate::summary::to_system_prompt_section(&summary));
+            tracing::info!("Loaded project summary into system prompt");
+        }
 
-            // Load project skills
-            let loaded = crate::skills::load_skills(&cwd);
-            if !loaded.is_empty() {
-                system_prompt.push_str(&loaded.to_system_prompt_section());
-                tracing::info!("Loaded {} skill(s) into system prompt", loaded.len());
-            }
+        // Load project skills
+        let loaded = crate::skills::load_skills(project_dir);
+        if !loaded.is_empty() {
+            system_prompt.push_str(&loaded.to_system_prompt_section());
+            tracing::info!("Loaded {} skill(s) into system prompt", loaded.len());
+        }
 
-            // Load persistent memory
-            let mem = crate::memory::Memory::load(&cwd);
-            if !mem.is_empty() {
-                system_prompt.push_str(&mem.to_system_prompt_section());
-                tracing::info!("Loaded {} memory entries into system prompt", mem.entry_count());
-            }
+        // Load persistent memory
+        let mem = crate::memory::Memory::load(project_dir);
+        if !mem.is_empty() {
+            system_prompt.push_str(&mem.to_system_prompt_section());
+            tracing::info!("Loaded {} memory entries into system prompt", mem.entry_count());
         }
 
         Conversation {
@@ -150,7 +149,7 @@ impl Conversation {
         }
     }
 
-    fn default_system_prompt() -> String {
+    fn default_system_prompt(project_dir: &Path) -> String {
         format!(
             r#"You are an expert AI coding assistant running in a terminal environment.
 You have access to tools that let you read files, write files, run commands, search code, and more.
@@ -172,9 +171,7 @@ When writing or editing code:
 - Add appropriate error handling
 - Write clean, idiomatic code
 - Consider edge cases"#,
-            std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| ".".to_string()),
+            project_dir.display(),
             std::env::consts::OS
         )
     }

@@ -31,7 +31,7 @@ impl Tool for EditFileTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: path"),
@@ -47,7 +47,7 @@ impl Tool for EditFileTool {
             None => return ToolResult::error("Missing required parameter: new_string"),
         };
 
-        let path = resolve_path(path);
+        let path = resolve_path(path, project_dir);
 
         // Read the file
         let content = match fs::read_to_string(&path).await {
@@ -105,11 +105,11 @@ impl Tool for EditFileTool {
     }
 }
 
-fn resolve_path(path: &str) -> std::path::PathBuf {
+fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(p)
+        project_dir.join(p)
     }
 }

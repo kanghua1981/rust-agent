@@ -19,6 +19,7 @@
 //! `diff`, `confirm_request`, `warning`, `error`, `context_warning`,
 //! plus `done` when a user_message has been fully processed.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -32,7 +33,7 @@ use crate::config::Config;
 use crate::output::{WsCommand, WsOutput};
 
 /// Start the WebSocket server and listen forever.
-pub async fn run(config: Config, host: &str, port: u16) -> Result<()> {
+pub async fn run(config: Config, project_dir: PathBuf, host: &str, port: u16) -> Result<()> {
     let addr = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&addr).await?;
 
@@ -43,10 +44,11 @@ pub async fn run(config: Config, host: &str, port: u16) -> Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
         let config = config.clone();
+        let project_dir = project_dir.clone();
 
         tokio::spawn(async move {
             tracing::info!("New connection from {}", peer);
-            if let Err(e) = handle_connection(stream, config).await {
+            if let Err(e) = handle_connection(stream, config, project_dir).await {
                 tracing::warn!("Connection {} ended with error: {}", peer, e);
             } else {
                 tracing::info!("Connection {} closed", peer);
@@ -59,6 +61,7 @@ pub async fn run(config: Config, host: &str, port: u16) -> Result<()> {
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     config: Config,
+    project_dir: PathBuf,
 ) -> Result<()> {
     let ws_stream = tokio_tungstenite::accept_async(stream).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -71,7 +74,7 @@ async fn handle_connection(
     let confirm_tx = ws_output.confirm_tx.clone();
 
     // Create the Agent with this connection's output
-    let mut agent = Agent::new(config, ws_output.clone());
+    let mut agent = Agent::new(config, project_dir, ws_output.clone());
 
     // ── Writer task: forwards outgoing frames to the WebSocket ──
     let writer_handle = tokio::spawn(async move {

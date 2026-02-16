@@ -134,14 +134,18 @@ async fn main() -> Result<()> {
     // Load config
     let config = config::Config::load(&args)?;
 
-    // Set working directory
-    if let Some(ref workdir) = args.workdir {
-        std::env::set_current_dir(workdir)?;
-    }
+    // Determine project directory
+    let project_dir = if let Some(ref workdir) = args.workdir {
+        std::path::PathBuf::from(workdir)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(workdir))
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
 
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
-        return server::run(config, &args.host, args.port).await;
+        return server::run(config, project_dir, &args.host, args.port).await;
     }
 
     // Build the output backend based on --mode
@@ -152,5 +156,5 @@ async fn main() -> Result<()> {
     };
 
     // Run the agent
-    cli::run(config, args.prompt, args.resume, output).await
+    cli::run(config, project_dir, args.prompt, args.resume, output).await
 }

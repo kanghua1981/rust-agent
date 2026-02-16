@@ -27,7 +27,7 @@ impl Tool for WriteFileTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: path"),
@@ -38,7 +38,7 @@ impl Tool for WriteFileTool {
             None => return ToolResult::error("Missing required parameter: content"),
         };
 
-        let path = resolve_path(path);
+        let path = resolve_path(path, project_dir);
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
@@ -69,11 +69,11 @@ impl Tool for WriteFileTool {
     }
 }
 
-fn resolve_path(path: &str) -> std::path::PathBuf {
+fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(p)
+        project_dir.join(p)
     }
 }

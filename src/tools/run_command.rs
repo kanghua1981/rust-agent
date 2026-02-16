@@ -1,4 +1,5 @@
 use super::{Tool, ToolDefinition, ToolResult};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -31,7 +32,7 @@ impl Tool for RunCommandTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let command = match input.get("command").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return ToolResult::error("Missing required parameter: command"),
@@ -55,8 +56,11 @@ impl Tool for RunCommandTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Use explicit working_dir if provided, otherwise default to project_dir
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
+        } else {
+            cmd.current_dir(project_dir);
         }
 
         let result = tokio::time::timeout(
