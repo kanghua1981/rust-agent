@@ -7,11 +7,11 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
-use std::io::Write;
 
 use crate::config::Config;
 use crate::conversation::{ContentBlock, Conversation};
 use crate::llm::{LlmResponse, Usage};
+use crate::output::AgentOutput;
 use crate::tools::ToolDefinition;
 
 /// SSE event types from Anthropic streaming API
@@ -102,6 +102,7 @@ pub async fn stream_anthropic_response(
     config: &Config,
     conversation: &Conversation,
     tools: &[ToolDefinition],
+    output: &dyn AgentOutput,
 ) -> Result<LlmResponse> {
     let client = Client::new();
 
@@ -214,15 +215,11 @@ pub async fn stream_anthropic_response(
                     if content_block.block_type == "text" {
                         if !is_printing_text {
                             // Start the response separator
-                            println!(
-                                "\n{}",
-                                "─".repeat(60)
-                            );
+                            output.on_stream_start();
                             is_printing_text = true;
                         }
                         if let Some(text) = content_block.text {
-                            print!("{}", text);
-                            std::io::stdout().flush().ok();
+                            output.on_streaming_text(&text);
                             blocks[index].text.push_str(&text);
                         }
                     } else if content_block.block_type == "tool_use" {
@@ -237,15 +234,11 @@ pub async fn stream_anthropic_response(
                         match delta {
                             DeltaData::TextDelta { text } => {
                                 if !is_printing_text {
-                                    println!(
-                                        "\n{}",
-                                        "─".repeat(60)
-                                    );
+                                    output.on_stream_start();
                                     is_printing_text = true;
                                 }
-                                // Real-time streaming print
-                                print!("{}", text);
-                                std::io::stdout().flush().ok();
+                                // Real-time streaming output
+                                output.on_streaming_text(&text);
                                 blocks[index].text.push_str(&text);
                             }
                             DeltaData::InputJsonDelta { partial_json } => {
@@ -270,14 +263,14 @@ pub async fn stream_anthropic_response(
                 StreamEvent::MessageStop => {
                     // Close the text output separator if we were printing
                     if is_printing_text {
-                        println!("\n{}", "─".repeat(60));
+                        output.on_stream_end();
                         is_printing_text = false;
                     }
                 }
                 StreamEvent::Ping => {}
                 StreamEvent::Error { error } => {
                     if is_printing_text {
-                        println!();
+                        output.on_stream_end();
                         #[allow(unused_assignments)]
                         { is_printing_text = false; }
                     }
@@ -293,7 +286,7 @@ pub async fn stream_anthropic_response(
 
     // Close text output if stream ended without MessageStop
     if is_printing_text {
-        println!("\n{}", "─".repeat(60));
+        output.on_stream_end();
     }
 
     // Build the final content blocks

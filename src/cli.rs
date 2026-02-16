@@ -1,5 +1,7 @@
 //! CLI interaction loop with session management.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use colored::Colorize;
 use rustyline::error::ReadlineError;
@@ -8,6 +10,7 @@ use rustyline::DefaultEditor;
 use crate::agent::Agent;
 use crate::config::Config;
 use crate::confirm;
+use crate::output::AgentOutput;
 use crate::persistence;
 use crate::ui;
 
@@ -50,6 +53,7 @@ pub async fn run(
     config: Config,
     initial_prompt: Option<String>,
     resume_id: Option<String>,
+    output: Arc<dyn AgentOutput>,
 ) -> Result<()> {
     ui::print_banner();
     ui::print_workdir();
@@ -66,16 +70,16 @@ pub async fn run(
                     session.meta.id.bright_yellow(),
                     msg_count.to_string().bright_white()
                 );
-                Agent::with_conversation(config, conversation, session.meta.id)
+                Agent::with_conversation(config, conversation, session.meta.id, output.clone())
             }
             Err(e) => {
                 ui::print_error(&format!("Failed to resume session: {}", e));
                 println!("Starting a new session instead.\n");
-                Agent::new(config)
+                Agent::new(config, output.clone())
             }
         }
     } else {
-        Agent::new(config)
+        Agent::new(config, output.clone())
     };
 
     // Check for project summary at startup

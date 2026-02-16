@@ -7,9 +7,12 @@
 - **🔧 工具系统**: 内置 7 种工具 - 文件读写、编辑、命令执行、代码搜索、文件搜索、目录列表
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
+- **📡 多模式输出**: CLI 交互模式（默认）和 JSON-over-stdio 协议模式，方便集成 VS Code 等外部工具
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
 - **📜 对话持久化**: 支持上下文保持、会话保存与恢复
 - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识
+- **🧠 持久记忆**: 自动记录文件操作与项目知识到 `.agent/memory.md`
+- **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **🔒 安全确认**: 文件写入和命令执行前需用户确认
 - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低
 
@@ -73,6 +76,41 @@ export LLM_BASE_URL=http://your-server:8080
 # 开启详细日志（调试用）
 ./target/release/agent --verbose
 ```
+
+#### Stdio 模式（脚本 / VS Code 集成）
+
+通过 `--mode stdio` 切换为 JSON-over-stdio 协议，每个事件以独立的 JSON 行输出，适合被外部程序驱动：
+
+```bash
+# 以 stdio 模式运行单次任务
+./target/release/agent --mode stdio --yes -p "列出当前目录结构"
+
+# 输出示例（每行一个 JSON 事件）：
+# {"type":"thinking","data":{}}
+# {"type":"stream_start","data":{}}
+# {"type":"streaming_token","data":{"token":"当前"}}
+# {"type":"streaming_token","data":{"token":"目录"}}
+# ...
+# {"type":"tool_use","data":{"tool":"list_directory","input":{"path":"."}}}
+# {"type":"tool_result","data":{"tool":"list_directory","output":"...","is_error":false}}
+# {"type":"stream_end","data":{}}
+```
+
+**Stdio 模式事件类型**：
+
+| 事件类型 | 说明 |
+|----------|------|
+| `thinking` | LLM 正在处理 |
+| `stream_start` / `stream_end` | 流式文本响应的开始/结束 |
+| `streaming_token` | 流式文本 token（`data.token`） |
+| `assistant_text` | 非流式文本响应（`data.text`） |
+| `tool_use` | 即将执行工具（`data.tool`, `data.input`） |
+| `tool_result` | 工具执行结果（`data.output`, `data.is_error`） |
+| `diff` | 文件变更 diff（`data.path`, `data.diff`） |
+| `confirm_request` | 请求确认（需回复 `{"approved": true}` 或 `{"approved": false}`） |
+| `warning` | 非致命警告 |
+| `error` | 错误信息 |
+| `context_warning` | 上下文窗口压力通知 |
 
 ---
 
@@ -177,8 +215,10 @@ git push origin fix/gpio-pullup
 | `/skills` | 查看当前加载的 Skills |
 | `/yesall` | 关闭所有确认提示（本次会话内有效） |
 | `/confirm` | 重新开启确认提示 |
+| `/memory` | 显示持久记忆（项目知识、文件操作记录） |
+| `/summary` | 查看或生成项目摘要 |
+| `/summary generate` | 强制（重新）生成项目摘要 |
 | `/quit` | 退出（会自动保存会话） |
-| `/memory` | 显示当前会话的内存使用情况 |
 
 ---
 
@@ -200,6 +240,46 @@ Agent 支持**自动保存**对话，适合跨天的长任务：
 # 恢复某个会话继续工作
 ./target/release/agent --resume a1b2c3d4
 ```
+
+---
+
+## 🧠 记忆与项目摘要
+
+### 持久记忆 (`.agent/memory.md`)
+
+Agent 会自动将以下信息记录到 `.agent/memory.md`，跨会话持久化：
+
+- **项目知识**：在对话中发现的重要事实
+- **文件操作记录**：读取、写入、编辑过的文件
+- **会话日志**：执行过的关键操作
+
+```
+🤖 > /memory
+🧠  Agent Memory (15 entries):
+  📖 Project Knowledge:
+    • Target board: RK3588 custom board
+    • Toolchain: aarch64-linux-gnu-
+  📁 Key Files:
+    • src/main.c (edited)
+    • kernel/arch/arm64/boot/dts/rockchip/rk3588-myboard.dts (written)
+  📝 Session Log:
+    • edited src/main.c
+    • ran `make -j8`
+```
+
+### 项目摘要 (`.agent/summary.md`)
+
+首次使用时，运行 `/summary` 让 Agent 扫描项目并生成概述，后续会话自动加载：
+
+```
+🤖 > /summary
+📋  No project summary found.
+  Generate one now? [y/N] y
+📝  Generating project summary...
+✅  Project summary saved to .agent/summary.md
+```
+
+摘要包含项目名称、技术栈、目录结构、构建命令等，Agent 无需每次重新分析项目。
 
 ---
 
@@ -296,18 +376,21 @@ Agent 在执行以下操作前会要求确认：
 
 ```
 src/
-├── main.rs          # 入口：CLI 参数解析 (clap)
+├── main.rs          # 入口：CLI 参数解析 (clap)，--mode 选择输出后端
 ├── config.rs        # 配置管理（API Key、Provider、模型参数）
+├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput 实现
 ├── cli.rs           # 交互式 REPL 循环 (rustyline)
-├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + 迭代循环
+├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排（通过 AgentOutput 输出）
 ├── conversation.rs  # 对话历史：Message / ContentBlock 数据模型
 ├── context.rs       # 上下文窗口管理与自动截断
-├── streaming.rs     # Anthropic SSE 流式输出解析
+├── streaming.rs     # Anthropic SSE 流式输出（通过 &dyn AgentOutput 解耦）
 ├── confirm.rs       # 危险操作的用户确认机制
 ├── persistence.rs   # 会话保存与恢复 (JSON)
 ├── diff.rs          # 文件修改的 Diff 展示
+├── memory.rs        # 持久记忆系统（.agent/memory.md）
+├── summary.rs       # 项目摘要管理（.agent/summary.md）
 ├── skills.rs        # Skills 加载系统
-├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染）
+├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染，供 CliOutput 使用）
 ├── llm/
 │   ├── mod.rs       # LlmClient trait 定义
 │   ├── anthropic.rs # Anthropic Claude API 实现
@@ -321,6 +404,28 @@ src/
     ├── search.rs    # Grep 搜索 + 文件名搜索
     └── list_dir.rs  # 列出目录内容（含文件大小、权限）
 ```
+
+### 输出抽象层
+
+`output.rs` 中定义了 `AgentOutput` trait，所有 Agent 内部的 I/O（文本输出、工具事件、Diff 预览、确认提示）都通过此 trait 抽象，而非直接写 stdout：
+
+```
+┌──────────────┐
+│   main.rs    │  --mode cli  → Arc<CliOutput>   → 彩色终端交互
+│  (选择模式)   │  --mode stdio → Arc<StdioOutput> → JSON 行协议
+└──────┬───────┘
+       │ Arc<dyn AgentOutput>
+       ▼
+┌──────────────┐     ┌──────────────┐
+│   agent.rs   │────▶│ streaming.rs │
+│  (核心循环)   │     │  (SSE 解析)   │
+└──────────────┘     └──────────────┘
+  output.on_tool_use()    output.on_streaming_text()
+  output.on_diff()        output.on_stream_start()
+  output.confirm()        output.on_stream_end()
+```
+
+要添加新的输出模式（如 MCP Server），只需实现 `AgentOutput` trait 即可，无需修改 Agent 逻辑。
 
 ---
 

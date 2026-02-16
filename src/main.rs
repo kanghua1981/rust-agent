@@ -5,6 +5,7 @@ mod context;
 mod diff;
 mod llm;
 mod memory;
+mod output;
 mod persistence;
 mod skills;
 mod streaming;
@@ -12,11 +13,47 @@ mod summary;
 mod tools;
 mod agent;
 mod conversation;
+mod server;
 mod ui;
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+
+/// The mode the agent runs in.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunMode {
+    /// Interactive terminal with colored output (default).
+    Cli,
+    /// JSON-over-stdio for non-terminal consumers.
+    Stdio,
+    /// WebSocket server for remote consumers (VS Code, Web UI).
+    Server,
+}
+
+impl std::str::FromStr for RunMode {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "cli" => Ok(RunMode::Cli),
+            "stdio" => Ok(RunMode::Stdio),
+            "server" | "ws" | "websocket" => Ok(RunMode::Server),
+            other => Err(format!("unknown mode '{}', expected: cli, stdio, server", other)),
+        }
+    }
+}
+
+impl std::fmt::Display for RunMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunMode::Cli => write!(f, "cli"),
+            RunMode::Stdio => write!(f, "stdio"),
+            RunMode::Server => write!(f, "server"),
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "agent", about = "🤖 Rust Coding Agent - An AI-powered CLI coding assistant")]
@@ -52,6 +89,18 @@ struct Args {
     /// List saved conversation sessions
     #[arg(long)]
     sessions: bool,
+
+    /// Output mode: cli (default), stdio (JSON protocol), server (WebSocket)
+    #[arg(long, default_value = "cli")]
+    mode: RunMode,
+
+    /// Host to bind the WebSocket server to (only for --mode server)
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+
+    /// Port for the WebSocket server (only for --mode server)
+    #[arg(long, default_value_t = 9527)]
+    port: u16,
 }
 
 #[tokio::main]
@@ -90,6 +139,18 @@ async fn main() -> Result<()> {
         std::env::set_current_dir(workdir)?;
     }
 
+    // Server mode has its own event loop — launch and return
+    if args.mode == RunMode::Server {
+        return server::run(config, &args.host, args.port).await;
+    }
+
+    // Build the output backend based on --mode
+    let output: Arc<dyn output::AgentOutput> = match args.mode {
+        RunMode::Cli => Arc::new(output::CliOutput::new()),
+        RunMode::Stdio => Arc::new(output::StdioOutput::new()),
+        RunMode::Server => unreachable!(), // handled above
+    };
+
     // Run the agent
-    cli::run(config, args.prompt, args.resume).await
+    cli::run(config, args.prompt, args.resume, output).await
 }

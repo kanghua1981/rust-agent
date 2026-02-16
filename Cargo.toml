@@ -63,3 +63,6 @@ termimad = "0.30"
 
 # Async trait support
 async-trait = "0.1"
+
+# WebSocket server (for --mode server)
+tokio-tungstenite = "0.24"

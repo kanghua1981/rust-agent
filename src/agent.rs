@@ -1,18 +1,19 @@
 //! Agent core: orchestrates LLM calls, tool execution, streaming,
 //! context window management, and operation confirmation.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use crate::config::{Config, Provider};
-use crate::confirm::{self, ConfirmAction};
+use crate::confirm::ConfirmAction;
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, Message};
-use crate::diff;
 use crate::llm::{self, LlmClient};
 use crate::memory::Memory;
+use crate::output::AgentOutput;
 use crate::streaming;
 use crate::tools::ToolExecutor;
-use crate::ui;
 
 /// The main Agent that orchestrates LLM calls and tool execution
 pub struct Agent {
@@ -24,10 +25,11 @@ pub struct Agent {
     total_input_tokens: u64,
     total_output_tokens: u64,
     session_id: Option<String>,
+    output: Arc<dyn AgentOutput>,
 }
 
 impl Agent {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, output: Arc<dyn AgentOutput>) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(
             &std::env::current_dir().unwrap_or_default(),
@@ -41,11 +43,12 @@ impl Agent {
             total_input_tokens: 0,
             total_output_tokens: 0,
             session_id: None,
+            output,
         }
     }
 
     /// Create agent with a restored conversation
-    pub fn with_conversation(config: Config, conversation: Conversation, session_id: String) -> Self {
+    pub fn with_conversation(config: Config, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(
             &std::env::current_dir().unwrap_or_default(),
@@ -59,6 +62,7 @@ impl Agent {
             total_input_tokens: 0,
             total_output_tokens: 0,
             session_id: Some(session_id),
+            output,
         }
     }
 
@@ -89,7 +93,7 @@ impl Agent {
         loop {
             iterations += 1;
             if iterations > max_iterations {
-                ui::print_warning(&format!(
+                self.output.on_warning(&format!(
                     "Reached maximum tool iterations ({}). Stopping.",
                     max_iterations
                 ));
@@ -97,7 +101,7 @@ impl Agent {
             }
 
             // Show thinking indicator
-            ui::print_thinking();
+            self.output.on_thinking();
 
             // Send to LLM (streaming for Anthropic, regular for others)
             let response = if self.config.provider == Provider::Anthropic {
@@ -106,6 +110,7 @@ impl Agent {
                     &self.config,
                     &self.conversation,
                     &tool_defs,
+                    &*self.output,
                 )
                 .await?
             } else {
@@ -116,7 +121,7 @@ impl Agent {
                 for block in &resp.content {
                     if let ContentBlock::Text { text } = block {
                         if !text.is_empty() {
-                            ui::print_assistant_text(text);
+                            self.output.on_assistant_text(text);
                         }
                     }
                 }
@@ -161,7 +166,7 @@ impl Agent {
                 // Check if this tool needs confirmation
                 if needs_confirmation(&tool_name) {
                     let action = build_confirm_action(&tool_name, &tool_input);
-                    if !confirm::should_proceed(&action) {
+                    if !self.output.confirm(&action) {
                         // User declined - send a "skipped" result back to LLM
                         self.conversation.add_message(Message::tool_result(
                             &tool_id,
@@ -172,7 +177,7 @@ impl Agent {
                     }
                 }
 
-                ui::print_tool_use(&tool_name, &tool_input);
+                self.output.on_tool_use(&tool_name, &tool_input);
 
                 // For edit_file and write_file, show diff preview
                 let result = if tool_name == "edit_file" || tool_name == "write_file" {
@@ -181,7 +186,7 @@ impl Agent {
                     self.tool_executor.execute(&tool_name, &tool_input).await
                 };
 
-                ui::print_tool_result(&tool_name, &result);
+                self.output.on_tool_result(&tool_name, &result);
 
                 // Record to persistent memory
                 self.record_tool_to_memory(&tool_name, &tool_input, &result);
@@ -243,13 +248,13 @@ impl Agent {
             if let Ok(new_content) = tokio::fs::read_to_string(&resolved_str).await {
                 match (tool_name, &old_content) {
                     ("edit_file", Some(old)) => {
-                        diff::print_diff(path, old, &new_content);
+                        self.output.on_diff(path, old, &new_content);
                     }
                     ("write_file", Some(old)) => {
-                        diff::print_diff(path, old, &new_content);
+                        self.output.on_diff(path, old, &new_content);
                     }
                     ("write_file", None) => {
-                        diff::print_diff(path, "", &new_content);
+                        self.output.on_diff(path, "", &new_content);
                     }
                     _ => {}
                 }
@@ -264,7 +269,7 @@ impl Agent {
         let status = context::check_context(&self.conversation, &self.config.model);
 
         if status.needs_truncation {
-            ui::print_context_warning(
+            self.output.on_context_warning(
                 status.usage_percent,
                 status.estimated_tokens,
                 status.max_tokens,
@@ -440,6 +445,7 @@ Directory tree:
                 &self.config,
                 &summary_conversation,
                 &[], // no tools
+                &*self.output,
             )
             .await?
         } else {
