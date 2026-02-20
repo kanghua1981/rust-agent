@@ -87,6 +87,7 @@ async function startServer(): Promise<boolean> {
     const port = cfg.get<number>('port', 9527);
     const model = cfg.get<string>('model', 'claude-sonnet-4-20250514');
     const provider = cfg.get<string>('provider', 'anthropic');
+    const maxIterations = cfg.get<number>('maxIterations', 25);
     const workdir = getWorkspaceDir();
 
     if (!workdir) {
@@ -102,6 +103,7 @@ async function startServer(): Promise<boolean> {
         '--port', port.toString(),
         '--model', model,
         '--provider', provider,
+        '--max-iterations', maxIterations.toString(),
         '--workdir', workdir,
         '--yes',  // auto-approve in VS Code mode (we handle confirms via UI)
     ];

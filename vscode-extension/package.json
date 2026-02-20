@@ -7,6 +7,9 @@
   "engines": {
     "vscode": "^1.85.0"
   },
+  "extensionKind": [
+    "workspace"
+  ],
   "categories": ["Other"],
   "activationEvents": [],
   "main": "./out/extension.js",
@@ -71,6 +74,11 @@
           "default": "anthropic",
           "enum": ["anthropic", "openai", "compatible"],
           "description": "LLM API provider"
+        },
+        "rustAgent.maxIterations": {
+          "type": "number",
+          "default": 25,
+          "description": "Maximum iterations for tool usage in a single message"
         }
       }
     },

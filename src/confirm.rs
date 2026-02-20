@@ -42,6 +42,22 @@ pub fn is_auto_approve() -> bool {
 /// Returns true if the action should proceed.
 pub fn confirm(action: &ConfirmAction) -> ConfirmResult {
     if is_auto_approve() {
+        // Print a brief note so the user knows confirmation was skipped
+        let desc = match action {
+            ConfirmAction::WriteFile { path, .. } => format!("write {}", path),
+            ConfirmAction::EditFile { path } => format!("edit {}", path),
+            ConfirmAction::RunCommand { command } => {
+                let short = crate::ui::truncate_str(command, 50);
+                format!("run `{}`", short)
+            }
+            ConfirmAction::DeleteFile { path } => format!("delete {}", path),
+        };
+        println!(
+            "   {} {} {}",
+            "⚡",
+            "auto-approved:".dimmed(),
+            desc.dimmed()
+        );
         return ConfirmResult::Yes;
     }
 

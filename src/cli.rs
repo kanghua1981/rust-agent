@@ -136,6 +136,11 @@ pub async fn run(
                         handle_summary_command(input, &mut agent).await;
                         continue;
                     }
+                    // /plan needs async, handle it separately
+                    if input == "/plan" || input.starts_with("/plan ") {
+                        handle_plan_command(input, &mut agent).await;
+                        continue;
+                    }
                     let handled = handle_slash_command(input, &mut agent);
                     match handled {
                         SlashResult::Continue => continue,
@@ -333,6 +338,140 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
                 SlashResult::Continue
             } else {
                 SlashResult::NotACommand
+            }
+        }
+    }
+}
+
+/// Handle `/plan` command (async because planning calls the LLM).
+///
+/// - `/plan <task>`    — generate a plan for the task (read-only exploration, no execution)
+/// - `/plan run`       — execute the pending plan
+/// - `/plan show`      — display the pending plan again
+/// - `/plan clear`     — discard the pending plan
+async fn handle_plan_command(input: &str, agent: &mut Agent) {
+    let subcommand = input.strip_prefix("/plan").unwrap_or("").trim();
+
+    match subcommand {
+        "" => {
+            // No argument — show usage
+            println!(
+                "\n{}  {}",
+                "📝",
+                "Plan Mode — think first, execute later".bright_cyan().bold()
+            );
+            println!();
+            println!("  {}  Generate a plan for a task", "/plan <task>".bright_white());
+            println!("  {}       Execute the pending plan", "/plan run".bright_white());
+            println!("  {}      Display the pending plan", "/plan show".bright_white());
+            println!("  {}     Discard the pending plan", "/plan clear".bright_white());
+
+            if agent.pending_plan.is_some() {
+                println!(
+                    "\n  {}  {}",
+                    "💡",
+                    "A pending plan exists. Use /plan show to view, /plan run to execute.".bright_green()
+                );
+            }
+            println!();
+        }
+        "run" => {
+            if let Some(plan) = agent.pending_plan.clone() {
+                println!(
+                    "\n{}  {}",
+                    "🚀",
+                    "Executing plan...".bright_cyan().bold()
+                );
+                println!("{}\n", "─".repeat(60).dimmed());
+                match agent.execute_plan(&plan).await {
+                    Ok(_) => {
+                        auto_save_session(agent);
+                    }
+                    Err(e) => {
+                        ui::print_error(&format!("Plan execution failed: {}", e));
+                    }
+                }
+            } else {
+                println!(
+                    "\n{}  {}",
+                    "⚠️",
+                    "No pending plan. Use /plan <task> to generate one first.".yellow()
+                );
+            }
+        }
+        "show" => {
+            if let Some(ref plan) = agent.pending_plan {
+                println!(
+                    "\n{}  {}:\n",
+                    "📋",
+                    "Pending Plan".bright_cyan().bold()
+                );
+                let skin = termimad::MadSkin::default();
+                skin.print_text(plan);
+                println!("\n{}", "─".repeat(60).dimmed());
+                println!(
+                    "  {} Use {} to execute or {} to discard.",
+                    "💡",
+                    "/plan run".bright_white(),
+                    "/plan clear".bright_white()
+                );
+                println!();
+            } else {
+                println!(
+                    "\n{}  {}",
+                    "📋",
+                    "No pending plan.".dimmed()
+                );
+            }
+        }
+        "clear" => {
+            if agent.pending_plan.is_some() {
+                agent.pending_plan = None;
+                println!(
+                    "\n{}  {}",
+                    "🗑️",
+                    "Pending plan cleared.".bright_cyan()
+                );
+            } else {
+                println!(
+                    "\n{}  {}",
+                    "📋",
+                    "No pending plan to clear.".dimmed()
+                );
+            }
+        }
+        task => {
+            // Generate a plan for the given task
+            println!(
+                "\n{}  {}",
+                "📝",
+                "Generating plan (read-only exploration)...".bright_cyan()
+            );
+            println!("{}\n", "─".repeat(60).dimmed());
+
+            match agent.generate_plan(task).await {
+                Ok(plan) => {
+                    println!("\n{}", "─".repeat(60).dimmed());
+                    println!(
+                        "\n{}  {}",
+                        "✅",
+                        "Plan generated and saved.".bright_green()
+                    );
+                    println!(
+                        "  {} Use {} to execute or {} to view again.\n",
+                        "💡",
+                        "/plan run".bright_white(),
+                        "/plan show".bright_white()
+                    );
+                    // Also save to memory for traceability
+                    agent.memory.log_action(&format!(
+                        "generated plan ({} chars)",
+                        plan.len()
+                    ));
+                }
+                Err(e) => {
+                    ui::print_error(&format!("Failed to generate plan: {}", e));
+                }
             }
         }
     }

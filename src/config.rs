@@ -60,7 +60,7 @@ impl Config {
             max_tokens: 8192,
             temperature: 0.0,
             max_conversation_turns: 100,
-            max_tool_iterations: 25,
+            max_tool_iterations: args.max_iterations,
         })
     }
 }

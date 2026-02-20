@@ -101,7 +101,9 @@ struct Args {
     /// Port for the WebSocket server (only for --mode server)
     #[arg(long, default_value_t = 9527)]
     port: u16,
-}
+    /// Maximum iterations for tool usage
+    #[arg(long, default_value = "25")]
+    max_iterations: usize,}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -118,7 +120,21 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    // Load .env if present
+    // Load .env files.
+    // Priority (later wins): ~/.config/rust_agent/.env → ~/.env → CWD chain
+    // This ensures a user-level .env in the home directory also works.
+    if let Some(home) = dirs::home_dir() {
+        // Lowest priority: ~/.config/rust_agent/.env (XDG-style)
+        let xdg_env = dirs::config_dir()
+            .unwrap_or_else(|| home.join(".config"))
+            .join("rust_agent")
+            .join(".env");
+        dotenvy::from_path(&xdg_env).ok();
+
+        // Medium priority: ~/.env
+        dotenvy::from_path(home.join(".env")).ok();
+    }
+    // Highest priority: .env in CWD or its parents (standard dotenvy behavior)
     dotenvy::dotenv().ok();
 
     // Set auto-approve if requested

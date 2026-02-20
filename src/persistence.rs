@@ -78,11 +78,7 @@ pub fn save_session(conversation: &Conversation, session_id: Option<&str>, proje
         .find(|m| m.role == crate::conversation::Role::User)
         .map(|m| {
             let text = m.text_content();
-            if text.len() > 80 {
-                format!("{}...", &text[..77])
-            } else {
-                text
-            }
+            crate::ui::truncate_str(&text, 80)
         })
         .unwrap_or_else(|| "(empty)".to_string());
 

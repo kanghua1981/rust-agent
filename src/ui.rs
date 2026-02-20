@@ -50,12 +50,18 @@ pub fn print_assistant_text(text: &str) {
 pub fn print_tool_use(name: &str, input: &serde_json::Value) {
     let icon = match name {
         "read_file" => "📖",
+        "batch_read_files" => "📚",
         "write_file" => "✏️",
         "edit_file" => "🔧",
+        "multi_edit_file" => "🔧",
         "run_command" => "⚡",
         "grep_search" => "🔍",
         "file_search" => "📁",
         "list_directory" => "📂",
+        "read_pdf" => "📄",
+        "think" => "💭",
+        "fetch_url" => "🌐",
+        "read_ebook" => "📕",
         _ => "🔨",
     };
 
@@ -109,6 +115,61 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
                 .and_then(|v| v.as_str())
                 .unwrap_or(".");
             println!("   {} {}", "Path:".dimmed(), path.bright_white());
+        }
+        "multi_edit_file" => {
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                let count = input
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                println!(
+                    "   {} {} ({} edits)",
+                    "Path:".dimmed(),
+                    path.bright_white(),
+                    count
+                );
+            }
+        }
+        "batch_read_files" => {
+            if let Some(paths) = input.get("paths").and_then(|v| v.as_array()) {
+                println!("   {} {} files", "Reading:".dimmed(), paths.len());
+                for p in paths.iter().take(5) {
+                    if let Some(s) = p.as_str() {
+                        println!("   {} {}", "•".dimmed(), s.bright_white());
+                    }
+                }
+                if paths.len() > 5 {
+                    println!("   {} ... and {} more", "•".dimmed(), paths.len() - 5);
+                }
+            }
+        }
+        "read_pdf" => {
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                let pages = match (input.get("start_page").and_then(|v| v.as_u64()),
+                                   input.get("end_page").and_then(|v| v.as_u64())) {
+                    (Some(s), Some(e)) => format!(" (pages {}-{})", s, e),
+                    (Some(s), None) => format!(" (from page {})", s),
+                    _ => String::new(),
+                };
+                println!("   {} {}{}", "Path:".dimmed(), path.bright_white(), pages);
+            }
+        }
+        "think" => {
+            if let Some(thought) = input.get("thought").and_then(|v| v.as_str()) {
+                let preview = truncate_str(thought, 100);
+                println!("   {}", preview.dimmed());
+            }
+        }
+        "fetch_url" => {
+            if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
+                println!("   {} {}", "URL:".dimmed(), url.bright_white());
+            }
+        }
+        "read_ebook" => {
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                println!("   {} {}", "Path:".dimmed(), path.bright_white());
+            }
         }
         _ => {
             println!("   {} {}", "Input:".dimmed(), input);
@@ -252,6 +313,10 @@ pub fn print_help() {
         "/summary".bright_white()
     );
     println!(
+        "  {} - Plan before executing (plan/run/show/clear)",
+        "/plan".bright_white()
+    );
+    println!(
         "  {}     - Exit the agent",
         "/quit".bright_white()
     );
@@ -279,28 +344,43 @@ pub fn print_help() {
     println!();
 }
 
+/// Truncate a string to at most `max_chars` characters (not bytes),
+/// appending "..." if truncated. Safe for multi-byte UTF-8 (CJK, emoji, etc.).
+pub fn truncate_str(s: &str, max_chars: usize) -> String {
+    let mut char_iter = s.char_indices();
+    let boundary = char_iter.nth(max_chars).map(|(idx, _)| idx);
+    match boundary {
+        Some(idx) => format!("{}...", &s[..idx]),
+        None => s.to_string(),
+    }
+}
+
 /// Truncate long output for display
 fn truncate_output(output: &str, max_chars: usize) -> String {
-    if output.len() <= max_chars {
+    if output.chars().count() <= max_chars {
         output.to_string()
     } else {
         let half = max_chars / 2;
 
-        // Find safe character boundaries
-        let mut start_idx = half;
-        while start_idx > 0 && !output.is_char_boundary(start_idx) {
-            start_idx -= 1;
-        }
+        // Find safe start boundary (end of first half)
+        let start_idx = output
+            .char_indices()
+            .nth(half)
+            .map(|(idx, _)| idx)
+            .unwrap_or(output.len());
 
-        let mut end_idx = output.len() - half;
-        while end_idx < output.len() && !output.is_char_boundary(end_idx) {
-            end_idx += 1;
-        }
+        // Find safe end boundary (start of last half)
+        let total_chars = output.chars().count();
+        let end_idx = output
+            .char_indices()
+            .nth(total_chars - half)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
 
         format!(
-            "{}... ({} bytes truncated) ...{}",
+            "{}... ({} chars truncated) ...{}",
             &output[..start_idx],
-            end_idx - start_idx,
+            total_chars - max_chars,
             &output[end_idx..]
         )
     }

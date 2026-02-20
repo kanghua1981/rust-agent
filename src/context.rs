@@ -105,6 +105,10 @@ pub fn check_context(conversation: &Conversation, model: &str) -> ContextStatus 
 /// 2. Keep the first user message (provides session context)
 /// 3. Keep the most recent N messages
 /// 4. Remove middle messages, replacing with a summary
+///
+/// IMPORTANT: tool_use / tool_result messages are always kept as atomic pairs
+/// to satisfy the Anthropic API constraint that every tool_use must be followed
+/// by a tool_result in the very next message.
 pub fn truncate_conversation(conversation: &mut Conversation, model: &str, project_dir: &std::path::Path) {
     let max = max_context_tokens(model);
     let target = max * 60 / 100; // Target 60% usage after truncation
@@ -122,9 +126,16 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
         return;
     }
 
-    // Keep first 2 messages and as many recent messages as we can
-    let first_msgs = 2.min(msg_count);
-    let first_tokens: usize = conversation.messages[..first_msgs]
+    // Keep first 2 messages and as many recent messages as we can.
+    // Adjust boundary to avoid splitting a tool_use/tool_result pair:
+    // if the last kept-from-start message is an assistant with tool_use,
+    // extend to also keep its tool_result.
+    let mut first_keep = 2.min(msg_count);
+    while first_keep < msg_count && message_has_tool_use(&conversation.messages[first_keep - 1]) {
+        first_keep += 1;
+    }
+
+    let first_tokens: usize = conversation.messages[..first_keep]
         .iter()
         .map(estimate_message_tokens)
         .sum();
@@ -133,26 +144,47 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
     let summary_overhead = 100; // tokens for the truncation notice
     let available = target.saturating_sub(system_tokens + first_tokens + summary_overhead);
 
-    // Add recent messages from the end until we run out of budget
+    // Add recent messages from the end until we run out of budget.
+    // Keep tool_use/tool_result pairs together as atomic units.
+    let middle = &conversation.messages[first_keep..];
     let mut kept_end = Vec::new();
     let mut end_tokens = 0;
+    let mut i = middle.len();
 
-    for msg in conversation.messages[first_msgs..].iter().rev() {
+    while i > 0 {
+        i -= 1;
+        let msg = &middle[i];
         let msg_tokens = estimate_message_tokens(msg);
-        if end_tokens + msg_tokens > available {
-            break;
+
+        // If this message contains tool_result blocks, it must be kept
+        // together with the preceding message (which has the tool_use).
+        if message_has_tool_result(msg) && i > 0 {
+            let prev = &middle[i - 1];
+            let pair_tokens = msg_tokens + estimate_message_tokens(prev);
+            if end_tokens + pair_tokens > available {
+                break; // Can't fit the pair
+            }
+            // Push both in reverse (will be reversed later)
+            kept_end.push(msg.clone());
+            kept_end.push(prev.clone());
+            end_tokens += pair_tokens;
+            i -= 1; // skip the tool_use message we already added
+        } else {
+            if end_tokens + msg_tokens > available {
+                break;
+            }
+            kept_end.push(msg.clone());
+            end_tokens += msg_tokens;
         }
-        kept_end.push(msg.clone());
-        end_tokens += msg_tokens;
     }
 
     kept_end.reverse();
 
-    let removed_count = msg_count - first_msgs - kept_end.len();
+    let removed_count = msg_count - first_keep - kept_end.len();
 
     if removed_count > 0 {
         // Generate a mechanical summary of the removed messages
-        let removed_start = first_msgs;
+        let removed_start = first_keep;
         let removed_end = msg_count - kept_end.len();
         let summary = summarize_removed_messages(
             &conversation.messages[removed_start..removed_end],
@@ -171,7 +203,7 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
         let mut new_messages: Vec<Message> = Vec::new();
 
         // Keep first messages
-        new_messages.extend_from_slice(&conversation.messages[..first_msgs]);
+        new_messages.extend_from_slice(&conversation.messages[..first_keep]);
 
         // Add truncation notice with summary
         new_messages.push(Message::user(&format!(
@@ -194,6 +226,10 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
         );
     }
 
+    // Safety net: remove any orphaned tool_use/tool_result blocks
+    // that slipped through despite the pair-aware logic above.
+    ensure_tool_pair_integrity(&mut conversation.messages);
+
     // Also truncate very large individual blocks
     truncate_large_blocks(conversation);
 }
@@ -209,13 +245,22 @@ fn truncate_large_blocks(conversation: &mut Conversation) {
                     let tokens = estimate_tokens(content);
                     if tokens > max_block_tokens {
                         let max_chars = max_block_tokens * 4;
-                        let half = max_chars / 2;
+                        let mut half = max_chars / 2;
                         if content.len() > max_chars {
+                            // Find safe char boundaries
+                            while half > 0 && !content.is_char_boundary(half) {
+                                half -= 1;
+                            }
+                            let mut end_start = content.len() - (max_chars / 2);
+                            while end_start < content.len() && !content.is_char_boundary(end_start) {
+                                end_start += 1;
+                            }
+
                             let truncated = format!(
                                 "{}\n\n... [{} characters truncated] ...\n\n{}",
                                 &content[..half],
-                                content.len() - max_chars,
-                                &content[content.len() - half..]
+                                content.len() - (half + (content.len() - end_start)),
+                                &content[end_start..]
                             );
                             *content = truncated;
                         }
@@ -225,13 +270,22 @@ fn truncate_large_blocks(conversation: &mut Conversation) {
                     let tokens = estimate_tokens(text);
                     if tokens > max_block_tokens * 2 {
                         let max_chars = max_block_tokens * 8;
-                        let half = max_chars / 2;
+                        let mut half = max_chars / 2;
                         if text.len() > max_chars {
+                            // Find safe char boundaries
+                            while half > 0 && !text.is_char_boundary(half) {
+                                half -= 1;
+                            }
+                            let mut end_start = text.len() - (max_chars / 2);
+                            while end_start < text.len() && !text.is_char_boundary(end_start) {
+                                end_start += 1;
+                            }
+
                             let truncated = format!(
                                 "{}\n\n... [{} characters truncated] ...\n\n{}",
                                 &text[..half],
-                                text.len() - max_chars,
-                                &text[text.len() - half..]
+                                text.len() - (half + (text.len() - end_start)),
+                                &text[end_start..]
                             );
                             *text = truncated;
                         }
@@ -263,11 +317,7 @@ fn summarize_removed_messages(messages: &[Message]) -> String {
                                 .get("command")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("?");
-                            let short = if cmd.len() > 40 {
-                                format!("{}...", &cmd[..37])
-                            } else {
-                                cmd.to_string()
-                            };
+                            let short = crate::ui::truncate_str(cmd, 40);
                             format!("ran `{}`", short)
                         }
                         "grep_search" | "file_search" => {
@@ -300,4 +350,71 @@ fn summarize_removed_messages(messages: &[Message]) -> String {
             actions.join(", ")
         }
     }
+}
+
+/// Check if a message contains any ToolUse blocks.
+fn message_has_tool_use(msg: &Message) -> bool {
+    msg.content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+}
+
+/// Check if a message contains any ToolResult blocks.
+fn message_has_tool_result(msg: &Message) -> bool {
+    msg.content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+}
+
+/// Safety net: ensure every tool_use has a matching tool_result and vice versa.
+/// Removes orphaned blocks to prevent Anthropic API errors like:
+///   "tool_use ids were found without tool_result blocks immediately after"
+fn ensure_tool_pair_integrity(messages: &mut Vec<Message>) {
+    use std::collections::HashSet;
+
+    // Collect all tool_use IDs and tool_result IDs
+    let mut use_ids = HashSet::new();
+    let mut result_ids = HashSet::new();
+
+    for msg in messages.iter() {
+        for block in &msg.content {
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    use_ids.insert(id.clone());
+                }
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    result_ids.insert(tool_use_id.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Find orphans: tool_use without tool_result, and vice versa
+    let orphaned_uses: HashSet<_> = use_ids.difference(&result_ids).cloned().collect();
+    let orphaned_results: HashSet<_> = result_ids.difference(&use_ids).cloned().collect();
+
+    if orphaned_uses.is_empty() && orphaned_results.is_empty() {
+        return; // All pairs are intact
+    }
+
+    // Remove orphaned blocks from messages
+    for msg in messages.iter_mut() {
+        msg.content.retain(|block| match block {
+            ContentBlock::ToolUse { id, .. } => !orphaned_uses.contains(id),
+            ContentBlock::ToolResult { tool_use_id, .. } => {
+                !orphaned_results.contains(tool_use_id)
+            }
+            _ => true,
+        });
+    }
+
+    // Remove any messages that became empty after block removal
+    messages.retain(|msg| !msg.content.is_empty());
+
+    tracing::info!(
+        "Fixed tool pair integrity: removed {} orphaned tool_use, {} orphaned tool_result blocks",
+        orphaned_uses.len(),
+        orphaned_results.len()
+    );
 }

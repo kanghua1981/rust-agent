@@ -121,7 +121,7 @@ pub struct Conversation {
 
 impl Conversation {
     pub fn new(project_dir: &Path) -> Self {
-        let mut system_prompt = Self::default_system_prompt(project_dir);
+        let mut system_prompt = Self::build_system_prompt(project_dir);
 
         // Load project summary (from .agent/summary.md)
         if let Some(summary) = crate::summary::load(project_dir) {
@@ -147,6 +147,58 @@ impl Conversation {
             messages: Vec::new(),
             system_prompt,
         }
+    }
+
+    /// Build the system prompt with support for user customization.
+    ///
+    /// Loading order (later sources append to or override earlier ones):
+    ///   1. Built-in default prompt
+    ///   2. Global custom prompt: `~/.config/rust_agent/system_prompt.md`
+    ///   3. Project custom prompt: `<project>/.agent/system_prompt.md`
+    ///
+    /// If a custom prompt file starts with `# OVERRIDE`, it completely replaces
+    /// all previous prompt content. Otherwise it appends.
+    fn build_system_prompt(project_dir: &Path) -> String {
+        let mut prompt = Self::default_system_prompt(project_dir);
+
+        // Global custom system prompt
+        if let Some(config_dir) = dirs::config_dir() {
+            let global_path = config_dir.join("rust_agent").join("system_prompt.md");
+            if let Ok(content) = std::fs::read_to_string(&global_path) {
+                let content = content.trim();
+                if !content.is_empty() {
+                    if content.starts_with("# OVERRIDE") {
+                        // Strip the marker line and use the rest as full replacement
+                        let body = content.strip_prefix("# OVERRIDE").unwrap_or(content).trim();
+                        prompt = body.to_string();
+                        tracing::info!("Global system_prompt.md OVERRIDES default prompt");
+                    } else {
+                        prompt.push_str("\n\n");
+                        prompt.push_str(content);
+                        tracing::info!("Appended global system_prompt.md");
+                    }
+                }
+            }
+        }
+
+        // Project-level custom system prompt (takes highest priority)
+        let project_path = project_dir.join(".agent").join("system_prompt.md");
+        if let Ok(content) = std::fs::read_to_string(&project_path) {
+            let content = content.trim();
+            if !content.is_empty() {
+                if content.starts_with("# OVERRIDE") {
+                    let body = content.strip_prefix("# OVERRIDE").unwrap_or(content).trim();
+                    prompt = body.to_string();
+                    tracing::info!("Project system_prompt.md OVERRIDES all previous prompts");
+                } else {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(content);
+                    tracing::info!("Appended project system_prompt.md");
+                }
+            }
+        }
+
+        prompt
     }
 
     fn default_system_prompt(project_dir: &Path) -> String {

@@ -4,16 +4,19 @@
 
 ## ✨ 特性
 
-- **🔧 工具系统**: 内置 7 种工具 - 文件读写、编辑、命令执行、代码搜索、文件搜索、目录列表
+- **🔧 工具系统**: 内置 13 种工具 — 文件读写、多文件批量读取、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF/电子书读取、网页抓取、内部推理
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
+- **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
 - **🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
-- **📡 多模式输出**: CLI 交互模式（默认）和 JSON-over-stdio 协议模式，方便集成 VS Code 等外部工具
+- **📡 三种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
 - **📜 对话持久化**: 支持上下文保持、会话保存与恢复
 - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识
-- **🧠 持久记忆**: 自动记录文件操作与项目知识到 `.agent/memory.md`
+- **🧠 持久记忆**: 自动记录所有工具操作到 `.agent/memory.md`，跨会话保持
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
-- **🔒 安全确认**: 文件写入和命令执行前需用户确认
+- **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
+- **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示
+- **🛡️ 上下文安全截断**: 智能保持 tool_use/tool_result 配对完整性，避免 API 错误
 - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低
 
 ---
@@ -35,13 +38,17 @@ cargo build --release
 
 ### 第二步：配置 API Key
 
-Agent 需要一个 LLM API Key 才能工作。支持三种方式：
+Agent 需要一个 LLM API Key 才能工作。支持多种配置方式：
 
 ```bash
 # 方式一：环境变量（推荐）
 export ANTHROPIC_API_KEY=sk-ant-xxxxx
 
-# 方式二：创建 .env 文件（持久化）
+# 方式二：.env 文件（持久化）
+# 支持三个位置（后面的覆盖前面的）：
+#   ~/.config/rust_agent/.env  — 全局配置（XDG 规范）
+#   ~/.env                     — 用户级配置
+#   项目目录/.env              — 项目级配置（最高优先级）
 cp .env.example .env
 vim .env  # 填入你的 API Key
 
@@ -72,6 +79,9 @@ export LLM_BASE_URL=http://your-server:8080
 
 # 跳过所有确认提示（⚠️ 危险，适合自动化场景）
 ./target/release/agent --yes
+
+# 限制工具最大迭代次数（默认 25）
+./target/release/agent --max-iterations 50
 
 # 开启详细日志（调试用）
 ./target/release/agent --verbose
@@ -111,6 +121,26 @@ export LLM_BASE_URL=http://your-server:8080
 | `warning` | 非致命警告 |
 | `error` | 错误信息 |
 | `context_warning` | 上下文窗口压力通知 |
+
+#### WebSocket 服务器模式（远程 / Web UI 集成）
+
+通过 `--mode server` 启动 WebSocket 服务器，每个连接独立运行一个 Agent 实例：
+
+```bash
+# 启动 WebSocket 服务器（默认 127.0.0.1:9527）
+./target/release/agent --mode server
+
+# 指定地址和端口
+./target/release/agent --mode server --host 0.0.0.0 --port 8080
+
+# 带项目目录
+./target/release/agent --mode server --workdir /path/to/project
+```
+
+**客户端通信协议**：
+- 发送用户消息：`{"type": "user_message", "content": "你的问题"}`
+- 响应确认请求：`{"type": "confirm_response", "approved": true}`
+- 服务端事件格式与 Stdio 模式相同（JSON 帧）
 
 ---
 
@@ -218,6 +248,10 @@ git push origin fix/gpio-pullup
 | `/memory` | 显示持久记忆（项目知识、文件操作记录） |
 | `/summary` | 查看或生成项目摘要 |
 | `/summary generate` | 强制（重新）生成项目摘要 |
+| `/plan <任务>` | 让 Agent 先用只读工具分析，生成执行计划 |
+| `/plan show` | 查看当前待执行的计划 |
+| `/plan run` | 执行已生成的计划 |
+| `/plan clear` | 清除当前计划 |
 | `/quit` | 退出（会自动保存会话） |
 
 ---
@@ -356,7 +390,7 @@ After editing, run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs
 Agent 在执行以下操作前会要求确认：
 
 - **写入文件** (`write_file`)：显示文件路径和行数
-- **编辑文件** (`edit_file`)：显示文件路径，执行后展示 Diff
+- **编辑文件** (`edit_file` / `multi_edit_file`)：显示文件路径，执行后展示 Diff
 - **执行命令** (`run_command`)：显示完整命令内容
 
 ```
@@ -368,7 +402,9 @@ Agent 在执行以下操作前会要求确认：
 - 输入 `n`：拒绝（Agent 会知道你拒绝了，并调整策略）
 - 输入 `a`：本次会话内跳过所有确认
 
-也可以通过 `--yes` 启动参数或 `/yesall` 命令全局跳过。
+也可以通过 `--yes` 启动参数或 `/yesall` 命令全局跳过。auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什么。
+
+只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`fetch_url`、`read_pdf`、`read_ebook`、`think`、`file_search`）不需要确认。
 
 ---
 
@@ -376,33 +412,40 @@ Agent 在执行以下操作前会要求确认：
 
 ```
 src/
-├── main.rs          # 入口：CLI 参数解析 (clap)，--mode 选择输出后端
+├── main.rs          # 入口：CLI 参数解析 (clap)，--mode 选择输出后端，.env 加载
 ├── config.rs        # 配置管理（API Key、Provider、模型参数）
-├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput 实现
-├── cli.rs           # 交互式 REPL 循环 (rustyline)
-├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排（通过 AgentOutput 输出）
-├── conversation.rs  # 对话历史：Message / ContentBlock 数据模型
-├── context.rs       # 上下文窗口管理与自动截断
+├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput / WsOutput 实现
+├── cli.rs           # 交互式 REPL 循环 (rustyline)，斜杠命令处理
+├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式（通过 AgentOutput 输出）
+├── conversation.rs  # 对话历史：Message / ContentBlock 数据模型，system prompt 构建
+├── context.rs       # 上下文窗口管理、自动截断（保持 tool_use/tool_result 配对完整）
 ├── streaming.rs     # Anthropic SSE 流式输出（通过 &dyn AgentOutput 解耦）
-├── confirm.rs       # 危险操作的用户确认机制
+├── server.rs        # WebSocket 服务器：per-connection Agent 生命周期
+├── confirm.rs       # 危险操作的用户确认机制（含 auto-approve 可视化）
 ├── persistence.rs   # 会话保存与恢复 (JSON)
 ├── diff.rs          # 文件修改的 Diff 展示
 ├── memory.rs        # 持久记忆系统（.agent/memory.md）
 ├── summary.rs       # 项目摘要管理（.agent/summary.md）
-├── skills.rs        # Skills 加载系统
-├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染，供 CliOutput 使用）
+├── skills.rs        # Skills 加载系统（AGENT.md + .agent/skills/*.md）
+├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染，UTF-8 安全截断）
 ├── llm/
 │   ├── mod.rs       # LlmClient trait 定义
 │   ├── anthropic.rs # Anthropic Claude API 实现
 │   └── openai.rs    # OpenAI 兼容 API 实现
 └── tools/
-    ├── mod.rs       # Tool trait + ToolExecutor 注册中心
-    ├── read_file.rs # 读取文件（支持行范围）
-    ├── write_file.rs# 写入/创建文件
-    ├── edit_file.rs # 精确替换文件内容
-    ├── run_command.rs# 执行 Shell 命令（含超时控制）
-    ├── search.rs    # Grep 搜索 + 文件名搜索
-    └── list_dir.rs  # 列出目录内容（含文件大小、权限）
+    ├── mod.rs          # Tool trait + ToolExecutor 注册中心 + readonly_definitions
+    ├── read_file.rs    # 📖 读取文件（支持行范围）
+    ├── write_file.rs   # ✏️ 写入/创建文件
+    ├── edit_file.rs    # 🔧 精确替换文件内容（find & replace）
+    ├── multi_edit_file.rs # 🔧 单文件多处批量编辑
+    ├── batch_read.rs   # 📚 批量读取多个文件
+    ├── run_command.rs  # ⚡ 执行 Shell 命令（含超时控制）
+    ├── search.rs       # 🔍 Grep 搜索 + 📁 文件名搜索
+    ├── list_dir.rs     # 📂 列出目录内容（含文件大小、权限）
+    ├── think.rs        # 💭 内部推理（无副作用，不消耗工具配额）
+    ├── read_pdf.rs     # 📄 PDF 文本提取（marker / pdftotext / mutool）
+    ├── read_ebook.rs   # 📕 电子书读取（Calibre ebook-convert / pandoc）
+    └── fetch_url.rs    # 🌐 网页抓取与正文提取（readable / pandoc / 内置 regex）
 ```
 
 ### 输出抽象层
@@ -411,8 +454,9 @@ src/
 
 ```
 ┌──────────────┐
-│   main.rs    │  --mode cli  → Arc<CliOutput>   → 彩色终端交互
-│  (选择模式)   │  --mode stdio → Arc<StdioOutput> → JSON 行协议
+│   main.rs    │  --mode cli    → Arc<CliOutput>   → 彩色终端交互
+│  (选择模式)   │  --mode stdio  → Arc<StdioOutput> → JSON 行协议
+│              │  --mode server → Arc<WsOutput>    → WebSocket JSON 帧
 └──────┬───────┘
        │ Arc<dyn AgentOutput>
        ▼
@@ -429,9 +473,92 @@ src/
 
 ---
 
-## 🛠️ 开发者：扩展工具
+## � 内置工具一览
 
-要添加新工具，只需三步：
+| 工具 | 图标 | 用途 | 需确认 |
+|------|------|------|--------|
+| `read_file` | 📖 | 读取文件内容（支持行范围选择） | ❌ |
+| `batch_read_files` | 📚 | 一次读取多个文件 | ❌ |
+| `write_file` | ✏️ | 创建或覆盖写入文件 | ✅ |
+| `edit_file` | 🔧 | 精确 find & replace 编辑 | ✅ |
+| `multi_edit_file` | 🔧 | 单文件多处批量编辑 | ✅ |
+| `run_command` | ⚡ | 执行 Shell 命令（含超时控制） | ✅ |
+| `grep_search` | 🔍 | 按正则搜索文件内容 | ❌ |
+| `file_search` | 📁 | 按 glob 搜索文件名 | ❌ |
+| `list_directory` | 📂 | 列出目录内容（含大小/权限） | ❌ |
+| `think` | 💭 | 内部推理，无副作用 | ❌ |
+| `read_pdf` | 📄 | PDF 文本提取 | ❌ |
+| `read_ebook` | 📕 | 电子书读取（MOBI/EPUB/AZW3 等） | ❌ |
+| `fetch_url` | 🌐 | 网页抓取与正文提取 | ❌ |
+
+### 外部依赖（可选）
+
+部分工具依赖系统命令，Agent 会自动按优先级尝试：
+
+| 工具 | 后端 | 安装方式 |
+|------|------|----------|
+| `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |
+| `read_ebook` | ebook-convert → pandoc | `apt install calibre` / `apt install pandoc` |
+| `fetch_url` | readable → pandoc → 内置 regex | `npm install -g @nickersoft/readability-cli` / `apt install pandoc` |
+
+---
+
+## 📋 Plan 模式
+
+Plan 模式让 Agent 先分析后执行，避免盲目修改代码：
+
+```
+🤖 > /plan 重构所有 GPIO 初始化代码，统一使用 HAL 库
+
+📋  Planning: 重构所有 GPIO 初始化代码...
+（Agent 使用只读工具分析代码：read_file, grep_search, list_directory...）
+✅  Plan generated. Use /plan show to review, /plan run to execute.
+
+🤖 > /plan show
+（显示计划内容）
+
+🤖 > /plan run
+（Agent 开始执行计划，使用全部工具包括写入和编辑）
+```
+
+Plan 阶段只允许使用只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`fetch_url`、`read_pdf`、`read_ebook`、`think`、`file_search`），确保不会产生任何副作用。
+
+---
+
+## ✏️ 自定义系统提示词
+
+可以通过 Markdown 文件自定义 LLM 的系统提示词：
+
+| 文件位置 | 作用域 | 优先级 |
+|----------|--------|--------|
+| `~/.config/rust_agent/system_prompt.md` | 全局（所有项目） | 低 |
+| `<项目>/.agent/system_prompt.md` | 当前项目 | 高 |
+
+**追加模式**（默认）— 直接写内容，追加到默认提示词之后：
+```markdown
+你是一个嵌入式 C 开发专家，擅长 ARM Cortex-M。
+请用中文回复。
+代码注释使用英文。
+```
+
+**替换模式** — 第一行写 `# OVERRIDE`，完全替换默认提示词：
+```markdown
+# OVERRIDE
+你是一个 Rust 系统编程专家。
+当前项目路径已在环境中设置。
+按照项目 .editorconfig 的代码风格编写。
+```
+
+**加载顺序**：
+```
+默认提示词 → 全局 system_prompt.md → 项目 system_prompt.md → summary → skills → memory
+```
+
+---
+
+## �🛠️ 开发者：扩展工具
+
+要添加新工具，需要以下步骤：
 
 1. 在 `src/tools/` 下创建新文件
 2. 实现 `Tool` trait：
@@ -447,18 +574,50 @@ impl Tool for MyNewTool {
             parameters: serde_json::json!({ ... }),
         }
     }
-    async fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         // 实现逻辑
         ToolResult::success("done")
     }
 }
 ```
-3. 在 `src/tools/mod.rs` 的 `ToolExecutor::new()` 中注册
+3. 在 `src/tools/mod.rs` 中：
+   - 添加 `pub mod my_tool;`
+   - 在 `ToolExecutor::new()` 中 `executor.register(Box::new(my_tool::MyNewTool));`
+   - 如果是只读工具，加入 `readonly_definitions()` 的 `READONLY_TOOLS` 列表
+4. 在 `src/agent.rs` 的 `record_tool_to_memory()` 中添加记忆记录分支
+5. 在 `src/ui.rs` 的 `print_tool_use()` 中添加图标和输入显示
+6. 如果需要确认，在 `needs_confirmation()` 和 `build_confirm_action()` 中添加
 
-参考实现：`src/tools/read_file.rs`（简单）、`src/tools/edit_file.rs`（复杂）
+参考实现：`src/tools/think.rs`（最简单）、`src/tools/fetch_url.rs`（中等）、`src/tools/edit_file.rs`（复杂）
 
 ---
 
-## 📄 License
+## � `.agent/` 目录结构
+
+Agent 在项目下自动管理 `.agent/` 目录：
+
+```
+your-project/
+├── AGENT.md                        # 全局项目指令（自动加载）
+└── .agent/
+    ├── memory.md                   # 持久记忆（自动维护）
+    ├── summary.md                  # 项目摘要（/summary 生成）
+    ├── system_prompt.md            # 自定义系统提示词（可选）
+    ├── sessions/                   # 会话存档
+    │   └── <session-id>.json
+    └── skills/                     # 项目级 Skills
+        ├── modify-dts-gpio.md
+        └── cross-compile.md
+```
+
+建议在 `.gitignore` 中添加：
+```
+.agent/memory.md
+.agent/sessions/
+```
+
+---
+
+## �📄 License
 
 MIT

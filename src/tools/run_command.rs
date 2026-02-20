@@ -80,9 +80,11 @@ impl Tool for RunCommandTool {
                     result_text.push_str("STDOUT:\n");
                     // Truncate if too long
                     if stdout.len() > 50000 {
-                        result_text.push_str(&stdout[..25000]);
+                        let head = safe_truncate_head(&stdout, 25000);
+                        let tail = safe_truncate_tail(&stdout, 25000);
+                        result_text.push_str(head);
                         result_text.push_str("\n\n... (output truncated) ...\n\n");
-                        result_text.push_str(&stdout[stdout.len() - 25000..]);
+                        result_text.push_str(tail);
                     } else {
                         result_text.push_str(&stdout);
                     }
@@ -94,9 +96,11 @@ impl Tool for RunCommandTool {
                     }
                     result_text.push_str("STDERR:\n");
                     if stderr.len() > 20000 {
-                        result_text.push_str(&stderr[..10000]);
+                        let head = safe_truncate_head(&stderr, 10000);
+                        let tail = safe_truncate_tail(&stderr, 10000);
+                        result_text.push_str(head);
                         result_text.push_str("\n\n... (stderr truncated) ...\n\n");
-                        result_text.push_str(&stderr[stderr.len() - 10000..]);
+                        result_text.push_str(tail);
                     } else {
                         result_text.push_str(&stderr);
                     }
@@ -118,4 +122,28 @@ impl Tool for RunCommandTool {
             )),
         }
     }
+}
+
+/// Get the first `max_bytes` of a string, aligned to a char boundary.
+fn safe_truncate_head(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Get the last `max_bytes` of a string, aligned to a char boundary.
+fn safe_truncate_tail(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
 }
