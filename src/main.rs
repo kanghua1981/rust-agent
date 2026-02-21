@@ -63,11 +63,11 @@ struct Args {
     prompt: Option<String>,
 
     /// Model to use (e.g., claude-sonnet-4-20250514, gpt-4o)
-    #[arg(short, long, default_value = "claude-sonnet-4-20250514")]
+    #[arg(short, long, env = "LLM_MODEL", default_value = "claude-sonnet-4-20250514")]
     model: String,
 
     /// API provider: anthropic, openai, or compatible
-    #[arg(long, default_value = "anthropic")]
+    #[arg(long, env = "LLM_PROVIDER", default_value = "anthropic")]
     provider: String,
 
     /// Working directory (defaults to current directory)
@@ -107,20 +107,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
-
-    // Initialize logging
-    let filter = if args.verbose {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::new("warn")
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
-
-    // Load .env files.
+    // Load .env files FIRST, so clap env variables are found during parse.
     // Priority (later wins): ~/.config/rust_agent/.env → ~/.env → CWD chain
     // This ensures a user-level .env in the home directory also works.
     if let Some(home) = dirs::home_dir() {
@@ -137,6 +124,19 @@ async fn main() -> Result<()> {
     // Highest priority: .env in CWD or its parents (standard dotenvy behavior)
     dotenvy::dotenv().ok();
 
+    let args = Args::parse();
+
+    // Initialize logging
+    let filter = if args.verbose {
+        EnvFilter::new("debug")
+    } else {
+        EnvFilter::new("warn")
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+
     // Set auto-approve if requested
     if args.auto_approve {
         confirm::set_auto_approve(true);
@@ -149,6 +149,7 @@ async fn main() -> Result<()> {
 
     // Load config
     let config = config::Config::load(&args)?;
+    // ... rest of the function ...
 
     // Determine project directory
     let project_dir = if let Some(ref workdir) = args.workdir {

@@ -10,6 +10,8 @@ pub mod think;
 pub mod read_pdf;
 pub mod fetch_url;
 pub mod read_ebook;
+pub mod load_skill;
+pub mod create_skill;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -80,6 +82,8 @@ impl ToolExecutor {
         executor.register(Box::new(read_pdf::ReadPdfTool));
         executor.register(Box::new(fetch_url::FetchUrlTool));
         executor.register(Box::new(read_ebook::ReadEbookTool));
+        executor.register(Box::new(load_skill::LoadSkillTool));
+        executor.register(Box::new(create_skill::CreateSkillTool));
 
         executor
     }
@@ -107,6 +111,7 @@ impl ToolExecutor {
             "think",
             "fetch_url",
             "read_ebook",
+            "load_skill",
         ];
         self.tools
             .values()

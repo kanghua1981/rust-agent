@@ -81,6 +81,92 @@ impl Agent {
         self.session_id = Some(id);
     }
 
+    /// Maximum number of retries for transient LLM API errors.
+    const LLM_MAX_RETRIES: u32 = 3;
+
+    /// Check whether an error message indicates a transient/recoverable failure.
+    fn is_transient_error(err_msg: &str) -> bool {
+        let lower = err_msg.to_lowercase();
+        lower.contains("dns error")
+            || lower.contains("connection reset")
+            || lower.contains("connection refused")
+            || lower.contains("timed out")
+            || lower.contains("timeout")
+            || lower.contains("broken pipe")
+            || lower.contains("try again")
+            || lower.contains("temporarily unavailable")
+            || lower.contains("eof before")
+            || lower.contains("connection closed")
+            || lower.contains("connection aborted")
+            || lower.contains("network unreachable")
+            || lower.contains("host unreachable")
+            || lower.contains("error sending request")
+            || lower.contains("failed to send")
+            || lower.contains("failed to lookup address")
+            || lower.contains("api error (429)")
+            || lower.contains("api error (500)")
+            || lower.contains("api error (502)")
+            || lower.contains("api error (503)")
+            || lower.contains("api error (504)")
+            || lower.contains("overloaded")
+    }
+
+    /// Call the LLM with automatic retry for transient network errors
+    /// (DNS failures, connection resets, timeouts, 5xx server errors, etc.).
+    /// Uses exponential backoff: 2s, 4s, 8s between retries.
+    async fn call_llm_with_retry(
+        &self,
+        conversation: &Conversation,
+        tools: &[crate::tools::ToolDefinition],
+    ) -> Result<crate::llm::LlmResponse> {
+        let mut last_err = None;
+        for attempt in 0..=Self::LLM_MAX_RETRIES {
+            let result = match self.config.provider {
+                Provider::Anthropic => {
+                    streaming::stream_anthropic_response(
+                        &self.config,
+                        conversation,
+                        tools,
+                        &*self.output,
+                    )
+                    .await
+                }
+                Provider::OpenAI | Provider::Compatible => {
+                    streaming::stream_openai_response(
+                        &self.config,
+                        conversation,
+                        tools,
+                        &*self.output,
+                    )
+                    .await
+                }
+            };
+
+            match result {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    let err_msg = format!("{}", e);
+                    let is_transient = Self::is_transient_error(&err_msg);
+                    if is_transient && attempt < Self::LLM_MAX_RETRIES {
+                        let delay = 2u64.pow(attempt + 1);
+                        self.output.on_warning(&format!(
+                            "API request failed (attempt {}/{}): {}. Retrying in {}s...",
+                            attempt + 1,
+                            Self::LLM_MAX_RETRIES + 1,
+                            err_msg,
+                            delay
+                        ));
+                        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                        last_err = Some(e);
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM request failed after retries")))
+    }
+
     /// Process a user message and return the final text response.
     /// This handles the full agent loop: send message → receive response →
     /// if tool use → execute tools → send results → repeat until done.
@@ -108,30 +194,8 @@ impl Agent {
             // Show thinking indicator
             self.output.on_thinking();
 
-            // Send to LLM (streaming for Anthropic, regular for others)
-            let response = if self.config.provider == Provider::Anthropic {
-                // Use streaming API
-                streaming::stream_anthropic_response(
-                    &self.config,
-                    &self.conversation,
-                    &tool_defs,
-                    &*self.output,
-                )
-                .await?
-            } else {
-                let resp = self.client
-                    .send_message(&self.conversation, &tool_defs)
-                    .await?;
-                // Print text content for non-streaming providers
-                for block in &resp.content {
-                    if let ContentBlock::Text { text } = block {
-                        if !text.is_empty() {
-                            self.output.on_assistant_text(text);
-                        }
-                    }
-                }
-                resp
-            };
+            // Send to LLM with automatic retry for transient errors
+            let response = self.call_llm_with_retry(&self.conversation, &tool_defs).await?;
 
             // Track token usage
             if let Some(ref usage) = response.usage {
@@ -473,27 +537,18 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
         for _ in 0..max_iters {
             self.output.on_thinking();
 
-            let response = if self.config.provider == Provider::Anthropic {
-                streaming::stream_anthropic_response(
-                    &self.config,
-                    &plan_conversation,
-                    &readonly_tools,
-                    &*self.output,
-                )
-                .await?
-            } else {
-                let resp = self.client
-                    .send_message(&plan_conversation, &readonly_tools)
-                    .await?;
-                for block in &resp.content {
+            let response = self.call_llm_with_retry(&plan_conversation, &readonly_tools).await?;
+
+            // Print text content for non-streaming providers
+            if self.config.provider != Provider::Anthropic {
+                for block in &response.content {
                     if let ContentBlock::Text { text } = block {
                         if !text.is_empty() {
                             self.output.on_assistant_text(text);
                         }
                     }
                 }
-                resp
-            };
+            }
 
             // Track tokens
             if let Some(ref usage) = response.usage {
@@ -658,19 +713,7 @@ Directory tree:
                 .to_string();
         summary_conversation.add_message(Message::user(&prompt));
 
-        let response = if self.config.provider == Provider::Anthropic {
-            streaming::stream_anthropic_response(
-                &self.config,
-                &summary_conversation,
-                &[], // no tools
-                &*self.output,
-            )
-            .await?
-        } else {
-            self.client
-                .send_message(&summary_conversation, &[])
-                .await?
-        };
+        let response = self.call_llm_with_retry(&summary_conversation, &[]).await?;
 
         // Track token usage
         if let Some(ref usage) = response.usage {

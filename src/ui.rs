@@ -62,6 +62,8 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
         "think" => "💭",
         "fetch_url" => "🌐",
         "read_ebook" => "📕",
+        "load_skill" => "🎓",
+        "create_skill" => "📝",
         _ => "🔨",
     };
 
@@ -171,6 +173,17 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
                 println!("   {} {}", "Path:".dimmed(), path.bright_white());
             }
         }
+        "load_skill" => {
+            if let Some(name) = input.get("name").and_then(|v| v.as_str()) {
+                println!("   {} {}", "Skill:".dimmed(), name.bright_white());
+            }
+        }
+        "create_skill" => {
+            if let Some(name) = input.get("name").and_then(|v| v.as_str()) {
+                let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                println!("   {} {} — {}", "Skill:".dimmed(), name.bright_white(), desc);
+            }
+        }
         _ => {
             println!("   {} {}", "Input:".dimmed(), input);
         }
@@ -178,15 +191,25 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
 }
 
 /// Print tool result
-pub fn print_tool_result(_name: &str, result: &ToolResult) {
+pub fn print_tool_result(name: &str, result: &ToolResult) {
+    // Commands deserve more visible output so the user can see build logs, errors, etc.
+    let is_command = name == "run_command";
+
     if result.is_error {
+        let limit = if is_command { 5000 } else { 500 };
         println!(
             "   {} {}",
             "❌ Error:".red().bold(),
-            truncate_output(&result.output, 500).red()
+            truncate_output(&result.output, limit).red()
         );
+    } else if is_command {
+        // Show command output prominently (up to 5000 chars)
+        let output = truncate_output(&result.output, 5000);
+        for line in output.lines() {
+            println!("   {}", line);
+        }
     } else {
-        // Show a compact version of the result
+        // Show a compact version of the result for other tools
         let output = truncate_output(&result.output, 300);
         println!("   {} {}", "✅", output.dimmed());
     }

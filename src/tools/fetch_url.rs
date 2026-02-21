@@ -222,8 +222,12 @@ async fn extract_with_pandoc(html: &str) -> Result<String, String> {
 /// Built-in HTML → text extraction using regex.
 /// Not perfect, but handles most documentation / article pages well enough.
 fn strip_html(html: &str) -> String {
-    // Remove script and style blocks entirely
-    let re_script = regex::Regex::new(r"(?is)<(script|style|noscript|svg|head)[\s>].*?</\1>").unwrap();
+    // Remove script, style, noscript, svg, head blocks entirely.
+    // Rust's regex crate does not support backreferences (\1), so we
+    // enumerate each tag explicitly.
+    let re_script = regex::Regex::new(
+        r"(?is)<(script|style|noscript|svg|head)[\s>].*?</(script|style|noscript|svg|head)\s*>"
+    ).unwrap();
     let text = re_script.replace_all(html, " ");
 
     // Remove HTML comments

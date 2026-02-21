@@ -52,12 +52,16 @@ export ANTHROPIC_API_KEY=sk-ant-xxxxx
 cp .env.example .env
 vim .env  # 填入你的 API Key
 
-# 方式三：使用 OpenAI 或兼容 API
+# 方式三：使用 OpenAI 或兼容 API (如通义千问 Qwen, DeepSeek)
 export OPENAI_API_KEY=sk-xxxxx
 # 或
 export LLM_API_KEY=your-key
-export LLM_BASE_URL=http://your-server:8080
+export LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+export LLM_MODEL=qwen-max
+export LLM_PROVIDER=compatible
 ```
+
+> **注意**: 现在的版本已支持 OpenAI/Compatible Provider 的流式输出 (Streaming)，交互体验更佳。
 
 ### 第三步：启动 Agent
 
@@ -603,8 +607,6 @@ your-project/
     ├── memory.md                   # 持久记忆（自动维护）
     ├── summary.md                  # 项目摘要（/summary 生成）
     ├── system_prompt.md            # 自定义系统提示词（可选）
-    ├── sessions/                   # 会话存档
-    │   └── <session-id>.json
     └── skills/                     # 项目级 Skills
         ├── modify-dts-gpio.md
         └── cross-compile.md

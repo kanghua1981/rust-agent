@@ -277,10 +277,20 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
                     println!("\n{}  {} skill(s) loaded:", "📋", loaded.len());
                     for skill in &loaded.skills {
                         println!(
-                            "  {} {} {}",
+                            "  {} {} {} {}",
                             "•".bright_cyan(),
                             skill.name.bright_white(),
-                            format!("({})", skill.source).dimmed()
+                            format!("({})", skill.source).dimmed(),
+                            "[embedded]".green()
+                        );
+                    }
+                    for entry in &loaded.index {
+                        println!(
+                            "  {} {} {} {}",
+                            "•".bright_cyan(),
+                            entry.name.bright_white(),
+                            format!("({})", entry.source).dimmed(),
+                            "[on-demand]".yellow()
                         );
                     }
                 }

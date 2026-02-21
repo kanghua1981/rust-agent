@@ -40,6 +40,44 @@ enum StreamEvent {
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenAIStreamResponse {
+    choices: Vec<OpenAIStreamChoice>,
+    usage: Option<OpenAIStreamUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamChoice {
+    delta: OpenAIStreamDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamDelta {
+    content: Option<String>,
+    tool_calls: Option<Vec<OpenAIStreamToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamToolCall {
+    index: usize,
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<OpenAIStreamFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamFunction {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
 struct MessageStartData {
     usage: Option<StartUsage>,
 }
@@ -73,6 +111,10 @@ enum DeltaData {
     TextDelta { text: String },
     #[serde(rename = "input_json_delta")]
     InputJsonDelta { partial_json: String },
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { thinking: String },
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,7 +199,9 @@ pub async fn stream_anthropic_response(
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("Error reading stream chunk")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        // Normalize \r\n to \n so SSE parsing works with all servers
+        let chunk_str = String::from_utf8_lossy(&chunk).replace("\r\n", "\n").replace('\r', "\n");
+        buffer.push_str(&chunk_str);
 
         // Process complete SSE lines
         while let Some(pos) = buffer.find("\n\n") {
@@ -169,10 +213,11 @@ pub async fn stream_anthropic_response(
             let mut event_data = String::new();
 
             for line in event_text.lines() {
-                if let Some(rest) = line.strip_prefix("event: ") {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("event:") {
                     _event_type = rest.trim().to_string();
-                } else if let Some(rest) = line.strip_prefix("data: ") {
-                    event_data = rest.to_string();
+                } else if let Some(rest) = line.strip_prefix("data:") {
+                    event_data = rest.trim().to_string();
                 }
             }
 
@@ -246,6 +291,9 @@ pub async fn stream_anthropic_response(
                                     .tool_input_json
                                     .push_str(&partial_json);
                             }
+                            DeltaData::ThinkingDelta { .. } | DeltaData::SignatureDelta { .. } => {
+                                // Silently skip thinking/signature deltas (extended thinking feature)
+                            }
                         }
                     }
                 }
@@ -290,7 +338,7 @@ pub async fn stream_anthropic_response(
     }
 
     // Build the final content blocks
-    let content: Vec<ContentBlock> = blocks
+    let mut content: Vec<ContentBlock> = blocks
         .into_iter()
         .filter_map(|block| match block.block_type.as_str() {
             "text" => {
@@ -318,9 +366,248 @@ pub async fn stream_anthropic_response(
         output_tokens,
     });
 
+    if content.is_empty() {
+        // This can happen if the model only returned thinking blocks (extended thinking mode)
+        // Return a placeholder response rather than an error
+        content.push(ContentBlock::Text { text: String::new() });
+    }
+
     Ok(LlmResponse {
         content,
         stop_reason,
         usage,
+    })
+}
+
+/// Send a streaming request to an OpenAI-compatible API and print text tokens in real-time.
+pub async fn stream_openai_response(
+    config: &Config,
+    conversation: &Conversation,
+    tools: &[ToolDefinition],
+    output: &dyn AgentOutput,
+) -> Result<LlmResponse> {
+    let client = Client::new();
+
+    // Use OpenAI message formatting logic (already in openai.rs, but we'll inline it for streaming)
+    // In a real refactor, we should move these formatters to a shared location.
+    let mut messages = vec![serde_json::json!({
+        "role": "system",
+        "content": conversation.system_prompt,
+    })];
+
+    for msg in &conversation.messages {
+        match msg.role {
+            crate::conversation::Role::User => {
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            messages.push(serde_json::json!({
+                                "role": "user",
+                                "content": text,
+                            }));
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            messages.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tool_use_id,
+                                "content": content,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            crate::conversation::Role::Assistant => {
+                let text = msg.text_content();
+                let tool_calls: Vec<serde_json::Value> = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::ToolUse { id, name, input } = block {
+                            Some(serde_json::json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": input.to_string(),
+                                }
+                            }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                let mut msg_json = serde_json::json!({
+                    "role": "assistant",
+                });
+
+                if !text.is_empty() {
+                    msg_json["content"] = serde_json::json!(text);
+                }
+                if !tool_calls.is_empty() {
+                    msg_json["tool_calls"] = serde_json::json!(tool_calls);
+                }
+
+                messages.push(msg_json);
+            }
+            _ => {}
+        }
+    }
+
+    let mut request_body = serde_json::json!({
+        "model": config.model,
+        "max_tokens": config.max_tokens,
+        "temperature": config.temperature,
+        "messages": messages,
+        "stream": true,
+    });
+
+    if !tools.is_empty() {
+        request_body["tools"] = serde_json::json!(tools
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    }
+                })
+            })
+            .collect::<Vec<serde_json::Value>>());
+    }
+
+    let response = client
+        .post(format!("{}/v1/chat/completions", config.base_url))
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("content-type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .context("Failed to send streaming request to OpenAI API")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await?;
+        anyhow::bail!("OpenAI API error ({}): {}", status, body);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut accumulated_text = String::new();
+    let mut tool_accumulators: Vec<BlockAccumulator> = Vec::new();
+    let mut stop_reason: Option<String> = None;
+    let mut input_tokens: u32 = 0;
+    let mut output_tokens: u32 = 0;
+    let mut is_printing_text = false;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("Error reading stream chunk")?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(line_end) = buffer.find('\n') {
+            let line = buffer[..line_end].trim().to_string();
+            buffer = buffer[line_end + 1..].to_string();
+
+            if line.is_empty() || !line.starts_with("data: ") {
+                continue;
+            }
+
+            let data = line[6..].trim();
+            if data == "[DONE]" {
+                break;
+            }
+
+            let chunk_response: OpenAIStreamResponse = match serde_json::from_str(data) {
+                Ok(r) => r,
+                Err(_) => continue, // Ignore parsing errors for individual chunks
+            };
+
+            if let Some(usage) = chunk_response.usage {
+                input_tokens = usage.prompt_tokens;
+                output_tokens = usage.completion_tokens;
+            }
+
+            for choice in chunk_response.choices {
+                if let Some(reason) = choice.finish_reason {
+                    stop_reason = Some(reason);
+                }
+
+                if let Some(content) = choice.delta.content {
+                    if !content.is_empty() {
+                        if !is_printing_text {
+                            output.on_stream_start();
+                            is_printing_text = true;
+                        }
+                        output.on_streaming_text(&content);
+                        accumulated_text.push_str(&content);
+                    }
+                }
+
+                if let Some(tool_calls) = choice.delta.tool_calls {
+                    for tc in tool_calls {
+                        let idx = tc.index;
+                        while tool_accumulators.len() <= idx {
+                            tool_accumulators.push(BlockAccumulator {
+                                block_type: "tool_use".to_string(),
+                                text: String::new(),
+                                tool_id: String::new(),
+                                tool_name: String::new(),
+                                tool_input_json: String::new(),
+                            });
+                        }
+
+                        if let Some(id) = tc.id {
+                            tool_accumulators[idx].tool_id = id;
+                        }
+                        if let Some(func) = tc.function {
+                            if let Some(name) = func.name {
+                                tool_accumulators[idx].tool_name = name;
+                            }
+                            if let Some(args) = func.arguments {
+                                tool_accumulators[idx].tool_input_json.push_str(&args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if is_printing_text {
+        output.on_stream_end();
+    }
+
+    let mut final_content = Vec::new();
+    if !accumulated_text.is_empty() {
+        final_content.push(ContentBlock::Text { text: accumulated_text });
+    }
+
+    for acc in tool_accumulators {
+        if !acc.tool_name.is_empty() {
+            let input: serde_json::Value =
+                serde_json::from_str(&acc.tool_input_json).unwrap_or_default();
+            final_content.push(ContentBlock::ToolUse {
+                id: acc.tool_id,
+                name: acc.tool_name,
+                input,
+            });
+        }
+    }
+
+    if final_content.is_empty() {
+        anyhow::bail!("OpenAI-compatible LLM returned an empty response. Check if the model is valid and the API endpoint supports streaming.");
+    }
+
+    Ok(LlmResponse {
+        content: final_content,
+        stop_reason,
+        usage: Some(Usage { input_tokens, output_tokens }),
     })
 }
