@@ -81,6 +81,13 @@ impl Agent {
         self.session_id = Some(id);
     }
 
+    /// Switch the active model at runtime.
+    /// Rebuilds the underlying LLM client with the new config.
+    pub fn switch_model(&mut self, resolved: &crate::model_manager::ResolvedModel) {
+        self.config = self.config.with_resolved_model(resolved);
+        self.client = llm::create_client(&self.config);
+    }
+
     /// Maximum number of retries for transient LLM API errors.
     const LLM_MAX_RETRIES: u32 = 3;
 
@@ -190,6 +197,12 @@ impl Agent {
                 ));
                 break;
             }
+
+            // Safety net: fix any orphaned tool_use/tool_result blocks
+            // before calling the API.  Truncation or panics can leave the
+            // conversation in a state that violates Anthropic's requirement
+            // that every tool_use is followed by a tool_result.
+            context::ensure_tool_pair_integrity(&mut self.conversation.messages);
 
             // Show thinking indicator
             self.output.on_thinking();

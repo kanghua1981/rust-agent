@@ -120,10 +120,40 @@ impl ToolExecutor {
             .collect()
     }
 
-    /// Execute a tool by name
+    /// Execute a tool by name.
+    ///
+    /// Wraps the tool execution in `catch_unwind` so that a panic inside
+    /// a tool (e.g. slice-index-out-of-range) is turned into a
+    /// `ToolResult::Error` instead of crashing the whole agent.  This
+    /// prevents orphaned `tool_use` blocks without matching `tool_result`
+    /// in the conversation, which would cause Anthropic API 400 errors.
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolResult {
         match self.tools.get(name) {
-            Some(tool) => tool.execute(input, &self.project_dir).await,
+            Some(tool) => {
+                use futures::FutureExt; // catch_unwind on futures
+
+                let result = std::panic::AssertUnwindSafe(
+                    tool.execute(input, &self.project_dir),
+                )
+                .catch_unwind()
+                .await;
+
+                match result {
+                    Ok(r) => r,
+                    Err(panic_val) => {
+                        let panic_msg = if let Some(s) = panic_val.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = panic_val.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "unknown panic".to_string()
+                        };
+                        let msg = format!("Tool '{}' panicked: {}", name, panic_msg);
+                        tracing::error!("{}", msg);
+                        ToolResult::error(msg)
+                    }
+                }
+            }
             None => ToolResult::error(format!("Unknown tool: {}", name)),
         }
     }

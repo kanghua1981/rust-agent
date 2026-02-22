@@ -332,6 +332,10 @@ pub fn print_help() {
         "/memory".bright_white()
     );
     println!(
+        "  {}    - List / switch / manage models",
+        "/model".bright_white()
+    );
+    println!(
         "  {}  - View or generate project summary",
         "/summary".bright_white()
     );

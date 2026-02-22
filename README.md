@@ -10,6 +10,7 @@
 - **🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
 - **📡 三种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
+- **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换
 - **📜 对话持久化**: 支持上下文保持、会话保存与恢复
 - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识
 - **🧠 持久记忆**: 自动记录所有工具操作到 `.agent/memory.md`，跨会话保持
@@ -62,6 +63,39 @@ export LLM_PROVIDER=compatible
 ```
 
 > **注意**: 现在的版本已支持 OpenAI/Compatible Provider 的流式输出 (Streaming)，交互体验更佳。
+
+### 模型管理（推荐）
+
+对于需要频繁切换模型的用户，推荐使用 `~/.config/rust_agent/models.toml` 统一管理：
+
+```toml
+# 默认使用的模型别名
+default = "sonnet"
+
+[models.sonnet]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+[models.opus]
+provider = "anthropic"
+model = "claude-opus-4-20250514"
+
+[models.gpt4o]
+provider = "openai"
+model = "gpt-4o"
+
+[models.qwen]
+provider = "compatible"
+model = "qwen-max"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "sk-xxxxx"  # 可选，不设则 fallback 到环境变量
+```
+
+也可以在运行时通过 `/model add <alias>` 交互式添加模型，无需手动编辑文件。
+
+**配置优先级**：`--model CLI参数` > `models.toml default` > `LLM_MODEL 环境变量` > `硬编码默认值`
+
+> **提示**: `.env` 文件仍然有效，推荐只放 API Key；模型/provider/base_url 的管理交给 `models.toml`。
 
 ### 第三步：启动 Agent
 
@@ -249,6 +283,11 @@ git push origin fix/gpio-pullup
 | `/skills` | 查看当前加载的 Skills |
 | `/yesall` | 关闭所有确认提示（本次会话内有效） |
 | `/confirm` | 重新开启确认提示 |
+| `/model` | 列出当前模型与所有已配置模型 |
+| `/model <alias>` | 热切换到指定模型 |
+| `/model add <alias>` | 交互式添加新模型配置 |
+| `/model remove <alias>` | 删除模型配置 |
+| `/model default <alias>` | 设置默认模型 |
 | `/memory` | 显示持久记忆（项目知识、文件操作记录） |
 | `/summary` | 查看或生成项目摘要 |
 | `/summary generate` | 强制（重新）生成项目摘要 |
@@ -387,6 +426,8 @@ After editing, run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs
 | OpenAI | `--provider openai` | `OPENAI_API_KEY` |
 | 兼容 API（Ollama 等） | `--provider compatible` | `LLM_API_KEY` + `LLM_BASE_URL` |
 
+> **推荐**：使用 `~/.config/rust_agent/models.toml` 管理多个模型，运行时通过 `/model <alias>` 快速切换，无需重启 Agent。详见上文「模型管理」章节。
+
 ---
 
 ## 🛡️ 安全机制
@@ -418,6 +459,7 @@ Agent 在执行以下操作前会要求确认：
 src/
 ├── main.rs          # 入口：CLI 参数解析 (clap)，--mode 选择输出后端，.env 加载
 ├── config.rs        # 配置管理（API Key、Provider、模型参数）
+├── model_manager.rs # 模型管理（~/.config/rust_agent/models.toml 读写、热切换）
 ├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput / WsOutput 实现
 ├── cli.rs           # 交互式 REPL 循环 (rustyline)，斜杠命令处理
 ├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式（通过 AgentOutput 输出）

@@ -64,6 +64,14 @@ impl Tool for ReadFileTool {
                     ));
                 }
 
+                if start >= end {
+                    return ToolResult::error(format!(
+                        "start_line ({}) must be less than end_line ({})",
+                        start + 1,
+                        end
+                    ));
+                }
+
                 let selected_lines: Vec<String> = lines[start..end]
                     .iter()
                     .enumerate()

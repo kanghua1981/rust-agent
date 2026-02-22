@@ -1,0 +1,152 @@
+//! Model management: persistent multi-model configuration via `models.toml`.
+//!
+//! Configuration lives at `~/.config/rust_agent/models.toml` (user-level).
+//! Each model entry has an alias, provider, model name, and optional overrides
+//! for `base_url` and `api_key`.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::config::Provider;
+
+// ── Data types ───────────────────────────────────────────────────────
+
+/// Top-level structure of `models.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelsConfig {
+    /// Alias of the default model (e.g. "sonnet").
+    #[serde(default)]
+    pub default: Option<String>,
+
+    /// Named model entries keyed by alias.
+    #[serde(default)]
+    pub models: BTreeMap<String, ModelEntry>,
+}
+
+/// A single model entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelEntry {
+    pub provider: String,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+/// Resolved information returned after looking up a model alias.
+#[derive(Debug, Clone)]
+pub struct ResolvedModel {
+    pub alias: String,
+    pub provider: Provider,
+    pub model: String,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub max_tokens: Option<u32>,
+}
+
+// ── File path helper ─────────────────────────────────────────────────
+
+/// Return the path to `~/.config/rust_agent/models.toml`.
+pub fn config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("rust_agent").join("models.toml"))
+}
+
+// ── Read / Write ─────────────────────────────────────────────────────
+
+/// Load `models.toml` from the standard location.
+/// Returns a default (empty) config if the file does not exist.
+pub fn load() -> ModelsConfig {
+    let Some(path) = config_path() else {
+        return ModelsConfig::default();
+    };
+    if !path.exists() {
+        return ModelsConfig::default();
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
+            eprintln!("⚠️  Failed to parse {}: {}", path.display(), e);
+            ModelsConfig::default()
+        }),
+        Err(e) => {
+            eprintln!("⚠️  Failed to read {}: {}", path.display(), e);
+            ModelsConfig::default()
+        }
+    }
+}
+
+/// Persist the current `ModelsConfig` to disk.
+pub fn save(cfg: &ModelsConfig) -> Result<()> {
+    let path = config_path().context("Cannot determine config directory")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = toml::to_string_pretty(cfg)?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+// ── Query helpers ────────────────────────────────────────────────────
+
+impl ModelsConfig {
+    /// Resolve an alias to a full `ResolvedModel`.
+    pub fn resolve(&self, alias: &str) -> Option<ResolvedModel> {
+        let entry = self.models.get(alias)?;
+        let provider = parse_provider(&entry.provider);
+        Some(ResolvedModel {
+            alias: alias.to_string(),
+            provider,
+            model: entry.model.clone(),
+            base_url: entry.base_url.clone(),
+            api_key: entry.api_key.clone(),
+            max_tokens: entry.max_tokens,
+        })
+    }
+
+    /// Resolve the default model, if one is configured.
+    pub fn resolve_default(&self) -> Option<ResolvedModel> {
+        let alias = self.default.as_deref()?;
+        self.resolve(alias)
+    }
+
+    /// List all configured aliases (sorted).
+    pub fn aliases(&self) -> Vec<&str> {
+        self.models.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Add or overwrite a model entry.
+    pub fn add(&mut self, alias: String, entry: ModelEntry) {
+        self.models.insert(alias, entry);
+    }
+
+    /// Remove a model entry. Returns `true` if it existed.
+    pub fn remove(&mut self, alias: &str) -> bool {
+        let existed = self.models.remove(alias).is_some();
+        // Clear default if it pointed to the removed alias
+        if self.default.as_deref() == Some(alias) {
+            self.default = None;
+        }
+        existed
+    }
+
+    /// Set the default alias.
+    pub fn set_default(&mut self, alias: String) {
+        self.default = Some(alias);
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+fn parse_provider(s: &str) -> Provider {
+    match s.to_lowercase().as_str() {
+        "anthropic" => Provider::Anthropic,
+        "openai" => Provider::OpenAI,
+        "compatible" => Provider::Compatible,
+        _ => Provider::Compatible,
+    }
+}

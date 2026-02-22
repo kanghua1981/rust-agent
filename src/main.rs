@@ -5,6 +5,7 @@ mod context;
 mod diff;
 mod llm;
 mod memory;
+mod model_manager;
 mod output;
 mod persistence;
 mod skills;

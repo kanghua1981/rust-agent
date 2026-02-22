@@ -53,6 +53,7 @@ impl Tool for RunCommandTool {
         let mut cmd = Command::new("bash");
         cmd.arg("-c")
             .arg(command)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 

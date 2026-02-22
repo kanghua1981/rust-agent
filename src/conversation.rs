@@ -244,17 +244,55 @@ Skills management:
         self.messages.push(message);
     }
 
-    /// Get messages formatted for the API (excluding system prompt)
+    /// Get messages formatted for the API (excluding system prompt).
+    ///
+    /// This method merges consecutive messages with the same role into a
+    /// single message.  The Anthropic API requires strict user/assistant
+    /// alternation and that **all** `tool_result` blocks for a given
+    /// assistant response appear in the single next user message.  Without
+    /// merging, truncation notices or per-tool-result messages can violate
+    /// these constraints and trigger 400 errors such as:
+    ///   "tool_use ids were found without tool_result blocks immediately after"
     pub fn api_messages(&self) -> Vec<serde_json::Value> {
-        self.messages
-            .iter()
-            .map(|msg| {
-                serde_json::json!({
-                    "role": msg.role,
-                    "content": msg.content,
-                })
-            })
-            .collect()
+        if self.messages.is_empty() {
+            return Vec::new();
+        }
+
+        let mut merged: Vec<serde_json::Value> = Vec::new();
+
+        for msg in &self.messages {
+            let role_str = match msg.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+
+            // Serialize content blocks for this message
+            let blocks: Vec<serde_json::Value> = msg
+                .content
+                .iter()
+                .map(|b| serde_json::to_value(b).unwrap_or_default())
+                .collect();
+
+            // Try to merge with the previous message if roles match
+            if let Some(last) = merged.last_mut() {
+                if last.get("role").and_then(|r| r.as_str()) == Some(role_str) {
+                    // Same role — append content blocks to existing message
+                    if let Some(arr) = last.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        arr.extend(blocks);
+                        continue;
+                    }
+                }
+            }
+
+            // Different role or first message — create a new entry
+            merged.push(serde_json::json!({
+                "role": role_str,
+                "content": blocks,
+            }));
+        }
+
+        merged
     }
 
     pub fn clear(&mut self) {

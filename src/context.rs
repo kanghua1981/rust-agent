@@ -129,10 +129,17 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
     // Keep first 2 messages and as many recent messages as we can.
     // Adjust boundary to avoid splitting a tool_use/tool_result pair:
     // if the last kept-from-start message is an assistant with tool_use,
-    // extend to also keep its tool_result.
+    // extend to also keep ALL its tool_result messages (there can be
+    // multiple consecutive user messages with tool_results when the
+    // assistant issued multiple tool calls in one response).
     let mut first_keep = 2.min(msg_count);
-    while first_keep < msg_count && message_has_tool_use(&conversation.messages[first_keep - 1]) {
-        first_keep += 1;
+    while first_keep < msg_count {
+        let last = &conversation.messages[first_keep - 1];
+        if message_has_tool_use(last) || message_has_tool_result(last) {
+            first_keep += 1;
+        } else {
+            break;
+        }
     }
 
     let first_tokens: usize = conversation.messages[..first_keep]
@@ -367,54 +374,97 @@ fn message_has_tool_result(msg: &Message) -> bool {
 }
 
 /// Safety net: ensure every tool_use has a matching tool_result and vice versa.
-/// Removes orphaned blocks to prevent Anthropic API errors like:
+/// Also verify ordering: the tool_result must appear in the message immediately
+/// following the one containing the tool_use.
+/// Removes orphaned or misordered blocks to prevent Anthropic API errors like:
 ///   "tool_use ids were found without tool_result blocks immediately after"
-fn ensure_tool_pair_integrity(messages: &mut Vec<Message>) {
-    use std::collections::HashSet;
+pub fn ensure_tool_pair_integrity(messages: &mut Vec<Message>) {
+    use std::collections::{HashMap, HashSet};
 
-    // Collect all tool_use IDs and tool_result IDs
-    let mut use_ids = HashSet::new();
-    let mut result_ids = HashSet::new();
+    // Phase 1: collect all tool_use IDs with their message index,
+    // and all tool_result IDs with their message index.
+    let mut use_id_to_msg: HashMap<String, usize> = HashMap::new();
+    let mut result_id_to_msg: HashMap<String, usize> = HashMap::new();
 
-    for msg in messages.iter() {
+    for (idx, msg) in messages.iter().enumerate() {
         for block in &msg.content {
             match block {
                 ContentBlock::ToolUse { id, .. } => {
-                    use_ids.insert(id.clone());
+                    use_id_to_msg.insert(id.clone(), idx);
                 }
                 ContentBlock::ToolResult { tool_use_id, .. } => {
-                    result_ids.insert(tool_use_id.clone());
+                    result_id_to_msg.insert(tool_use_id.clone(), idx);
                 }
                 _ => {}
             }
         }
     }
 
-    // Find orphans: tool_use without tool_result, and vice versa
-    let orphaned_uses: HashSet<_> = use_ids.difference(&result_ids).cloned().collect();
-    let orphaned_results: HashSet<_> = result_ids.difference(&use_ids).cloned().collect();
+    // Phase 2: find IDs to remove.
+    // A pair is valid when:
+    //   - Both tool_use and tool_result exist
+    //   - The tool_result message index == tool_use message index + 1
+    //     (they must be in adjacent messages)
+    //
+    // NOTE: After api_messages() merges consecutive same-role messages
+    // the adjacency might shift, so we also accept tool_result in a
+    // later user message as long as no assistant message intervenes.
+    // However, the safest approach is to just require use_idx < result_idx.
+    let mut bad_ids: HashSet<String> = HashSet::new();
 
-    if orphaned_uses.is_empty() && orphaned_results.is_empty() {
-        return; // All pairs are intact
+    // Orphaned tool_uses (no matching result)
+    for id in use_id_to_msg.keys() {
+        if !result_id_to_msg.contains_key(id) {
+            bad_ids.insert(id.clone());
+        }
     }
 
-    // Remove orphaned blocks from messages
+    // Orphaned tool_results (no matching use)
+    for id in result_id_to_msg.keys() {
+        if !use_id_to_msg.contains_key(id) {
+            bad_ids.insert(id.clone());
+        }
+    }
+
+    // Misordered pairs (result appears before or at the same index as use)
+    for (id, use_idx) in &use_id_to_msg {
+        if let Some(result_idx) = result_id_to_msg.get(id) {
+            if *result_idx <= *use_idx {
+                bad_ids.insert(id.clone());
+                continue;
+            }
+            // Anthropic requires tool_result in the IMMEDIATELY NEXT user
+            // message after the assistant message with tool_use.  After
+            // api_messages() merges consecutive same-role messages, this
+            // means there must be no assistant message between the
+            // tool_use message and the tool_result message.
+            let has_intervening_assistant = messages[*use_idx + 1..*result_idx]
+                .iter()
+                .any(|m| m.role == crate::conversation::Role::Assistant);
+            if has_intervening_assistant {
+                bad_ids.insert(id.clone());
+            }
+        }
+    }
+
+    if bad_ids.is_empty() {
+        return; // All pairs are intact and correctly ordered
+    }
+
+    tracing::info!(
+        "Fixing tool pair integrity: removing {} broken tool_use/tool_result ID(s)",
+        bad_ids.len()
+    );
+
+    // Remove bad blocks from messages
     for msg in messages.iter_mut() {
         msg.content.retain(|block| match block {
-            ContentBlock::ToolUse { id, .. } => !orphaned_uses.contains(id),
-            ContentBlock::ToolResult { tool_use_id, .. } => {
-                !orphaned_results.contains(tool_use_id)
-            }
+            ContentBlock::ToolUse { id, .. } => !bad_ids.contains(id),
+            ContentBlock::ToolResult { tool_use_id, .. } => !bad_ids.contains(tool_use_id),
             _ => true,
         });
     }
 
     // Remove any messages that became empty after block removal
     messages.retain(|msg| !msg.content.is_empty());
-
-    tracing::info!(
-        "Fixed tool pair integrity: removed {} orphaned tool_use, {} orphaned tool_result blocks",
-        orphaned_uses.len(),
-        orphaned_results.len()
-    );
 }

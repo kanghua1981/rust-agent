@@ -149,6 +149,10 @@ pub async fn run(
                     }
                 }
 
+                // Save terminal state before processing, so we can restore it
+                // if a child process or tool panic corrupts termios settings.
+                let saved_termios = save_terminal_state();
+
                 // Process the user's message
                 match agent.process_message(input).await {
                     Ok(_) => {
@@ -158,6 +162,11 @@ pub async fn run(
                     Err(e) => {
                         ui::print_error(&format!("{:#}", e));
                     }
+                }
+
+                // Restore terminal state to prevent accumulated corruption
+                if let Some(ref termios) = saved_termios {
+                    restore_terminal_state(termios);
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -263,6 +272,10 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             );
             SlashResult::Continue
         }
+        _ if input == "/model" || input.starts_with("/model ") => {
+            handle_model_command(input, agent);
+            SlashResult::Continue
+        }
         "/skills" => {
             {
                 let loaded = crate::skills::load_skills(&agent.project_dir);
@@ -351,6 +364,235 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             }
         }
     }
+}
+
+/// Handle `/model` command — list, switch, add, remove, default.
+///
+/// - `/model`                — show current model & list all configured models
+/// - `/model <alias>`        — switch to the model with the given alias
+/// - `/model add <alias>`    — interactively add a new model entry
+/// - `/model remove <alias>` — remove a model entry
+/// - `/model default <alias>`— set the default model alias
+fn handle_model_command(input: &str, agent: &mut Agent) {
+    let subcommand = input.strip_prefix("/model").unwrap_or("").trim();
+
+    match subcommand {
+        "" => {
+            // Show current model and list all configured models
+            println!(
+                "\n{}  Current model: {} ({})",
+                "🤖",
+                agent.config.model.bright_white().bold(),
+                agent.config.provider.to_string().bright_cyan()
+            );
+            if let Some(ref alias) = agent.config.model_alias {
+                println!("  Alias: {}", alias.bright_yellow());
+            }
+            println!();
+
+            let models_cfg = crate::model_manager::load();
+            if models_cfg.models.is_empty() {
+                println!(
+                    "  {}  No models configured in {}",
+                    "📋",
+                    crate::model_manager::config_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "models.toml".to_string())
+                        .dimmed()
+                );
+                println!(
+                    "  Use {} to add a model.\n",
+                    "/model add <alias>".bright_white()
+                );
+            } else {
+                let default_alias = models_cfg.default.as_deref().unwrap_or("");
+                println!("  {}  Configured models:", "📋");
+                for alias in models_cfg.aliases() {
+                    if let Some(entry) = models_cfg.models.get(alias) {
+                        let marker = if alias == default_alias { " ⭐" } else { "" };
+                        let active = agent
+                            .config
+                            .model_alias
+                            .as_deref()
+                            .map(|a| a == alias)
+                            .unwrap_or(false);
+                        let prefix = if active {
+                            "▶".bright_green().to_string()
+                        } else {
+                            "•".dimmed().to_string()
+                        };
+                        println!(
+                            "    {} {} {} ({}/{}){}", 
+                            prefix,
+                            alias.bright_yellow(),
+                            "→".dimmed(),
+                            entry.provider.bright_cyan(),
+                            entry.model.bright_white(),
+                            marker
+                        );
+                    }
+                }
+                println!();
+                println!(
+                    "  Switch: {}  Add: {}  Remove: {}",
+                    "/model <alias>".bright_white(),
+                    "/model add <alias>".bright_white(),
+                    "/model remove <alias>".bright_white()
+                );
+                println!();
+            }
+        }
+        sub if sub.starts_with("add ") => {
+            let alias = sub.strip_prefix("add ").unwrap().trim();
+            if alias.is_empty() {
+                println!("\n{}  Usage: /model add <alias>", "❓");
+                return;
+            }
+            // Interactive prompts
+            println!(
+                "\n{}  Adding model '{}'",
+                "➕",
+                alias.bright_yellow()
+            );
+            let provider = prompt_line("  Provider (anthropic/openai/compatible): ");
+            let model = prompt_line("  Model name: ");
+            let base_url_raw = prompt_line("  Base URL (leave blank for default): ");
+            let api_key_raw = prompt_line("  API key (leave blank to use env var): ");
+
+            let base_url = if base_url_raw.is_empty() {
+                None
+            } else {
+                Some(base_url_raw)
+            };
+            let api_key = if api_key_raw.is_empty() {
+                None
+            } else {
+                Some(api_key_raw)
+            };
+
+            let entry = crate::model_manager::ModelEntry {
+                provider,
+                model,
+                base_url,
+                api_key,
+                max_tokens: None,
+            };
+
+            let mut models_cfg = crate::model_manager::load();
+            models_cfg.add(alias.to_string(), entry);
+
+            // If this is the first model, also set it as default
+            if models_cfg.models.len() == 1 {
+                models_cfg.set_default(alias.to_string());
+            }
+
+            match crate::model_manager::save(&models_cfg) {
+                Ok(_) => {
+                    println!(
+                        "\n{}  Model '{}' saved to {}",
+                        "✅",
+                        alias.bright_yellow(),
+                        crate::model_manager::config_path()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default()
+                            .dimmed()
+                    );
+                }
+                Err(e) => {
+                    ui::print_error(&format!("Failed to save models config: {}", e));
+                }
+            }
+        }
+        sub if sub.starts_with("remove ") => {
+            let alias = sub.strip_prefix("remove ").unwrap().trim();
+            if alias.is_empty() {
+                println!("\n{}  Usage: /model remove <alias>", "❓");
+                return;
+            }
+            let mut models_cfg = crate::model_manager::load();
+            if models_cfg.remove(alias) {
+                match crate::model_manager::save(&models_cfg) {
+                    Ok(_) => {
+                        println!(
+                            "\n{}  Model '{}' removed.",
+                            "🗑️",
+                            alias.bright_yellow()
+                        );
+                    }
+                    Err(e) => {
+                        ui::print_error(&format!("Failed to save models config: {}", e));
+                    }
+                }
+            } else {
+                println!(
+                    "\n{}  Model '{}' not found.",
+                    "❓",
+                    alias.bright_red()
+                );
+            }
+        }
+        sub if sub.starts_with("default ") => {
+            let alias = sub.strip_prefix("default ").unwrap().trim();
+            if alias.is_empty() {
+                println!("\n{}  Usage: /model default <alias>", "❓");
+                return;
+            }
+            let mut models_cfg = crate::model_manager::load();
+            if models_cfg.models.contains_key(alias) {
+                models_cfg.set_default(alias.to_string());
+                match crate::model_manager::save(&models_cfg) {
+                    Ok(_) => {
+                        println!(
+                            "\n{}  Default model set to '{}'.",
+                            "⭐",
+                            alias.bright_yellow()
+                        );
+                    }
+                    Err(e) => {
+                        ui::print_error(&format!("Failed to save models config: {}", e));
+                    }
+                }
+            } else {
+                println!(
+                    "\n{}  Model '{}' not found. Use {} to see available models.",
+                    "❓",
+                    alias.bright_red(),
+                    "/model".bright_white()
+                );
+            }
+        }
+        alias => {
+            // Switch to model by alias
+            let models_cfg = crate::model_manager::load();
+            if let Some(resolved) = models_cfg.resolve(alias) {
+                agent.switch_model(&resolved);
+                println!(
+                    "\n{}  Switched to '{}' → {} ({})",
+                    "🔄",
+                    alias.bright_yellow(),
+                    agent.config.model.bright_white(),
+                    agent.config.provider.to_string().bright_cyan()
+                );
+            } else {
+                println!(
+                    "\n{}  Model '{}' not found. Use {} to see available models.",
+                    "❓",
+                    alias.bright_red(),
+                    "/model".bright_white()
+                );
+            }
+        }
+    }
+}
+
+/// Small helper to prompt a line from stdin (used by /model add).
+fn prompt_line(prompt: &str) -> String {
+    use std::io::Write;
+    print!("{}", prompt);
+    std::io::stdout().flush().ok();
+    let mut buf = String::new();
+    std::io::stdin().read_line(&mut buf).ok();
+    buf.trim().to_string()
 }
 
 /// Handle `/plan` command (async because planning calls the LLM).
@@ -585,3 +827,38 @@ fn auto_save_session(agent: &mut Agent) {
         }
     }
 }
+
+/// Save the current terminal (termios) state so it can be restored later.
+///
+/// Child processes spawned by `run_command` can accidentally corrupt
+/// terminal settings (ECHO, ICANON, VMIN, etc.) even though we set
+/// their stdin to null.  Some tools or signal handlers might also
+/// leave the terminal in a bad state.  Saving before `process_message`
+/// and restoring after guarantees the readline prompt always works.
+#[cfg(unix)]
+fn save_terminal_state() -> Option<libc::termios> {
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == 0 {
+            Some(termios)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn save_terminal_state() -> Option<()> {
+    None
+}
+
+/// Restore terminal settings saved by `save_terminal_state`.
+#[cfg(unix)]
+fn restore_terminal_state(termios: &libc::termios) {
+    unsafe {
+        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, termios);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_terminal_state(_: &()) {}

@@ -19,6 +19,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 
 # CLI interface
 clap = { version = "4", features = ["derive", "env"] }
@@ -26,6 +27,9 @@ clap = { version = "4", features = ["derive", "env"] }
 # Terminal UI
 crossterm = "0.28"
 colored = "2"
+
+# Low-level Unix terminal control (termios save/restore)
+libc = "0.2"
 
 # Interactive line editor
 rustyline = "14"
