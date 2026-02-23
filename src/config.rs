@@ -151,4 +151,27 @@ impl Config {
             model_alias: Some(resolved.alias.clone()),
         }
     }
+
+    /// Build a Config for a named role from `models.toml`.
+    ///
+    /// Looks up `role_name` in `[roles]`, resolves its model alias, and
+    /// returns a ready-to-use Config. Falls back to `self` (main config) if
+    /// the role or its model is not found, so the agent degrades gracefully.
+    pub fn for_role(
+        &self,
+        role_name: &str,
+        models_cfg: &model_manager::ModelsConfig,
+    ) -> Config {
+        let Some(role) = models_cfg.roles.get(role_name) else {
+            return self.clone();
+        };
+        let Some(resolved) = models_cfg.resolve(&role.model) else {
+            tracing::warn!(
+                "Role '{}' references unknown model alias '{}', falling back to main model",
+                role_name, role.model
+            );
+            return self.clone();
+        };
+        self.with_resolved_model(&resolved)
+    }
 }

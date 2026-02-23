@@ -37,6 +37,35 @@ pub fn print_thinking() {
     std::io::stdout().flush().ok();
 }
 
+/// Print a role/model banner before an LLM response.
+/// Shows clearly which role is active and which model it uses.
+/// Example:  ── 🧠 Planner  ·  claude-opus-4-5
+pub fn print_role_header(label: &str, model: &str) {
+    println!(
+        "\n{}  {}  {}  {}",
+        "──".bright_cyan().dimmed(),
+        label.bright_white().bold(),
+        "·".dimmed(),
+        model.bright_cyan(),
+    );
+}
+
+/// Print a stage-completion banner, e.g. after Executor finishes.
+/// Example:  ════ ✅ Executor done ═══════════════════════
+pub fn print_stage_end(label: &str) {
+    let msg = format!(" {} {} done ", "✅", label);
+    let total = 60usize;
+    let pad = total.saturating_sub(msg.chars().count());
+    let left = pad / 2;
+    let right = pad - left;
+    println!(
+        "\n{}{}{}",
+        "═".repeat(left).bright_cyan().dimmed(),
+        msg.bright_white().bold(),
+        "═".repeat(right).bright_cyan().dimmed(),
+    );
+}
+
 /// Print assistant's text response (for non-streaming providers)
 pub fn print_assistant_text(text: &str) {
     println!("\n{}", "─".repeat(60).dimmed());
@@ -106,9 +135,28 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
                 println!("   {} {}", "$".dimmed(), cmd.bright_white());
             }
         }
-        "grep_search" | "file_search" => {
+        "grep_search" => {
             if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
                 println!("   {} {}", "Pattern:".dimmed(), pattern.bright_white());
+            }
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                println!("   {} {}", "Path:".dimmed(), path.bright_white());
+            }
+            if let Some(inc) = input.get("include").and_then(|v| v.as_str()) {
+                println!("   {} {}", "Include:".dimmed(), inc.bright_white());
+            }
+            if let Some(cs) = input.get("case_sensitive").and_then(|v| v.as_bool()) {
+                if cs {
+                    println!("   {} {}", "Case:".dimmed(), "sensitive".bright_white());
+                }
+            }
+        }
+        "file_search" => {
+            if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
+                println!("   {} {}", "Pattern:".dimmed(), pattern.bright_white());
+            }
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                println!("   {} {}", "Path:".dimmed(), path.bright_white());
             }
         }
         "list_directory" => {

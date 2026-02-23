@@ -185,7 +185,18 @@ pub async fn stream_anthropic_response(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await?;
-        anyhow::bail!("Anthropic API error ({}): {}", status, body);
+        // Anthropic's streaming endpoint returns errors in SSE format even for
+        // pre-stream errors, e.g.:
+        //   event:error
+        //   data:{"code":"InvalidParameter","message":"...",...}
+        // Extract the JSON from the data: line so the user sees a clean message.
+        let message = body
+            .lines()
+            .find(|l| l.starts_with("data:"))
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(l.trim_start_matches("data:")).ok())
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| body.clone());
+        anyhow::bail!("Anthropic API error ({}): {}", status, message);
     }
 
     // Parse SSE stream
@@ -349,8 +360,14 @@ pub async fn stream_anthropic_response(
                 }
             }
             "tool_use" => {
+                // unwrap_or_default() would produce Value::Null on parse failure.
+                // Anthropic requires tool_use.input to be a JSON *object*;
+                // sending null causes 400 "Request body format invalid".
+                // Fall back to an empty object so the tool can return a proper
+                // "missing parameter" error on the next iteration instead.
                 let input: serde_json::Value =
-                    serde_json::from_str(&block.tool_input_json).unwrap_or_default();
+                    serde_json::from_str(&block.tool_input_json)
+                        .unwrap_or_else(|_| serde_json::json!({}));
                 Some(ContentBlock::ToolUse {
                     id: block.tool_id,
                     name: block.tool_name,

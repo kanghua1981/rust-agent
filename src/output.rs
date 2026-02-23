@@ -19,6 +19,15 @@ pub trait AgentOutput: Send + Sync {
     /// The LLM is processing (spinner / "thinking …").
     fn on_thinking(&self);
 
+    /// Show which role/model is about to respond.
+    /// `label`  — e.g. "🤖 Agent", "🧠 Planner", "⚙️  Executor", "🔍 Checker".
+    /// `model`  — display name of the model being called.
+    fn on_role_header(&self, label: &str, model: &str);
+
+    /// Signal that a pipeline stage has finished.
+    /// `label`  — e.g. "Executor", "Checker".
+    fn on_stage_end(&self, label: &str);
+
     // ── Text output ─────────────────────────────────────────────
     /// A full text block from a non-streaming provider.
     fn on_assistant_text(&self, text: &str);
@@ -76,6 +85,14 @@ impl CliOutput {
 impl AgentOutput for CliOutput {
     fn on_thinking(&self) {
         crate::ui::print_thinking();
+    }
+
+    fn on_role_header(&self, label: &str, model: &str) {
+        crate::ui::print_role_header(label, model);
+    }
+
+    fn on_stage_end(&self, label: &str) {
+        crate::ui::print_stage_end(label);
     }
 
     fn on_assistant_text(&self, text: &str) {
@@ -159,6 +176,14 @@ impl AgentOutput for StdioOutput {
         self.emit("thinking", serde_json::json!({}));
     }
 
+    fn on_role_header(&self, label: &str, model: &str) {
+        self.emit("role_header", serde_json::json!({ "label": label, "model": model }));
+    }
+
+    fn on_stage_end(&self, label: &str) {
+        self.emit("stage_end", serde_json::json!({ "label": label }));
+    }
+
     fn on_assistant_text(&self, text: &str) {
         self.emit("assistant_text", serde_json::json!({ "text": text }));
     }
@@ -223,6 +248,10 @@ impl AgentOutput for StdioOutput {
             ConfirmAction::DeleteFile { path } => serde_json::json!({
                 "action": "delete_file",
                 "path": path,
+            }),
+            ConfirmAction::ReviewPlan { preview } => serde_json::json!({
+                "action": "review_plan",
+                "preview": preview,
             }),
         };
 
@@ -329,6 +358,14 @@ impl AgentOutput for WsOutput {
         self.emit("thinking", serde_json::json!({}));
     }
 
+    fn on_role_header(&self, label: &str, model: &str) {
+        self.emit("role_header", serde_json::json!({ "label": label, "model": model }));
+    }
+
+    fn on_stage_end(&self, label: &str) {
+        self.emit("stage_end", serde_json::json!({ "label": label }));
+    }
+
     fn on_assistant_text(&self, text: &str) {
         self.emit("assistant_text", serde_json::json!({ "text": text }));
     }
@@ -390,6 +427,10 @@ impl AgentOutput for WsOutput {
             ConfirmAction::DeleteFile { path } => serde_json::json!({
                 "action": "delete_file",
                 "path": path,
+            }),
+            ConfirmAction::ReviewPlan { preview } => serde_json::json!({
+                "action": "review_plan",
+                "preview": preview,
             }),
         };
 

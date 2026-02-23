@@ -14,6 +14,8 @@ pub enum ConfirmAction {
     EditFile { path: String },
     RunCommand { command: String },
     DeleteFile { path: String },
+    /// Show a pipeline plan and ask the user to approve execution.
+    ReviewPlan { preview: String },
 }
 
 /// Result of the confirmation prompt
@@ -51,6 +53,7 @@ pub fn confirm(action: &ConfirmAction) -> ConfirmResult {
                 format!("run `{}`", short)
             }
             ConfirmAction::DeleteFile { path } => format!("delete {}", path),
+            ConfirmAction::ReviewPlan { .. } => "execute pipeline plan".to_string(),
         };
         println!(
             "   {} {} {}",
@@ -94,6 +97,14 @@ pub fn confirm(action: &ConfirmAction) -> ConfirmResult {
                 "🗑️",
                 "Delete file:".red().bold(),
                 path.bright_white()
+            );
+        }
+        ConfirmAction::ReviewPlan { preview } => {
+            println!(
+                "\n{}  {}\n\n{}\n",
+                "📋",
+                "Pipeline plan (confirm to execute):".yellow().bold(),
+                preview
             );
         }
     }

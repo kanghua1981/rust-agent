@@ -267,12 +267,20 @@ Skills management:
                 Role::System => "system",
             };
 
-            // Serialize content blocks for this message
+            // Serialize content blocks for this message.
+            // Filter out any None / failed-serialization results rather than
+            // letting unwrap_or_default() inject a null element into the
+            // content array, which would cause Anthropic 400 errors.
             let blocks: Vec<serde_json::Value> = msg
                 .content
                 .iter()
-                .map(|b| serde_json::to_value(b).unwrap_or_default())
+                .filter_map(|b| serde_json::to_value(b).ok())
                 .collect();
+
+            // Skip messages whose content blocks all failed to serialize.
+            if blocks.is_empty() {
+                continue;
+            }
 
             // Try to merge with the previous message if roles match
             if let Some(last) = merged.last_mut() {

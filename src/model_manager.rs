@@ -24,6 +24,67 @@ pub struct ModelsConfig {
     /// Named model entries keyed by alias.
     #[serde(default)]
     pub models: BTreeMap<String, ModelEntry>,
+
+    /// Role definitions (planner, executor, checker, or any custom name).
+    #[serde(default)]
+    pub roles: BTreeMap<String, RoleConfig>,
+
+    /// Multi-role pipeline configuration.
+    #[serde(default)]
+    pub pipeline: Option<PipelineConfig>,
+}
+
+/// Configuration for a single named role.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleConfig {
+    /// Model alias to use for this role (references a key in `[models]`).
+    pub model: String,
+    /// Fully custom system prompt. If set, replaces the built-in default for
+    /// this role (equivalent to `# OVERRIDE` in a prompt file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Extra instructions appended to the final system prompt (highest priority).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_instructions: Option<String>,
+}
+
+/// Multi-role pipeline configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineConfig {
+    /// When true every user message is routed through the full pipeline.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Ordered list of role names that form the pipeline stages.
+    /// Must all have entries in `[roles]`. Defaults to
+    /// `["planner", "executor", "checker"]` when empty.
+    #[serde(default)]
+    pub stages: Vec<String>,
+    /// How many times the executor may retry after a checker FAIL.
+    /// Defaults to 2.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_checker_retries: Option<u32>,
+    /// If true the pipeline pauses after planning to show the plan and
+    /// ask the user for confirmation before executing. Defaults to true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_plan_confirm: Option<bool>,
+}
+
+impl PipelineConfig {
+    pub fn effective_stages(&self) -> Vec<&str> {
+        if self.stages.is_empty() {
+            vec!["planner", "executor", "checker"]
+        } else {
+            self.stages.iter().map(|s| s.as_str()).collect()
+        }
+    }
+
+    pub fn max_retries(&self) -> u32 {
+        self.max_checker_retries.unwrap_or(2)
+    }
+
+    pub fn confirm_plan(&self) -> bool {
+        self.require_plan_confirm.unwrap_or(true)
+    }
 }
 
 /// A single model entry.

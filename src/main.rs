@@ -14,6 +14,7 @@ mod summary;
 mod tools;
 mod agent;
 mod conversation;
+mod pipeline;
 mod server;
 mod ui;
 

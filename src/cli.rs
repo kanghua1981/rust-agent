@@ -115,7 +115,7 @@ pub async fn run(
         rl.load_history(path).ok();
     }
 
-    loop {
+    'repl: loop {
         let readline = rl.readline("🤖 > ");
 
         match readline {
@@ -153,20 +153,56 @@ pub async fn run(
                 // if a child process or tool panic corrupts termios settings.
                 let saved_termios = save_terminal_state();
 
-                // Process the user's message
-                match agent.process_message(input).await {
-                    Ok(_) => {
-                        // Auto-save session after each interaction
-                        auto_save_session(&mut agent);
-                    }
-                    Err(e) => {
-                        ui::print_error(&format!("{:#}", e));
-                    }
-                }
+                // Run with Ctrl-C support.  A background task sets the interrupt
+                // flag on SIGINT; process_message checks it at every tool-call
+                // boundary and exits cleanly.  This avoids the select! approach
+                // which would cancel the future at an arbitrary await point and
+                // could leave the conversation in an inconsistent state.
+                let result = run_interruptible(&mut agent, input).await;
 
                 // Restore terminal state to prevent accumulated corruption
                 if let Some(ref termios) = saved_termios {
                     restore_terminal_state(termios);
+                }
+
+                // If interrupted, offer an inline correction prompt.
+                if crate::agent::is_interrupted() {
+                    crate::agent::clear_interrupt();
+                    println!(
+                        "\n{}  {}",
+                        "⚡".yellow().bold(),
+                        "Interrupted. Type a correction and press Enter, or just Enter to stop:"
+                            .bright_cyan()
+                    );
+                    let correction = rl.readline("✏️  > ").unwrap_or_default();
+                    let correction = correction.trim().to_string();
+                    if !correction.is_empty() {
+                        rl.add_history_entry(&correction).ok();
+                        // Handle slash commands typed at the correction prompt
+                        // (e.g. the user types /quit to exit instead of correcting).
+                        if correction.starts_with('/') {
+                            let handled = handle_slash_command(&correction, &mut agent);
+                            match handled {
+                                SlashResult::Quit => break 'repl,
+                                SlashResult::Continue => continue 'repl,
+                                SlashResult::NotACommand => {} // fall through to LLM
+                            }
+                        }
+                        // Also use run_interruptible here so Ctrl-C works
+                        // during the correction run, not just the first run.
+                        let saved2 = save_terminal_state();
+                        match run_interruptible(&mut agent, &correction).await {
+                            Ok(_) => { auto_save_session(&mut agent); }
+                            Err(e) => ui::print_error(&format!("{:#}", e)),
+                        }
+                        if let Some(ref t) = saved2 { restore_terminal_state(t); }
+                    }
+                    continue 'repl;
+                }
+
+                match result {
+                    Ok(_) => { auto_save_session(&mut agent); }
+                    Err(e) => ui::print_error(&format!("{:#}", e)),
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -432,6 +468,61 @@ fn handle_model_command(input: &str, agent: &mut Agent) {
                         );
                     }
                 }
+                println!();
+
+                // ── Pipeline / Role status ────────────────────────────────
+                let pipeline_enabled = agent.pipeline_enabled();
+                let pipeline_label = if pipeline_enabled {
+                    "✅ 已启用".bright_green().to_string()
+                } else {
+                    "❌ 已禁用".dimmed().to_string()
+                };
+                println!("  {}  Pipeline: {}", "🔀", pipeline_label);
+
+                if !models_cfg.roles.is_empty() {
+                    println!("  {}  角色配置:", "🎭");
+                    let role_icons = [("planner", "🧠"), ("executor", "⚙️ "), ("checker", "🔍")];
+                    // Print known roles in order first
+                    for (role, icon) in &role_icons {
+                        if let Some(r) = models_cfg.roles.get(*role) {
+                            println!(
+                                "    {} {} → {}",
+                                icon,
+                                role.bright_yellow(),
+                                r.model.bright_white()
+                            );
+                        }
+                    }
+                    // Then any custom roles
+                    let known = ["planner", "executor", "checker"];
+                    for (role, r) in &models_cfg.roles {
+                        if !known.contains(&role.as_str()) {
+                            println!(
+                                "    🔧 {} → {}",
+                                role.bright_yellow(),
+                                r.model.bright_white()
+                            );
+                        }
+                    }
+                    println!();
+                    if !pipeline_enabled {
+                        println!(
+                            "  {}  开启流水线：在 {} 中设置 {} = {}",
+                            "💡".to_string().dimmed(),
+                            "models.toml".bright_white(),
+                            "[pipeline] enabled".bright_yellow(),
+                            "true".bright_green()
+                        );
+                    }
+                } else {
+                    println!(
+                        "  {}  未配置角色。在 {} 中添加 {} 以启用多角色流水线。",
+                        "💡".to_string().dimmed(),
+                        "models.toml".bright_white(),
+                        "[roles.planner]".bright_yellow()
+                    );
+                }
+
                 println!();
                 println!(
                     "  Switch: {}  Add: {}  Remove: {}",
@@ -862,3 +953,26 @@ fn restore_terminal_state(termios: &libc::termios) {
 
 #[cfg(not(unix))]
 fn restore_terminal_state(_: &()) {}
+
+/// Run `process_message` with Ctrl-C interrupt support.
+///
+/// A background task listens for SIGINT and sets the global interrupt flag.
+/// `process_message` checks this flag at every tool-call boundary and exits
+/// cleanly, leaving the conversation in a consistent state.
+///
+/// This is safer than `tokio::select!` which would cancel the future at an
+/// arbitrary `.await` point (e.g. mid-stream LLM response), potentially
+/// leaving a `ToolUse` block without a matching `ToolResult` in the history.
+async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
+    crate::agent::clear_interrupt();
+    // Spawn a lightweight task that watches for SIGINT and sets the flag.
+    // It completes after the first signal, or is aborted when we are done.
+    let guard = tokio::spawn(async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            crate::agent::request_interrupt();
+        }
+    });
+    let result = agent.process_message(input).await;
+    guard.abort(); // harmless if the task already fired
+    result
+}

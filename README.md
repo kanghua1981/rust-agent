@@ -7,7 +7,8 @@
 - **🔧 工具系统**: 内置 13 种工具 — 文件读写、多文件批量读取、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF/电子书读取、网页抓取、内部推理
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
-- **🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
+- **� 多角色流水线**: 配置独立的 Planner / Executor / Checker 角色各用不同模型，完全透明，无需新命令
+- **�🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
 - **📡 三种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
 - **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换
@@ -96,6 +97,44 @@ api_key = "sk-xxxxx"  # 可选，不设则 fallback 到环境变量
 **配置优先级**：`--model CLI参数` > `models.toml default` > `LLM_MODEL 环境变量` > `硬编码默认值`
 
 > **提示**: `.env` 文件仍然有效，推荐只放 API Key；模型/provider/base_url 的管理交给 `models.toml`。
+
+### 多角色流水线（可选）
+
+在 `models.toml` 中配置角色，让不同 LLM 分别负责**规划 / 实施 / 审核**：
+
+```toml
+# 开启流水线（设为 true 后所有用户输入自动走三角色流程，无需新命令）
+[pipeline]
+enabled = false
+stages = ["planner", "executor", "checker"]
+max_checker_retries = 2       # Checker 审核失败后允许 Executor 重试次数
+require_plan_confirm = true   # Planner 完成后展示计划，等待用户确认再执行
+
+# 规划者：使用顶配推理模型，只读探索代码库，产出带风险提示的执行计划
+[roles.planner]
+model = "sonnet"
+extra_instructions = """
+优先关注 Rust 所有权规则和借用检查器可能引发的问题。
+"""
+
+# 实施者：使用成本更低的编码模型，按计划严格执行，产出修改摘要
+[roles.executor]
+model = "deepseek"
+extra_instructions = """
+每次修改后运行 cargo build 验证编译通过。
+"""
+
+# 审核者：独立阅读实际文件内容，不依赖实施者自述，运行测试后给出 PASS/FAIL
+[roles.checker]
+model = "sonnet"
+```
+
+**如何查看当前角色配置**：运行 `/model` 命令，会显示流水线状态和各角色绑定的模型。
+
+**自定义角色提示词**：提示词优先级为：
+`内置默认` → `~/.config/rust_agent/roles/<role>.md` → `.agent/roles/<role>.md` → `models.toml extra_instructions`
+
+详细设计见 [docs/MULTI_ROLE_DESIGN.md](docs/MULTI_ROLE_DESIGN.md)。
 
 ### 第三步：启动 Agent
 
@@ -458,11 +497,12 @@ Agent 在执行以下操作前会要求确认：
 ```
 src/
 ├── main.rs          # 入口：CLI 参数解析 (clap)，--mode 选择输出后端，.env 加载
-├── config.rs        # 配置管理（API Key、Provider、模型参数）
-├── model_manager.rs # 模型管理（~/.config/rust_agent/models.toml 读写、热切换）
+├── config.rs        # 配置管理（API Key、Provider、模型参数、角色 Config 构造）
+├── model_manager.rs # 模型管理（models.toml 读写、RoleConfig、PipelineConfig）
 ├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput / WsOutput 实现
 ├── cli.rs           # 交互式 REPL 循环 (rustyline)，斜杠命令处理
-├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式（通过 AgentOutput 输出）
+├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式 + 角色分发
+├── pipeline.rs      # (Phase 3) 多角色流水线 Runner，Artifact 传递与反馈环
 ├── conversation.rs  # 对话历史：Message / ContentBlock 数据模型，system prompt 构建
 ├── context.rs       # 上下文窗口管理、自动截断（保持 tool_use/tool_result 配对完整）
 ├── streaming.rs     # Anthropic SSE 流式输出（通过 &dyn AgentOutput 解耦）
@@ -638,7 +678,7 @@ impl Tool for MyNewTool {
 
 ---
 
-## � `.agent/` 目录结构
+## `.agent/` 目录结构
 
 Agent 在项目下自动管理 `.agent/` 目录：
 
@@ -649,6 +689,10 @@ your-project/
     ├── memory.md                   # 持久记忆（自动维护）
     ├── summary.md                  # 项目摘要（/summary 生成）
     ├── system_prompt.md            # 自定义系统提示词（可选）
+    ├── roles/                      # 角色提示词覆盖（可选）
+    │   ├── planner.md              # 覆盖或追加 Planner 的系统提示词
+    │   ├── executor.md             # 覆盖或追加 Executor 的系统提示词
+    │   └── checker.md              # 覆盖或追加 Checker 的系统提示词
     └── skills/                     # 项目级 Skills
         ├── modify-dts-gpio.md
         └── cross-compile.md
@@ -662,6 +706,4 @@ your-project/
 
 ---
 
-## �📄 License
-
-MIT
+## 📄 License
