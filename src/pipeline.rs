@@ -23,6 +23,7 @@ pub struct PipelineRunner;
 
 impl PipelineRunner {
     /// Route a user message through the full multi-role pipeline.
+    /// (Planner → Executor → Checker with feedback loop)
     pub async fn run(agent: &mut Agent, task: &str) -> Result<String> {
         let pipeline_cfg = agent.pipeline_config().cloned();
 
@@ -93,6 +94,43 @@ impl PipelineRunner {
         }
 
         Ok(last_result)
+    }
+
+    /// Lightweight two-stage pipeline: Plan → Execute (no Checker).
+    ///
+    /// Suitable for medium-complexity tasks where verification overhead
+    /// is not justified (e.g. multi-file refactors within a single module).
+    pub async fn run_plan_and_execute(agent: &mut Agent, task: &str) -> Result<String> {
+        // ── Stage 1: Planner ──────────────────────────────────────────────
+        let plan = agent.generate_plan(task).await?;
+
+        // ── Optional: confirm before executing ───────────────────────────
+        let pipeline_cfg = agent.pipeline_config().cloned();
+        let require_confirm = pipeline_cfg
+            .as_ref()
+            .map(|p| p.confirm_plan())
+            .unwrap_or(true);
+
+        if require_confirm {
+            let preview = crate::ui::truncate_str(&plan, 3000);
+            let proceed = agent
+                .output_arc()
+                .confirm(&ConfirmAction::ReviewPlan { preview: preview.to_string() });
+            if !proceed {
+                agent.output_arc().on_warning("Plan+Execute cancelled by user.");
+                return Ok("Pipeline cancelled.".to_string());
+            }
+        }
+
+        // ── Stage 2: Executor ─────────────────────────────────────────────
+        let exec_prompt = build_executor_prompt(task, &plan, 0, "");
+        let result = agent
+            .run_pipeline_stage("executor", &exec_prompt, false)
+            .await?;
+        agent.output_arc().on_stage_end("Executor");
+
+        agent.output_arc().on_warning("✅ Plan+Execute complete (no Checker stage).");
+        Ok(result)
     }
 }
 

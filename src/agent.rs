@@ -227,6 +227,7 @@ impl Agent {
             "planner"  => "🧠 Planner",
             "executor" => "⚙️  Executor",
             "checker"  => "🔍 Checker",
+            "router"   => "🔀 Router",
             other      => other,
         };
         // Show role banner (visible even when pipeline uses a different model)
@@ -271,12 +272,99 @@ impl Agent {
     }
 
     /// Return true when the multi-role pipeline is enabled in models.toml.
+    /// NOTE: Prefer `resolve_execution_mode()` for adaptive routing.
     pub fn pipeline_enabled(&self) -> bool {
         self.models_cfg
             .pipeline
             .as_ref()
             .map(|p| p.enabled)
             .unwrap_or(false)
+    }
+
+    /// Determine the execution mode for a given user message.
+    ///
+    /// Uses the router configuration from models.toml:
+    /// - `router = "auto"`:            heuristic + optional LLM classification
+    /// - `router = "always_pipeline"`:  always full pipeline
+    /// - `router = "always_simple"`:    always basic loop
+    /// - absent + `enabled = true`:     always full pipeline (backward compat)
+    /// - absent + `enabled = false`:    always basic loop
+    pub async fn resolve_execution_mode(
+        &self,
+        user_input: &str,
+    ) -> crate::router::ExecutionMode {
+        use crate::router::{ExecutionMode, RouterMode};
+
+        let router_mode = self
+            .models_cfg
+            .pipeline
+            .as_ref()
+            .map(|p| p.router_mode())
+            .unwrap_or(RouterMode::AlwaysSimple);
+
+        match router_mode {
+            RouterMode::AlwaysPipeline => ExecutionMode::FullPipeline,
+            RouterMode::AlwaysSimple => ExecutionMode::BasicLoop,
+            RouterMode::Auto => self.classify_task(user_input).await,
+        }
+    }
+
+    /// Classify a task using heuristics, falling back to an LLM call
+    /// when the heuristics are inconclusive.
+    async fn classify_task(
+        &self,
+        user_input: &str,
+    ) -> crate::router::ExecutionMode {
+        use crate::router::*;
+
+        // Tier 1: rule-based heuristics (free, instant)
+        if let Some(complexity) = classify_heuristic(user_input) {
+            self.output.on_warning(&format!(
+                "🔀 Router (heuristic): {} → {}",
+                complexity,
+                ExecutionMode::from(complexity)
+            ));
+            return ExecutionMode::from(complexity);
+        }
+
+        // Tier 2: lightweight LLM classification
+        let prompt = build_classification_prompt(user_input);
+        let mut classify_conv = Conversation::new(&self.project_dir);
+        classify_conv.system_prompt =
+            "You are a task classifier. Reply with exactly one word.".to_string();
+        classify_conv.add_message(Message::user(&prompt));
+
+        // Use a fast call with no tools — minimal cost
+        match self.call_llm_as_role("router", &classify_conv, &[]).await {
+            Ok(response) => {
+                let text: String = response
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text { text } = b {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let complexity = parse_classification(&text);
+                let mode = ExecutionMode::from(complexity);
+                self.output.on_warning(&format!(
+                    "🔀 Router (LLM): {} → {}",
+                    complexity, mode
+                ));
+                mode
+            }
+            Err(e) => {
+                // If classification fails, default to basic loop (safe, cheap)
+                self.output.on_warning(&format!(
+                    "🔀 Router: classification failed ({}), defaulting to Basic Loop",
+                    e
+                ));
+                ExecutionMode::BasicLoop
+            }
+        }
     }
 
     /// Get a clone of the output Arc (used by pipeline.rs).
@@ -288,9 +376,19 @@ impl Agent {
     /// This handles the full agent loop: send message → receive response →
     /// if tool use → execute tools → send results → repeat until done.
     pub async fn process_message(&mut self, user_input: &str) -> Result<String> {
-        // Route to multi-role pipeline when enabled in models.toml.
-        if self.pipeline_enabled() {
-            return crate::pipeline::PipelineRunner::run(self, user_input).await;
+        // ── Adaptive routing ─────────────────────────────────────────────
+        let mode = self.resolve_execution_mode(user_input).await;
+
+        match mode {
+            crate::router::ExecutionMode::FullPipeline => {
+                return crate::pipeline::PipelineRunner::run(self, user_input).await;
+            }
+            crate::router::ExecutionMode::PlanAndExecute => {
+                return crate::pipeline::PipelineRunner::run_plan_and_execute(self, user_input).await;
+            }
+            crate::router::ExecutionMode::BasicLoop => {
+                // Fall through to the basic loop below
+            }
         }
 
         // Add user message

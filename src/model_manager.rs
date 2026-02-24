@@ -54,6 +54,12 @@ pub struct PipelineConfig {
     /// When true every user message is routed through the full pipeline.
     #[serde(default)]
     pub enabled: bool,
+    /// Routing strategy: "auto" (adaptive), "always_pipeline", "always_simple".
+    /// When set to "auto", the router classifies each user message and
+    /// picks the cheapest execution mode that fits the task complexity.
+    /// Defaults to following the `enabled` flag for backward compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
     /// Ordered list of role names that form the pipeline stages.
     /// Must all have entries in `[roles]`. Defaults to
     /// `["planner", "executor", "checker"]` when empty.
@@ -84,6 +90,25 @@ impl PipelineConfig {
 
     pub fn confirm_plan(&self) -> bool {
         self.require_plan_confirm.unwrap_or(true)
+    }
+
+    /// Resolve the effective router mode.
+    ///
+    /// Priority: explicit `router` field > `enabled` flag.
+    /// - `router = "auto"` → adaptive routing regardless of `enabled`.
+    /// - `router` absent + `enabled = true` → AlwaysPipeline (backward compat).
+    /// - `router` absent + `enabled = false` → AlwaysSimple.
+    pub fn router_mode(&self) -> crate::router::RouterMode {
+        if let Some(ref r) = self.router {
+            r.parse().unwrap_or_else(|_| {
+                tracing::warn!("Unknown router mode '{}', falling back to auto", r);
+                crate::router::RouterMode::Auto
+            })
+        } else if self.enabled {
+            crate::router::RouterMode::AlwaysPipeline
+        } else {
+            crate::router::RouterMode::AlwaysSimple
+        }
     }
 }
 

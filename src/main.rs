@@ -15,6 +15,7 @@ mod tools;
 mod agent;
 mod conversation;
 mod pipeline;
+mod router;
 mod server;
 mod ui;
 
