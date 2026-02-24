@@ -254,7 +254,7 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
         }
         "/usage" => {
             let (input_tokens, output_tokens) = agent.token_usage();
-            ui::print_usage(input_tokens, output_tokens);
+            ui::print_usage(input_tokens, output_tokens, agent.role_token_usage());
             SlashResult::Continue
         }
         "/save" => {

@@ -110,28 +110,49 @@ pub fn check_context(conversation: &Conversation, model: &str) -> ContextStatus 
 /// to satisfy the Anthropic API constraint that every tool_use must be followed
 /// by a tool_result in the very next message.
 pub fn truncate_conversation(conversation: &mut Conversation, model: &str, project_dir: &std::path::Path) {
+    // Use the plan + apply pipeline with a mechanical summary fallback.
+    if let Some(plan) = plan_truncation(conversation, model) {
+        let summary = summarize_removed_messages(
+            &conversation.messages[plan.remove_start..plan.remove_end],
+        );
+        apply_truncation(conversation, &plan, &summary, project_dir);
+    } else {
+        // Too few messages — just truncate oversized blocks
+        truncate_large_blocks(conversation);
+    }
+}
+
+/// A planned truncation: describes what to keep and what to remove.
+pub struct TruncationPlan {
+    /// Number of messages to keep from the start of the conversation.
+    pub keep_start: usize,
+    /// Index (inclusive) of the first message to remove.
+    pub remove_start: usize,
+    /// Index (exclusive) of the last message to remove.
+    pub remove_end: usize,
+    /// Messages to keep from the end of the conversation.
+    pub kept_end: Vec<Message>,
+    /// Total count of messages being removed.
+    pub removed_count: usize,
+}
+
+/// Determine what to truncate without actually modifying the conversation.
+///
+/// Returns `None` if truncation is not needed or not feasible (too few messages).
+pub fn plan_truncation(conversation: &Conversation, model: &str) -> Option<TruncationPlan> {
     let max = max_context_tokens(model);
-    let target = max * 60 / 100; // Target 60% usage after truncation
+    let target = max * 60 / 100;
 
     let total = estimate_conversation_tokens(conversation);
     if total <= target {
-        return; // No truncation needed
+        return None;
     }
 
     let msg_count = conversation.messages.len();
     if msg_count <= 4 {
-        // Too few messages to truncate meaningfully
-        // Just truncate large tool results
-        truncate_large_blocks(conversation);
-        return;
+        return None;
     }
 
-    // Keep first 2 messages and as many recent messages as we can.
-    // Adjust boundary to avoid splitting a tool_use/tool_result pair:
-    // if the last kept-from-start message is an assistant with tool_use,
-    // extend to also keep ALL its tool_result messages (there can be
-    // multiple consecutive user messages with tool_results when the
-    // assistant issued multiple tool calls in one response).
     let mut first_keep = 2.min(msg_count);
     while first_keep < msg_count {
         let last = &conversation.messages[first_keep - 1];
@@ -148,11 +169,9 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
         .sum();
 
     let system_tokens = estimate_tokens(&conversation.system_prompt);
-    let summary_overhead = 100; // tokens for the truncation notice
+    let summary_overhead = 200; // tokens for the truncation notice (larger for LLM summary)
     let available = target.saturating_sub(system_tokens + first_tokens + summary_overhead);
 
-    // Add recent messages from the end until we run out of budget.
-    // Keep tool_use/tool_result pairs together as atomic units.
     let middle = &conversation.messages[first_keep..];
     let mut kept_end = Vec::new();
     let mut end_tokens = 0;
@@ -163,19 +182,16 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
         let msg = &middle[i];
         let msg_tokens = estimate_message_tokens(msg);
 
-        // If this message contains tool_result blocks, it must be kept
-        // together with the preceding message (which has the tool_use).
         if message_has_tool_result(msg) && i > 0 {
             let prev = &middle[i - 1];
             let pair_tokens = msg_tokens + estimate_message_tokens(prev);
             if end_tokens + pair_tokens > available {
-                break; // Can't fit the pair
+                break;
             }
-            // Push both in reverse (will be reversed later)
             kept_end.push(msg.clone());
             kept_end.push(prev.clone());
             end_tokens += pair_tokens;
-            i -= 1; // skip the tool_use message we already added
+            i -= 1;
         } else {
             if end_tokens + msg_tokens > available {
                 break;
@@ -188,56 +204,121 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str, proje
     kept_end.reverse();
 
     let removed_count = msg_count - first_keep - kept_end.len();
-
-    if removed_count > 0 {
-        // Generate a mechanical summary of the removed messages
-        let removed_start = first_keep;
-        let removed_end = msg_count - kept_end.len();
-        let summary = summarize_removed_messages(
-            &conversation.messages[removed_start..removed_end],
-        );
-
-        // Save summary to persistent memory
-        {
-            let mut mem = crate::memory::Memory::load(project_dir);
-            mem.log_truncation_summary(&summary);
-            if let Err(e) = mem.save() {
-                tracing::warn!("Failed to save truncation summary to memory: {}", e);
-            }
-        }
-
-        // Build new message list
-        let mut new_messages: Vec<Message> = Vec::new();
-
-        // Keep first messages
-        new_messages.extend_from_slice(&conversation.messages[..first_keep]);
-
-        // Add truncation notice with summary
-        new_messages.push(Message::user(&format!(
-            "[System: {} earlier messages were removed to fit the context window. \
-             Summary of removed content: {}. \
-             The conversation continues from the most recent messages below.]",
-            removed_count, summary
-        )));
-
-        // Keep recent messages
-        new_messages.extend(kept_end);
-
-        conversation.messages = new_messages;
-
-        tracing::info!(
-            "Truncated conversation: removed {} messages, kept {} messages (~{} tokens)",
-            removed_count,
-            conversation.messages.len(),
-            estimate_conversation_tokens(conversation)
-        );
+    if removed_count == 0 {
+        return None;
     }
 
-    // Safety net: remove any orphaned tool_use/tool_result blocks
-    // that slipped through despite the pair-aware logic above.
-    ensure_tool_pair_integrity(&mut conversation.messages);
+    let remove_start = first_keep;
+    let remove_end = msg_count - kept_end.len();
 
-    // Also truncate very large individual blocks
+    Some(TruncationPlan {
+        keep_start: first_keep,
+        remove_start,
+        remove_end,
+        kept_end,
+        removed_count,
+    })
+}
+
+/// Build a condensed text representation of messages about to be removed.
+///
+/// This is designed to be fed to an LLM for narrative summarization.
+/// It captures the high-level flow: what was discussed, what tools were
+/// used, what files were touched, and any key conclusions.
+pub fn build_truncation_context(messages: &[Message]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    for (i, msg) in messages.iter().enumerate() {
+        let role = match msg.role {
+            crate::conversation::Role::User => "User",
+            crate::conversation::Role::Assistant => "Assistant",
+            crate::conversation::Role::System => "System",
+        };
+
+        for block in &msg.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    // Truncate long text blocks to keep the context prompt small
+                    let truncated = if text.len() > 300 {
+                        format!("{}... [truncated, {} chars total]", &text[..300], text.len())
+                    } else {
+                        text.clone()
+                    };
+                    parts.push(format!("[Msg {}] {}: {}", i + 1, role, truncated));
+                }
+                ContentBlock::ToolUse { name, input, .. } => {
+                    let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let extra = match name.as_str() {
+                        "run_command" => input.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        "grep_search" | "file_search" => input.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        _ => path.to_string(),
+                    };
+                    parts.push(format!("[Msg {}] Tool call: {} ({})", i + 1, name, extra));
+                }
+                ContentBlock::ToolResult { content, is_error, .. } => {
+                    let status = if is_error.unwrap_or(false) { "ERROR" } else { "OK" };
+                    let preview = if content.len() > 150 {
+                        format!("{}...", &content[..150])
+                    } else {
+                        content.clone()
+                    };
+                    parts.push(format!("[Msg {}] Tool result ({}): {}", i + 1, status, preview));
+                }
+            }
+        }
+    }
+
+    // Cap the total context to ~3000 chars to keep the LLM summarization prompt cheap
+    let joined = parts.join("\n");
+    if joined.len() > 3000 {
+        format!("{}...\n[{} more entries omitted]", &joined[..3000], parts.len())
+    } else {
+        joined
+    }
+}
+
+/// Apply a truncation plan to the conversation with the given summary text.
+///
+/// This is the second phase of the truncation pipeline. The summary can be
+/// either a mechanical summary (from `summarize_removed_messages`) or an
+/// LLM-generated narrative.
+pub fn apply_truncation(
+    conversation: &mut Conversation,
+    plan: &TruncationPlan,
+    summary: &str,
+    project_dir: &std::path::Path,
+) {
+    // Save summary to persistent memory
+    {
+        let mut mem = crate::memory::Memory::load(project_dir);
+        mem.log_truncation_summary(summary);
+        if let Err(e) = mem.save() {
+            tracing::warn!("Failed to save truncation summary to memory: {}", e);
+        }
+    }
+
+    // Build new message list
+    let mut new_messages: Vec<Message> = Vec::new();
+    new_messages.extend_from_slice(&conversation.messages[..plan.keep_start]);
+
+    new_messages.push(Message::user(&format!(
+        "[System: {} earlier messages were removed to fit the context window. \
+         Summary of removed conversation:\n{}\n\
+         The conversation continues from the most recent messages below.]",
+        plan.removed_count, summary
+    )));
+
+    new_messages.extend(plan.kept_end.clone());
+    conversation.messages = new_messages;
+
+    tracing::info!(
+        "Truncated conversation: removed {} messages, kept {} messages (~{} tokens)",
+        plan.removed_count,
+        conversation.messages.len(),
+        estimate_conversation_tokens(conversation)
+    );
+
+    ensure_tool_pair_integrity(&mut conversation.messages);
     truncate_large_blocks(conversation);
 }
 
@@ -307,7 +388,7 @@ fn truncate_large_blocks(conversation: &mut Conversation) {
 /// Generate a compact mechanical summary of removed messages.
 /// Extracts tool names and file paths to produce something like:
 /// "Read main.c, edited gpio.dts, ran 'make dtbs'"
-fn summarize_removed_messages(messages: &[Message]) -> String {
+pub fn summarize_removed_messages(messages: &[Message]) -> String {
     let mut actions: Vec<String> = Vec::new();
 
     for msg in messages {

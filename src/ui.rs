@@ -273,8 +273,8 @@ pub fn print_error(msg: &str) {
     println!("\n{} {}", "❌ Error:".red().bold(), msg.red());
 }
 
-/// Print token usage
-pub fn print_usage(input_tokens: u64, output_tokens: u64) {
+/// Print token usage with optional per-role breakdown
+pub fn print_usage(input_tokens: u64, output_tokens: u64, role_usage: &std::collections::HashMap<String, (u64, u64)>) {
     println!("\n{}", "📊 Token Usage:".bright_cyan().bold());
     println!(
         "   Input tokens:  {}",
@@ -288,6 +288,43 @@ pub fn print_usage(input_tokens: u64, output_tokens: u64) {
         "   Total tokens:  {}",
         (input_tokens + output_tokens).to_string().bright_white()
     );
+
+    if !role_usage.is_empty() {
+        println!("\n   {}", "Per-role breakdown:".dimmed());
+        // Sort roles for consistent display
+        let mut roles: Vec<_> = role_usage.iter().collect();
+        roles.sort_by(|a, b| {
+            let total_b = b.1.0 + b.1.1;
+            let total_a = a.1.0 + a.1.1;
+            total_b.cmp(&total_a) // descending by total
+        });
+        for (role, (inp, out)) in &roles {
+            let icon = match role.as_str() {
+                "agent" => "🤖",
+                "planner" => "🧠",
+                "executor" => "⚙️ ",
+                "checker" => "🔍",
+                "router" => "🔀",
+                "summarizer" => "📝",
+                "summary" => "📋",
+                _ => "  ",
+            };
+            let total = *inp + *out;
+            let pct = if input_tokens + output_tokens > 0 {
+                (total as f64 / (input_tokens + output_tokens) as f64 * 100.0) as u32
+            } else {
+                0
+            };
+            println!(
+                "   {} {:<12} {:>8} in / {:>8} out  ({}%)",
+                icon,
+                role,
+                format_number(*inp as usize),
+                format_number(*out as usize),
+                pct
+            );
+        }
+    }
 }
 
 /// Print context window warning
