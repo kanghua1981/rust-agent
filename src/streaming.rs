@@ -209,6 +209,11 @@ pub async fn stream_anthropic_response(
     let mut is_printing_text = false;
 
     while let Some(chunk) = stream.next().await {
+        // Check for Ctrl-C interrupt; break out of the stream early so
+        // the caller can stop cleanly rather than waiting for the full response.
+        if crate::agent::is_interrupted() {
+            break;
+        }
         let chunk = chunk.context("Error reading stream chunk")?;
         // Normalize \r\n to \n so SSE parsing works with all servers
         let chunk_str = String::from_utf8_lossy(&chunk).replace("\r\n", "\n").replace('\r', "\n");
@@ -525,6 +530,10 @@ pub async fn stream_openai_response(
     let mut is_printing_text = false;
 
     while let Some(chunk) = stream.next().await {
+        // Check for Ctrl-C interrupt; break out of the stream early.
+        if crate::agent::is_interrupted() {
+            break;
+        }
         let chunk = chunk.context("Error reading stream chunk")?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 

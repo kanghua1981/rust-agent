@@ -334,6 +334,20 @@ impl Agent {
                 self.total_output_tokens += usage.output_tokens as u64;
             }
 
+            // If the user pressed Ctrl-C during streaming, save any partial
+            // text that was already printed and stop immediately.
+            if is_interrupted() {
+                let partial: Vec<ContentBlock> = response
+                    .content
+                    .into_iter()
+                    .filter(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()))
+                    .collect();
+                if !partial.is_empty() {
+                    self.conversation.add_message(Message::assistant(partial));
+                }
+                break;
+            }
+
             // Process the response
             let has_tool_use = response
                 .content
@@ -802,6 +816,11 @@ Begin execution now."#,
             if let Some(ref usage) = response.usage {
                 self.total_input_tokens += usage.input_tokens as u64;
                 self.total_output_tokens += usage.output_tokens as u64;
+            }
+
+            // If the user pressed Ctrl-C during streaming, stop immediately.
+            if is_interrupted() {
+                break;
             }
 
             // Collect final text; print for non-streaming providers
