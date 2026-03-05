@@ -17,7 +17,7 @@
 use anyhow::Result;
 
 use crate::agent::Agent;
-use crate::confirm::ConfirmAction;
+use crate::output::PlanReview;
 
 pub struct PipelineRunner;
 
@@ -27,36 +27,76 @@ impl PipelineRunner {
     pub async fn run(agent: &mut Agent, task: &str) -> Result<String> {
         let pipeline_cfg = agent.pipeline_config().cloned();
 
-        // ── Stage 1: Planner ──────────────────────────────────────────────────
-        // generate_plan() already uses call_llm_as_role("planner", ...) with
-        // read-only tools, so no extra wiring is needed here.
-        let plan = agent.generate_plan(task).await?;
+        // ── Stage 1: Planner (with interactive refinement) ─────────────────
+        let mut plan = agent.generate_plan(task).await?;
 
-        // ── Optional: confirm before executing ───────────────────────────────
+        // ── Interactive plan review ──────────────────────────────────────────
         let require_confirm = pipeline_cfg
             .as_ref()
             .map(|p| p.confirm_plan())
             .unwrap_or(true);
 
+        let mut user_context = String::new();
+
         if require_confirm {
-            let preview = crate::ui::truncate_str(&plan, 3000);
-            let proceed = agent
-                .output_arc()
-                .confirm(&ConfirmAction::ReviewPlan { preview: preview.to_string() });
-            if !proceed {
-                agent.output_arc().on_warning("Pipeline cancelled by user.");
-                return Ok("Pipeline cancelled.".to_string());
+            const MAX_REFINE_ROUNDS: usize = 5;
+            for round in 0..MAX_REFINE_ROUNDS {
+                let review = agent.output_arc().review_plan(&plan);
+                match review {
+                    PlanReview::Approve => break,
+                    PlanReview::ApproveWithContext(ctx) => {
+                        user_context = ctx;
+                        break;
+                    }
+                    PlanReview::Reject => {
+                        agent.output_arc().on_warning("Pipeline cancelled by user.");
+                        return Ok("Pipeline cancelled.".to_string());
+                    }
+                    PlanReview::Refine(feedback) => {
+                        if round + 1 >= MAX_REFINE_ROUNDS {
+                            agent.output_arc().on_warning(
+                                "⚠️  Max plan refinement rounds reached. Proceeding with current plan.",
+                            );
+                            break;
+                        }
+                        agent.output_arc().on_warning(&format!(
+                            "🔄 Refining plan (round {}/{}) based on your feedback…",
+                            round + 1,
+                            MAX_REFINE_ROUNDS
+                        ));
+                        // Re-generate plan with user feedback injected
+                        let refined_task = format!(
+                            "{}\n\n--- USER FEEDBACK ON PREVIOUS PLAN ---\n{}\n--- END FEEDBACK ---\n\n\
+                             Please revise the plan based on this feedback.",
+                            task, feedback
+                        );
+                        plan = agent.generate_plan(&refined_task).await?;
+                    }
+                }
             }
         }
 
+        // Build effective task string: prepend user context if provided at review time.
+        let effective_task = if user_context.is_empty() {
+            task.to_string()
+        } else {
+            format!(
+                "{}\n\n--- USER-PROVIDED CONTEXT (treat as ground truth) ---\n{}\n--- END CONTEXT ---",
+                task, user_context
+            )
+        };
+
         // ── Stage 2 + 3: Executor → Checker feedback loop ────────────────────
+        agent.output_arc().on_warning(
+            "⚡ Executor running — press Ctrl+\\ to pause and inject guidance at any time"
+        );
         let max_retries = pipeline_cfg.as_ref().map(|p| p.max_retries()).unwrap_or(2);
         let mut last_result = String::new();
         let mut checker_feedback = String::new();
 
         for attempt in 0u32..=max_retries {
             // ── Executor ──────────────────────────────────────────────────────
-            let exec_prompt = build_executor_prompt(task, &plan, attempt, &checker_feedback);
+            let exec_prompt = build_executor_prompt(&effective_task, &plan, attempt, &checker_feedback);
             last_result = agent
                 .run_pipeline_stage("executor", &exec_prompt, false)
                 .await?;
@@ -101,29 +141,69 @@ impl PipelineRunner {
     /// Suitable for medium-complexity tasks where verification overhead
     /// is not justified (e.g. multi-file refactors within a single module).
     pub async fn run_plan_and_execute(agent: &mut Agent, task: &str) -> Result<String> {
-        // ── Stage 1: Planner ──────────────────────────────────────────────
-        let plan = agent.generate_plan(task).await?;
+        // ── Stage 1: Planner (with interactive refinement) ────────────────
+        let mut plan = agent.generate_plan(task).await?;
 
-        // ── Optional: confirm before executing ───────────────────────────
+        // ── Interactive plan review ──────────────────────────────────────
         let pipeline_cfg = agent.pipeline_config().cloned();
         let require_confirm = pipeline_cfg
             .as_ref()
             .map(|p| p.confirm_plan())
             .unwrap_or(true);
 
+        let mut user_context = String::new();
+
         if require_confirm {
-            let preview = crate::ui::truncate_str(&plan, 3000);
-            let proceed = agent
-                .output_arc()
-                .confirm(&ConfirmAction::ReviewPlan { preview: preview.to_string() });
-            if !proceed {
-                agent.output_arc().on_warning("Plan+Execute cancelled by user.");
-                return Ok("Pipeline cancelled.".to_string());
+            const MAX_REFINE_ROUNDS: usize = 5;
+            for round in 0..MAX_REFINE_ROUNDS {
+                let review = agent.output_arc().review_plan(&plan);
+                match review {
+                    PlanReview::Approve => break,
+                    PlanReview::ApproveWithContext(ctx) => {
+                        user_context = ctx;
+                        break;
+                    }
+                    PlanReview::Reject => {
+                        agent.output_arc().on_warning("Plan+Execute cancelled by user.");
+                        return Ok("Pipeline cancelled.".to_string());
+                    }
+                    PlanReview::Refine(feedback) => {
+                        if round + 1 >= MAX_REFINE_ROUNDS {
+                            agent.output_arc().on_warning(
+                                "⚠️  Max plan refinement rounds reached. Proceeding with current plan.",
+                            );
+                            break;
+                        }
+                        agent.output_arc().on_warning(&format!(
+                            "🔄 Refining plan (round {}/{}) based on your feedback…",
+                            round + 1,
+                            MAX_REFINE_ROUNDS
+                        ));
+                        let refined_task = format!(
+                            "{}\n\n--- USER FEEDBACK ON PREVIOUS PLAN ---\n{}\n--- END FEEDBACK ---\n\n\
+                             Please revise the plan based on this feedback.",
+                            task, feedback
+                        );
+                        plan = agent.generate_plan(&refined_task).await?;
+                    }
+                }
             }
         }
 
+        let effective_task = if user_context.is_empty() {
+            task.to_string()
+        } else {
+            format!(
+                "{}\n\n--- USER-PROVIDED CONTEXT (treat as ground truth) ---\n{}\n--- END CONTEXT ---",
+                task, user_context
+            )
+        };
+
         // ── Stage 2: Executor ─────────────────────────────────────────────
-        let exec_prompt = build_executor_prompt(task, &plan, 0, "");
+        agent.output_arc().on_warning(
+            "⚡ Executor running — press Ctrl+\\ to pause and inject guidance at any time"
+        );
+        let exec_prompt = build_executor_prompt(&effective_task, &plan, 0, "");
         let result = agent
             .run_pipeline_stage("executor", &exec_prompt, false)
             .await?;

@@ -8,7 +8,6 @@ pub mod list_dir;
 pub mod batch_read;
 pub mod think;
 pub mod read_pdf;
-pub mod fetch_url;
 pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
@@ -80,7 +79,6 @@ impl ToolExecutor {
         executor.register(Box::new(batch_read::BatchReadFilesTool));
         executor.register(Box::new(think::ThinkTool));
         executor.register(Box::new(read_pdf::ReadPdfTool));
-        executor.register(Box::new(fetch_url::FetchUrlTool));
         executor.register(Box::new(read_ebook::ReadEbookTool));
         executor.register(Box::new(load_skill::LoadSkillTool));
         executor.register(Box::new(create_skill::CreateSkillTool));
@@ -98,8 +96,11 @@ impl ToolExecutor {
         self.tools.values().map(|t| t.definition()).collect()
     }
 
-    /// Get only read-only tool definitions (no file writes, edits, or command execution).
+    /// Get only read-only tool definitions (no file writes or edits).
     /// Used during the planning phase so the LLM can explore but not modify anything.
+    /// `run_command` is included so the planner can run read-only shell/git commands
+    /// (e.g. `git status`, `git log`, `git diff`, `find`, `cat`) — the planner system
+    /// prompt instructs it never to run commands that mutate state.
     pub fn readonly_definitions(&self) -> Vec<ToolDefinition> {
         const READONLY_TOOLS: &[&str] = &[
             "read_file",
@@ -109,9 +110,9 @@ impl ToolExecutor {
             "grep_search",
             "file_search",
             "think",
-            "fetch_url",
             "read_ebook",
             "load_skill",
+            "run_command",
         ];
         self.tools
             .values()

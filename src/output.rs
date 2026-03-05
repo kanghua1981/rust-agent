@@ -7,6 +7,19 @@
 use crate::confirm::ConfirmAction;
 use crate::tools::ToolResult;
 
+/// Result of interactive plan review.
+#[derive(Debug, Clone)]
+pub enum PlanReview {
+    /// User approves the plan — proceed to execution.
+    Approve,
+    /// User approves the plan and provides background context for the executor.
+    ApproveWithContext(String),
+    /// User rejects the plan — abort pipeline.
+    Reject,
+    /// User provides feedback — regenerate the plan with this guidance.
+    Refine(String),
+}
+
 /// Abstraction over all user-facing output and confirmation prompts.
 ///
 /// The agent calls these methods instead of writing to stdout directly,
@@ -54,8 +67,23 @@ pub trait AgentOutput: Send + Sync {
 
     // ── Confirmation ────────────────────────────────────────────
     /// Ask the user to approve a dangerous action.
-    /// Returns `true` if the action should proceed.
-    fn confirm(&self, action: &ConfirmAction) -> bool;
+    /// Returns the user's decision (Yes, No, AlwaysYes, or Clarify).
+    fn confirm(&self, action: &ConfirmAction) -> crate::confirm::ConfirmResult;
+
+    // ── Interactive input ───────────────────────────────────────
+    /// Ask the user a question (called by the ask_user tool).
+    /// Returns the user's free-text answer.
+    fn ask_user(&self, question: &str) -> String;
+
+    /// Present a pipeline plan for interactive review.
+    /// Returns Approve, Reject, or Refine(feedback).
+    fn review_plan(&self, plan_text: &str) -> PlanReview;
+
+    /// Prompt the user for mid-execution guidance (triggered by Ctrl-\).
+    /// Called only during Executor/Checker pipeline stages when the user
+    /// presses Ctrl-\ to inject context the LLM is missing.
+    /// Returns `Some(text)` if the user typed something, `None` to continue silently.
+    fn inject_guidance(&self) -> Option<String>;
 
     // ── Diagnostics ─────────────────────────────────────────────
     /// Non-fatal warning (e.g. "max iterations reached").
@@ -125,8 +153,91 @@ impl AgentOutput for CliOutput {
         crate::diff::print_diff(path, old, new);
     }
 
-    fn confirm(&self, action: &ConfirmAction) -> bool {
-        crate::confirm::should_proceed(action)
+    fn confirm(&self, action: &ConfirmAction) -> crate::confirm::ConfirmResult {
+        crate::confirm::confirm(action)
+    }
+
+    fn ask_user(&self, question: &str) -> String {
+        use std::io::{self, Write};
+        use colored::Colorize;
+        println!("\n{}  {}", "❓", question.bright_cyan());
+        print!("   {} ", "Your answer:".bright_white().bold());
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).ok();
+        input.trim().to_string()
+    }
+
+    fn review_plan(&self, plan_text: &str) -> PlanReview {
+        use std::io::{self, Write};
+        use colored::Colorize;
+        println!("\n{}  {}", "📋", "Pipeline Plan:".yellow().bold());
+        println!("{}", "─".repeat(60));
+        // Print the plan with termimad (or plain text)
+        println!("{}", plan_text);
+        println!("{}", "─".repeat(60));
+        println!(
+            "   {} {}",
+            "Review:".bright_cyan().bold(),
+            "[y] approve  [n] reject  [type feedback to refine]".dimmed()
+        );
+        // Flush any keystrokes that were buffered while the plan was streaming
+        // (e.g. an accidental Enter press), so we read fresh user intent only.
+        #[cfg(unix)]
+        unsafe {
+            libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+        }
+        print!("   {} ", ">".bright_white());
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).ok();
+        let trimmed = input.trim();
+        match trimmed.to_lowercase().as_str() {
+            "y" | "yes" => {
+                // Offer a one-time chance to add background context before execution.
+                println!(
+                    "   {} {}",
+                    "Context:".bright_cyan(),
+                    "add background info for the executor (Enter to skip)".dimmed()
+                );
+                #[cfg(unix)]
+                unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH); }
+                print!("   {} ", ">".bright_white());
+                io::stdout().flush().ok();
+                let mut ctx = String::new();
+                io::stdin().read_line(&mut ctx).ok();
+                let ctx = ctx.trim().to_string();
+                if ctx.is_empty() {
+                    PlanReview::Approve
+                } else {
+                    PlanReview::ApproveWithContext(ctx)
+                }
+            }
+            "n" | "no" => PlanReview::Reject,
+            _ if trimmed.is_empty() => PlanReview::Reject,
+            _ => PlanReview::Refine(trimmed.to_string()),
+        }
+    }
+
+    fn inject_guidance(&self) -> Option<String> {
+        use std::io::{self, Write};
+        use colored::Colorize;
+        // Start on a fresh line after any streaming output
+        println!();
+        println!(
+            "{}  {} {}",
+            "⚡",
+            "Guidance:".yellow().bold(),
+            "type a note for the executor (or press Enter to continue)".dimmed()
+        );
+        #[cfg(unix)]
+        unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH); }
+        print!("   {} ", ">".bright_white());
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).ok();
+        let text = input.trim().to_string();
+        if text.is_empty() { None } else { Some(text) }
     }
 
     fn on_warning(&self, msg: &str) {
@@ -224,10 +335,11 @@ impl AgentOutput for StdioOutput {
         }));
     }
 
-    fn confirm(&self, action: &ConfirmAction) -> bool {
+    fn confirm(&self, action: &ConfirmAction) -> crate::confirm::ConfirmResult {
+        use crate::confirm::ConfirmResult;
         // In stdio mode, check auto-approve first
         if crate::confirm::is_auto_approve() {
-            return true;
+            return ConfirmResult::Yes;
         }
 
         // Send a confirmation request and read the response
@@ -260,19 +372,84 @@ impl AgentOutput for StdioOutput {
         // Read response from stdin
         let mut response = String::new();
         if std::io::stdin().read_line(&mut response).is_err() {
-            return false;
+            return ConfirmResult::No;
         }
 
-        // Parse JSON response: { "approved": true/false }
+        // Parse JSON response: { "approved": true/false } or { "clarify": "question" }
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(response.trim()) {
-            parsed
-                .get("approved")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+            if let Some(clarify) = parsed.get("clarify").and_then(|v| v.as_str()) {
+                return ConfirmResult::Clarify(clarify.to_string());
+            }
+            if parsed.get("approved").and_then(|v| v.as_bool()).unwrap_or(false) {
+                ConfirmResult::Yes
+            } else {
+                ConfirmResult::No
+            }
         } else {
             // Fall back to plain text
-            matches!(response.trim().to_lowercase().as_str(), "y" | "yes" | "true")
+            match response.trim().to_lowercase().as_str() {
+                "y" | "yes" | "true" => ConfirmResult::Yes,
+                "n" | "no" | "false" | "" => ConfirmResult::No,
+                _ => ConfirmResult::Clarify(response.trim().to_string()),
+            }
         }
+    }
+
+    fn ask_user(&self, question: &str) -> String {
+        self.emit("ask_user", serde_json::json!({ "question": question }));
+        let mut response = String::new();
+        std::io::stdin().read_line(&mut response).ok();
+        // Try JSON: { "answer": "..." }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(response.trim()) {
+            if let Some(answer) = parsed.get("answer").and_then(|v| v.as_str()) {
+                return answer.to_string();
+            }
+        }
+        // Fallback: raw text
+        response.trim().to_string()
+    }
+
+    fn review_plan(&self, plan_text: &str) -> PlanReview {
+        self.emit("review_plan", serde_json::json!({ "plan": plan_text }));
+        let mut response = String::new();
+        std::io::stdin().read_line(&mut response).ok();
+        // Expect: { "action": "approve" | "approve_with_context" | "reject" | "refine",
+        //           "context": "...", "feedback": "..." }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(response.trim()) {
+            match parsed.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+                "approve" | "y" => PlanReview::Approve,
+                "approve_with_context" => {
+                    let ctx = parsed.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if ctx.is_empty() { PlanReview::Approve } else { PlanReview::ApproveWithContext(ctx) }
+                }
+                "reject" | "n" => PlanReview::Reject,
+                "refine" => {
+                    let fb = parsed.get("feedback").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    PlanReview::Refine(fb)
+                }
+                _ => PlanReview::Reject,
+            }
+        } else {
+            match response.trim().to_lowercase().as_str() {
+                "y" | "yes" | "approve" => PlanReview::Approve,
+                "n" | "no" | "reject" => PlanReview::Reject,
+                _ => PlanReview::Refine(response.trim().to_string()),
+            }
+        }
+    }
+
+    fn inject_guidance(&self) -> Option<String> {
+        self.emit("guidance_request", serde_json::json!({}));
+        let mut response = String::new();
+        std::io::stdin().read_line(&mut response).ok();
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(response.trim()) {
+            if let Some(text) = parsed.get("guidance").and_then(|v| v.as_str()) {
+                let t = text.trim().to_string();
+                return if t.is_empty() { None } else { Some(t) };
+            }
+        }
+        let t = response.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
     }
 
     fn on_warning(&self, msg: &str) {
@@ -315,9 +492,13 @@ pub struct WsOutput {
     /// Sends commands to the WebSocket writer task.
     tx: mpsc::UnboundedSender<WsCommand>,
     /// Receives confirm responses from the reader task.
-    confirm_rx: Mutex<std::sync::mpsc::Receiver<bool>>,
+    confirm_rx: Mutex<std::sync::mpsc::Receiver<crate::confirm::ConfirmResult>>,
     /// Sends confirm responses (held by the reader task).
-    pub confirm_tx: std::sync::mpsc::Sender<bool>,
+    pub confirm_tx: std::sync::mpsc::Sender<crate::confirm::ConfirmResult>,
+    /// Receives ask_user responses from the reader task.
+    ask_user_rx: Mutex<std::sync::mpsc::Receiver<String>>,
+    /// Sends ask_user responses (held by the reader task).
+    pub ask_user_tx: std::sync::mpsc::Sender<String>,
 }
 
 impl WsOutput {
@@ -328,10 +509,13 @@ impl WsOutput {
     ///   reader task so it can forward confirm responses.
     pub fn new(tx: mpsc::UnboundedSender<WsCommand>) -> Self {
         let (confirm_tx, confirm_rx) = std::sync::mpsc::channel();
+        let (ask_user_tx, ask_user_rx) = std::sync::mpsc::channel();
         WsOutput {
             tx,
             confirm_rx: Mutex::new(confirm_rx),
             confirm_tx,
+            ask_user_rx: Mutex::new(ask_user_rx),
+            ask_user_tx,
         }
     }
 
@@ -405,9 +589,10 @@ impl AgentOutput for WsOutput {
         }));
     }
 
-    fn confirm(&self, action: &ConfirmAction) -> bool {
+    fn confirm(&self, action: &ConfirmAction) -> crate::confirm::ConfirmResult {
+        use crate::confirm::ConfirmResult;
         if crate::confirm::is_auto_approve() {
-            return true;
+            return ConfirmResult::Yes;
         }
 
         let action_data = match action {
@@ -439,7 +624,51 @@ impl AgentOutput for WsOutput {
 
         // Block and wait for the reader task to forward the response
         let rx = self.confirm_rx.lock().unwrap();
-        rx.recv().unwrap_or(false)
+        rx.recv().unwrap_or(ConfirmResult::No)
+    }
+
+    fn ask_user(&self, question: &str) -> String {
+        self.emit("ask_user", serde_json::json!({ "question": question }));
+        let rx = self.ask_user_rx.lock().unwrap();
+        rx.recv().unwrap_or_default()
+    }
+
+    fn review_plan(&self, plan_text: &str) -> PlanReview {
+        self.emit("review_plan", serde_json::json!({ "plan": plan_text }));
+        // Reuse ask_user channel for the response
+        let rx = self.ask_user_rx.lock().unwrap();
+        let response = rx.recv().unwrap_or_default();
+        // Try JSON: {"action": "approve"|"approve_with_context"|"reject"|"refine",
+        //            "context": "...", "feedback": "..."}
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
+            match parsed.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+                "approve" | "y" => PlanReview::Approve,
+                "approve_with_context" => {
+                    let ctx = parsed.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if ctx.is_empty() { PlanReview::Approve } else { PlanReview::ApproveWithContext(ctx) }
+                }
+                "reject" | "n" => PlanReview::Reject,
+                "refine" => {
+                    let fb = parsed.get("feedback").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    PlanReview::Refine(fb)
+                }
+                _ => PlanReview::Reject,
+            }
+        } else {
+            match response.trim().to_lowercase().as_str() {
+                "y" | "yes" | "approve" => PlanReview::Approve,
+                "n" | "no" | "reject" | "" => PlanReview::Reject,
+                _ => PlanReview::Refine(response.trim().to_string()),
+            }
+        }
+    }
+
+    fn inject_guidance(&self) -> Option<String> {
+        self.emit("guidance_request", serde_json::json!({}));
+        let rx = self.ask_user_rx.lock().unwrap();
+        let response = rx.recv().unwrap_or_default();
+        let t = response.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
     }
 
     fn on_warning(&self, msg: &str) {

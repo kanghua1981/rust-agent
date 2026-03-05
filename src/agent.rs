@@ -24,6 +24,22 @@ pub fn is_interrupted() -> bool {
     INTERRUPT_REQUESTED.load(Ordering::Relaxed)
 }
 
+/// Set by the Ctrl-\ (SIGQUIT) handler; checked between LLM iterations in the
+/// pipeline executor so the user can inject real-time guidance at any safe point.
+static GUIDANCE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn request_guidance() {
+    GUIDANCE_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+pub fn clear_guidance() {
+    GUIDANCE_REQUESTED.store(false, Ordering::Relaxed);
+}
+
+pub fn is_guidance_requested() -> bool {
+    GUIDANCE_REQUESTED.load(Ordering::Relaxed)
+}
+
 use crate::config::{Config, Provider};
 use crate::confirm::ConfirmAction;
 use crate::context;
@@ -32,6 +48,7 @@ use crate::llm::{self, LlmClient};
 use crate::memory::Memory;
 use crate::model_manager;
 use crate::output::AgentOutput;
+use crate::sandbox::Sandbox;
 use crate::streaming;
 use crate::tools::ToolExecutor;
 
@@ -57,19 +74,22 @@ pub struct Agent {
     /// Per-role Config cache, built once on construction.
     /// Key is role name (e.g. "planner", "executor", "checker").
     role_configs: HashMap<String, Config>,
+    /// Sandbox for snapshot-based rollback.
+    pub sandbox: Sandbox,
 }
 
 impl Agent {
-    pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>) -> Self {
+    pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);
         let conversation = Conversation::new(&project_dir);
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
+        let effective_dir = sandbox.working_dir().to_path_buf();
         Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(project_dir.clone()),
+            tool_executor: ToolExecutor::new(effective_dir),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -81,19 +101,21 @@ impl Agent {
             pending_plan: None,
             models_cfg,
             role_configs,
+            sandbox,
         }
     }
 
     /// Create agent with a restored conversation
-    pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>) -> Self {
+    pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
+        let effective_dir = sandbox.working_dir().to_path_buf();
         Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(project_dir.clone()),
+            tool_executor: ToolExecutor::new(effective_dir),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -105,6 +127,7 @@ impl Agent {
             pending_plan: None,
             models_cfg,
             role_configs,
+            sandbox,
         }
     }
 
@@ -378,6 +401,98 @@ impl Agent {
         self.output.clone()
     }
 
+    /// Build the tool definition for the virtual `ask_user` tool.
+    ///
+    /// This tool is NOT registered in `ToolExecutor`; it's intercepted in the
+    /// agent loop and handled via `AgentOutput::ask_user()`.
+    fn ask_user_definition() -> crate::tools::ToolDefinition {
+        crate::tools::ToolDefinition {
+            name: "ask_user".to_string(),
+            description: "Ask the user a clarifying question when you need more information \
+                to complete the task. Use this when the request is ambiguous, missing \
+                key details, or when you need the user to choose between alternatives. \
+                The user's answer will be returned as the tool result."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask the user. Be specific and concise."
+                    }
+                },
+                "required": ["question"]
+            }),
+        }
+    }
+
+    /// Append the `ask_user` tool to a list of tool definitions.
+    fn with_ask_user(mut defs: Vec<crate::tools::ToolDefinition>) -> Vec<crate::tools::ToolDefinition> {
+        defs.push(Self::ask_user_definition());
+        defs
+    }
+
+    /// Inject a pipeline execution summary into the main conversation so
+    /// follow-up messages can reference what was just done.
+    fn inject_pipeline_context(&mut self, task: &str, result: &str) {
+        let truncated_result = crate::ui::truncate_str(result, 2000);
+        let summary = format!(
+            "[Pipeline completed] Task: {}\n\nResult summary:\n{}",
+            crate::ui::truncate_str(task, 500),
+            truncated_result
+        );
+        // Add as a user→assistant exchange so the conversation has context
+        self.conversation.add_message(Message::user(task));
+        self.conversation.add_message(Message::assistant(vec![
+            ContentBlock::Text { text: summary },
+        ]));
+    }
+
+    /// Generate a brief explanation of what a tool is about to do and answer
+    /// the user's question. Uses a lightweight LLM call (no tools).
+    async fn explain_tool_action(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        user_question: &str,
+    ) -> String {
+        let prompt = format!(
+            "The AI assistant is about to execute the following tool action:\n\
+             Tool: {}\n\
+             Parameters: {}\n\n\
+             The user asked: {}\n\n\
+             Please briefly explain what this tool action will do and answer the user's question. \
+             Keep your answer concise (2-4 sentences). Answer in the same language as the user's question.",
+            tool_name,
+            serde_json::to_string_pretty(tool_input).unwrap_or_default(),
+            user_question
+        );
+
+        let mut explain_conv = Conversation::new(&self.project_dir);
+        explain_conv.system_prompt =
+            "You are a helpful assistant explaining tool actions to the user. Be concise."
+                .to_string();
+        explain_conv.add_message(Message::user(&prompt));
+
+        match self.call_llm_with_retry(&explain_conv, &[]).await {
+            Ok(response) => {
+                let text: String = response
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text { text } = b {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                text
+            }
+            Err(e) => format!("(Failed to generate explanation: {})", e),
+        }
+    }
+
     /// Process a user message and return the final text response.
     /// This handles the full agent loop: send message → receive response →
     /// if tool use → execute tools → send results → repeat until done.
@@ -387,10 +502,14 @@ impl Agent {
 
         match mode {
             crate::router::ExecutionMode::FullPipeline => {
-                return crate::pipeline::PipelineRunner::run(self, user_input).await;
+                let result = crate::pipeline::PipelineRunner::run(self, user_input).await?;
+                self.inject_pipeline_context(user_input, &result);
+                return Ok(result);
             }
             crate::router::ExecutionMode::PlanAndExecute => {
-                return crate::pipeline::PipelineRunner::run_plan_and_execute(self, user_input).await;
+                let result = crate::pipeline::PipelineRunner::run_plan_and_execute(self, user_input).await?;
+                self.inject_pipeline_context(user_input, &result);
+                return Ok(result);
             }
             crate::router::ExecutionMode::BasicLoop => {
                 // Fall through to the basic loop below
@@ -403,7 +522,7 @@ impl Agent {
         // Check context window before sending
         self.check_and_manage_context().await;
 
-        let tool_defs = self.tool_executor.definitions();
+        let tool_defs = Self::with_ask_user(self.tool_executor.definitions());
         let mut iterations = 0;
         let max_iterations = self.config.max_tool_iterations;
 
@@ -484,11 +603,45 @@ impl Agent {
                 // confirmation, so the user has full context.
                 self.output.on_tool_use(&tool_name, &tool_input);
 
+                // ── Virtual tool: ask_user ────────────────────────────────
+                if tool_name == "ask_user" {
+                    let question = tool_input
+                        .get("question")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Could you clarify?");
+                    let answer = self.output.ask_user(question);
+                    self.conversation.add_message(Message::tool_result(
+                        &tool_id,
+                        &format!("User's answer: {}", answer),
+                        false,
+                    ));
+                    continue;
+                }
+
                 // Check if this tool needs confirmation
                 if needs_confirmation(&tool_name) {
                     let action = build_confirm_action(&tool_name, &tool_input);
-                    if !self.output.confirm(&action) {
-                        // User declined - send a "skipped" result back to LLM
+                    let mut approved = false;
+                    loop {
+                        let result = self.output.confirm(&action);
+                        match result {
+                            crate::confirm::ConfirmResult::Yes
+                            | crate::confirm::ConfirmResult::AlwaysYes => {
+                                approved = true;
+                                break;
+                            }
+                            crate::confirm::ConfirmResult::No => break,
+                            crate::confirm::ConfirmResult::Clarify(question) => {
+                                // User wants an explanation — ask the LLM
+                                let explanation = self
+                                    .explain_tool_action(&tool_name, &tool_input, &question)
+                                    .await;
+                                self.output.on_assistant_text(&explanation);
+                                // Loop back to re-prompt
+                            }
+                        }
+                    }
+                    if !approved {
                         self.conversation.add_message(Message::tool_result(
                             &tool_id,
                             "User declined to execute this operation.",
@@ -553,8 +706,13 @@ impl Agent {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let resolved = resolve_tool_path(path, &self.project_dir);
+        // Use sandbox working dir for path resolution (overlay merged dir or project dir)
+        let effective_dir = self.sandbox.working_dir();
+        let resolved = resolve_tool_path(path, effective_dir);
         let resolved_str = resolved.display().to_string();
+
+        // Sandbox: snapshot the file before modification
+        self.sandbox.before_write(&resolved).await;
 
         // Read old content if file exists
         let old_content = tokio::fs::read_to_string(&resolved_str).await.ok();
@@ -814,15 +972,6 @@ Summary:"#,
             "think" => {
                 // No memory update for think — it's internal reasoning
             }
-            "fetch_url" => {
-                let url = tool_input
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if !url.is_empty() && !result.is_error {
-                    self.memory.log_action(&format!("fetched {}", crate::ui::truncate_str(url, 80)));
-                }
-            }
             "read_ebook" => {
                 if !path.is_empty() {
                     self.memory.touch_file(path, "read (ebook)");
@@ -859,6 +1008,12 @@ Summary:"#,
 {}
 
 Please analyze the task carefully. You may use the read-only tools available to explore the codebase and gather information.
+You also have access to `run_command` — use it ONLY for read-only exploration commands such as:
+  git status, git log, git diff, git show, git branch, git remote -v,
+  find, cat, ls, wc, head, tail, cargo metadata, etc.
+Do NOT run any command that mutates state (no commits, pushes, file writes, installs, builds).
+
+IMPORTANT: If the task is ambiguous, missing key details, or requires user decisions (e.g. choice of approach, naming, scope), use the `ask_user` tool to ask clarifying questions BEFORE producing the plan. Do NOT guess — ask.
 
 Then output a detailed, numbered step-by-step plan describing exactly what changes and actions are needed. For each step, specify:
 1. What action to take (create/edit/delete file, run command, etc.)
@@ -876,13 +1031,20 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
         plan_conversation.system_prompt = format!(
             "{}\n\nYou are in PLANNING MODE. \
              You can use the provided read-only tools to explore the project, \
-             but your final output MUST be a clear numbered plan. \
-             Do NOT make any modifications.",
+             and the `ask_user` tool to ask clarifying questions. \
+             You also have access to `run_command`, but you MUST only use it for \
+             purely read-only shell / git commands that do not mutate any state, \
+             such as: git status, git log, git diff, git show, git branch, \
+             git remote -v, find, cat, ls, wc, head, tail, echo, env, cargo metadata. \
+             NEVER run commands that write files, make commits, push, install packages, \
+             build, or modify any state. \
+             Your final output MUST be a clear numbered plan. \
+             Do NOT execute any modifications.",
             self.conversation.system_prompt
         );
         plan_conversation.add_message(Message::user(&planning_prompt));
 
-        let readonly_tools = self.tool_executor.readonly_definitions();
+        let readonly_tools = Self::with_ask_user(self.tool_executor.readonly_definitions());
 
         // Run a mini agent-loop with only read-only tools
         let max_iters = 10; // planning shouldn't need many iterations
@@ -939,6 +1101,22 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
 
             for (tool_id, tool_name, tool_input) in tool_uses {
                 self.output.on_tool_use(&tool_name, &tool_input);
+
+                // ── Virtual tool: ask_user ────────────────────────────
+                if tool_name == "ask_user" {
+                    let question = tool_input
+                        .get("question")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Could you clarify?");
+                    let answer = self.output.ask_user(question);
+                    plan_conversation.add_message(Message::tool_result(
+                        &tool_id,
+                        &format!("User's answer: {}", answer),
+                        false,
+                    ));
+                    continue;
+                }
+
                 let result = self.tool_executor.execute(&tool_name, &tool_input).await;
                 self.output.on_tool_result(&tool_name, &result);
                 plan_conversation.add_message(Message::tool_result(
@@ -1003,9 +1181,9 @@ Begin execution now."#,
         stage_conv.add_message(Message::user(initial_message));
 
         let tool_defs = if readonly_only {
-            self.tool_executor.readonly_definitions()
+            Self::with_ask_user(self.tool_executor.readonly_definitions())
         } else {
-            self.tool_executor.definitions()
+            Self::with_ask_user(self.tool_executor.definitions())
         };
 
         let max_iterations = self.config.max_tool_iterations;
@@ -1015,6 +1193,20 @@ Begin execution now."#,
             if is_interrupted() {
                 self.output.on_warning("Interrupted by user.");
                 break;
+            }
+
+            // ── Mid-execution guidance (Ctrl-\) ──────────────────────────────
+            // Append user guidance to the system prompt so the LLM sees it on
+            // the next call without violating the message turn structure.
+            if is_guidance_requested() {
+                clear_guidance();
+                if let Some(text) = self.output.inject_guidance() {
+                    stage_conv.system_prompt.push_str(&format!(
+                        "\n\n[⚡ USER GUIDANCE]: {}",
+                        text
+                    ));
+                    self.output.on_warning(&format!("💡 Guidance injected into executor context."));
+                }
             }
 
             context::ensure_tool_pair_integrity(&mut stage_conv.messages);
@@ -1068,9 +1260,42 @@ Begin execution now."#,
             for (tool_id, tool_name, tool_input) in tool_uses {
                 self.output.on_tool_use(&tool_name, &tool_input);
 
+                // ── Virtual tool: ask_user ────────────────────────────
+                if tool_name == "ask_user" {
+                    let question = tool_input
+                        .get("question")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Could you clarify?");
+                    let answer = self.output.ask_user(question);
+                    stage_conv.add_message(Message::tool_result(
+                        &tool_id,
+                        &format!("User's answer: {}", answer),
+                        false,
+                    ));
+                    continue;
+                }
+
                 if !readonly_only && needs_confirmation(&tool_name) {
                     let action = build_confirm_action(&tool_name, &tool_input);
-                    if !self.output.confirm(&action) {
+                    let mut approved = false;
+                    loop {
+                        let result = self.output.confirm(&action);
+                        match result {
+                            crate::confirm::ConfirmResult::Yes
+                            | crate::confirm::ConfirmResult::AlwaysYes => {
+                                approved = true;
+                                break;
+                            }
+                            crate::confirm::ConfirmResult::No => break,
+                            crate::confirm::ConfirmResult::Clarify(question) => {
+                                let explanation = self
+                                    .explain_tool_action(&tool_name, &tool_input, &question)
+                                    .await;
+                                self.output.on_assistant_text(&explanation);
+                            }
+                        }
+                    }
+                    if !approved {
                         stage_conv.add_message(Message::tool_result(
                             &tool_id,
                             "User declined to execute this operation.",

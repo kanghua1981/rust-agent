@@ -429,6 +429,18 @@ pub fn print_help() {
         "/plan".bright_white()
     );
     println!(
+        "  {} - Show sandbox-tracked file changes",
+        "/changes".bright_white()
+    );
+    println!(
+        "  {} - Undo all file changes (sandbox mode)",
+        "/rollback".bright_white()
+    );
+    println!(
+        "  {}   - Accept all changes (sandbox mode)",
+        "/commit".bright_white()
+    );
+    println!(
         "  {}     - Exit the agent",
         "/quit".bright_white()
     );
@@ -437,6 +449,10 @@ pub fn print_help() {
     println!(
         "  {}           - Skip all confirmations",
         "--yes / -y".bright_white()
+    );
+    println!(
+        "  {}       - Enable sandbox mode (snapshot & rollback)",
+        "--sandbox".bright_white()
     );
     println!(
         "  {}   - Resume a saved session",

@@ -72,9 +72,10 @@ async fn handle_connection(
     // Build WsOutput and get the confirm_tx for the reader side
     let ws_output = Arc::new(WsOutput::new(cmd_tx));
     let confirm_tx = ws_output.confirm_tx.clone();
+    let ask_user_tx = ws_output.ask_user_tx.clone();
 
-    // Create the Agent with this connection's output
-    let mut agent = Agent::new(config, project_dir, ws_output.clone());
+    // Create the Agent with this connection's output (sandbox disabled for server mode)
+    let mut agent = Agent::new(config, project_dir.clone(), ws_output.clone(), crate::sandbox::Sandbox::disabled(&project_dir));
 
     // ── Writer task: forwards outgoing frames to the WebSocket ──
     let writer_handle = tokio::spawn(async move {
@@ -107,7 +108,7 @@ async fn handle_connection(
         match msg {
             Message::Text(text) => {
                 let text_str: &str = text.as_ref();
-                handle_text_message(text_str, &mut agent, &ws_output, &confirm_tx).await;
+                handle_text_message(text_str, &mut agent, &ws_output, &confirm_tx, &ask_user_tx).await;
             }
             Message::Close(_) => break,
             Message::Ping(_payload) => {
@@ -128,7 +129,8 @@ async fn handle_text_message(
     text: &str,
     agent: &mut Agent,
     output: &Arc<WsOutput>,
-    confirm_tx: &std::sync::mpsc::Sender<bool>,
+    confirm_tx: &std::sync::mpsc::Sender<crate::confirm::ConfirmResult>,
+    ask_user_tx: &std::sync::mpsc::Sender<String>,
 ) {
     // Parse the JSON message
     let msg: serde_json::Value = match serde_json::from_str(text) {
@@ -182,13 +184,34 @@ async fn handle_text_message(
         }
 
         "confirm_response" => {
-            let approved = msg
+            use crate::confirm::ConfirmResult;
+            let data = msg.get("data");
+            // Check for clarify first: { "clarify": "question text" }
+            if let Some(clarify) = data.and_then(|d| d.get("clarify")).and_then(|v| v.as_str()) {
+                let _ = confirm_tx.send(ConfirmResult::Clarify(clarify.to_string()));
+            } else {
+                let approved = data
+                    .and_then(|d| d.get("approved"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let _ = confirm_tx.send(if approved { ConfirmResult::Yes } else { ConfirmResult::No });
+            }
+        }
+
+        "ask_user_response" => {
+            let answer = msg
                 .get("data")
-                .and_then(|d| d.get("approved"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            // Forward to the WsOutput's confirm channel
-            let _ = confirm_tx.send(approved);
+                .and_then(|d| d.get("answer"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let _ = ask_user_tx.send(answer);
+        }
+
+        "review_plan_response" => {
+            // Forward raw JSON string so WsOutput::review_plan can parse it
+            let data = msg.get("data").cloned().unwrap_or(serde_json::json!({}));
+            let _ = ask_user_tx.send(data.to_string());
         }
 
         other => {

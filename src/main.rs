@@ -16,6 +16,7 @@ mod agent;
 mod conversation;
 mod pipeline;
 mod router;
+mod sandbox;
 mod server;
 mod ui;
 
@@ -106,7 +107,13 @@ struct Args {
     port: u16,
     /// Maximum iterations for tool usage
     #[arg(long, default_value = "25")]
-    max_iterations: usize,}
+    max_iterations: usize,
+
+    /// Enable sandbox mode: snapshot files before modification,
+    /// allowing /rollback to restore all changes.
+    #[arg(long)]
+    sandbox: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -176,5 +183,5 @@ async fn main() -> Result<()> {
     };
 
     // Run the agent
-    cli::run(config, project_dir, args.prompt, args.resume, output).await
+    cli::run(config, project_dir, args.prompt, args.resume, output, args.sandbox).await
 }

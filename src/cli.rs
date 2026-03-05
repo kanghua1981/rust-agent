@@ -56,9 +56,17 @@ pub async fn run(
     initial_prompt: Option<String>,
     resume_id: Option<String>,
     output: Arc<dyn AgentOutput>,
+    sandbox_enabled: bool,
 ) -> Result<()> {
     ui::print_banner();
     ui::print_workdir();
+
+    // Build sandbox
+    let sandbox = if sandbox_enabled {
+        crate::sandbox::Sandbox::new(&project_dir)
+    } else {
+        crate::sandbox::Sandbox::disabled(&project_dir)
+    };
 
     // Create or restore agent
     let mut agent = if let Some(ref session_id) = resume_id {
@@ -72,17 +80,41 @@ pub async fn run(
                     session.meta.id.bright_yellow(),
                     msg_count.to_string().bright_white()
                 );
-                Agent::with_conversation(config, project_dir.clone(), conversation, session.meta.id, output.clone())
+                Agent::with_conversation(config, project_dir.clone(), conversation, session.meta.id, output.clone(), sandbox)
             }
             Err(e) => {
                 ui::print_error(&format!("Failed to resume session: {}", e));
                 println!("Starting a new session instead.\n");
-                Agent::new(config, project_dir.clone(), output.clone())
+                Agent::new(config, project_dir.clone(), output.clone(), sandbox)
             }
         }
     } else {
-        Agent::new(config, project_dir.clone(), output.clone())
+        Agent::new(config, project_dir.clone(), output.clone(), sandbox)
     };
+
+    // Print sandbox status
+    if sandbox_enabled {
+        let backend = agent.sandbox.is_overlay().await;
+        let backend_label = if backend { "overlay" } else { "snapshot" };
+        println!(
+            "{}  {}",
+            "🔒",
+            format!("Sandbox enabled ({}) — {}",
+                backend_label,
+                if backend {
+                    "original project untouched, all changes in overlay layer"
+                } else {
+                    "files snapshotted before modification (fuse-overlayfs not found)"
+                }
+            ).bright_green()
+        );
+        println!(
+            "   Use {} to view changes, {} to undo, {} to accept.\n",
+            "/changes".bright_white(),
+            "/rollback".bright_white(),
+            "/commit".bright_white()
+        );
+    }
 
     // Check for project summary at startup
     {
@@ -139,6 +171,19 @@ pub async fn run(
                     // /plan needs async, handle it separately
                     if input == "/plan" || input.starts_with("/plan ") {
                         handle_plan_command(input, &mut agent).await;
+                        continue;
+                    }
+                    // Sandbox commands need async
+                    if input == "/rollback" {
+                        handle_rollback_command(&mut agent).await;
+                        continue;
+                    }
+                    if input == "/commit" {
+                        handle_commit_command(&mut agent).await;
+                        continue;
+                    }
+                    if input == "/changes" {
+                        handle_changes_command(&agent).await;
                         continue;
                     }
                     let handled = handle_slash_command(input, &mut agent);
@@ -227,6 +272,19 @@ pub async fn run(
         rl.save_history(path).ok();
     }
 
+    // Sandbox cleanup: unmount overlay if active
+    if agent.sandbox.is_enabled().await {
+        let has_changes = agent.sandbox.ops_count().await > 0;
+        if has_changes && agent.sandbox.is_overlay().await {
+            println!(
+                "\n{}  {}",
+                "⚠️",
+                "Sandbox has uncommitted overlay changes — cleaning up mount...".yellow()
+            );
+        }
+        agent.sandbox.cleanup().await;
+    }
+
     Ok(())
 }
 
@@ -239,6 +297,7 @@ enum SlashResult {
 fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
     match input {
         "/quit" | "/exit" | "/q" => {
+            // Sandbox cleanup is handled by the caller after the REPL exits
             auto_save_session(agent);
             println!("\n{}", "👋 Goodbye! Happy coding!".bright_green());
             SlashResult::Quit
@@ -904,6 +963,209 @@ async fn handle_summary_command(input: &str, agent: &mut Agent) {
     }
 }
 
+/// Handle `/rollback` — restore all files to their pre-sandbox state.
+async fn handle_rollback_command(agent: &mut Agent) {
+    if !agent.sandbox.is_enabled().await {
+        println!(
+            "\n{}  {}",
+            "⚠️",
+            "Sandbox is not enabled. Start the agent with --sandbox to use this feature.".yellow()
+        );
+        return;
+    }
+
+    let ops = agent.sandbox.ops_count().await;
+    if ops == 0 {
+        println!(
+            "\n{}  {}",
+            "📋",
+            "No changes to rollback.".dimmed()
+        );
+        return;
+    }
+
+    // Show what will be rolled back
+    let changes = agent.sandbox.changed_files().await;
+    println!(
+        "\n{}  {} tracked change(s) will be rolled back:",
+        "⏪",
+        changes.len().to_string().bright_white()
+    );
+    for c in &changes {
+        let icon = match c.kind {
+            crate::sandbox::ChangeKind::Modified => "✏️ ",
+            crate::sandbox::ChangeKind::Created => "📄",
+            crate::sandbox::ChangeKind::Deleted => "🗑️",
+            crate::sandbox::ChangeKind::Unchanged => "⚪",
+        };
+        println!("    {} {} ({})", icon, c.path.display().to_string().bright_white(), c.kind);
+    }
+    println!();
+
+    // Confirm
+    print!(
+        "  {} ",
+        "Proceed with rollback? [y/N]".bright_yellow()
+    );
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_ok() {
+        let answer = answer.trim().to_lowercase();
+        if answer == "y" || answer == "yes" {
+            let result = agent.sandbox.rollback().await;
+            if result.errors.is_empty() {
+                println!(
+                    "\n{}  Rolled back: {} restored, {} deleted. Project restored to original state.",
+                    "✅",
+                    result.restored.to_string().bright_green(),
+                    result.deleted.to_string().bright_green()
+                );
+            } else {
+                println!(
+                    "\n{}  Rollback completed with {} error(s):",
+                    "⚠️",
+                    result.errors.len()
+                );
+                for err in &result.errors {
+                    println!("    {} {}", "✗".bright_red(), err);
+                }
+            }
+        } else {
+            println!("  {}", "Rollback cancelled.".dimmed());
+        }
+    }
+}
+
+/// Handle `/commit` — accept all sandbox changes (discard snapshots).
+async fn handle_commit_command(agent: &mut Agent) {
+    if !agent.sandbox.is_enabled().await {
+        println!(
+            "\n{}  {}",
+            "⚠️",
+            "Sandbox is not enabled. Start the agent with --sandbox to use this feature.".yellow()
+        );
+        return;
+    }
+
+    let ops = agent.sandbox.ops_count().await;
+    if ops == 0 {
+        println!(
+            "\n{}  {}",
+            "📋",
+            "No changes to commit.".dimmed()
+        );
+        return;
+    }
+
+    // Show what will be committed
+    let changes = agent.sandbox.changed_files().await;
+    println!(
+        "\n{}  {} change(s) will be committed (snapshots discarded):",
+        "📦",
+        changes.len().to_string().bright_white()
+    );
+    for c in &changes {
+        let icon = match c.kind {
+            crate::sandbox::ChangeKind::Modified => "✏️ ",
+            crate::sandbox::ChangeKind::Created => "📄",
+            crate::sandbox::ChangeKind::Deleted => "🗑️",
+            crate::sandbox::ChangeKind::Unchanged => "⚪",
+        };
+        println!("    {} {} ({})", icon, c.path.display().to_string().bright_white(), c.kind);
+    }
+    println!();
+
+    let result = agent.sandbox.commit().await;
+    println!(
+        "{}  Committed: {} modified, {} created. Snapshots discarded.",
+        "✅",
+        result.modified.to_string().bright_green(),
+        result.created.to_string().bright_green()
+    );
+    println!();
+}
+
+/// Handle `/changes` — display sandbox-tracked file modifications.
+async fn handle_changes_command(agent: &Agent) {
+    if !agent.sandbox.is_enabled().await {
+        println!(
+            "\n{}  {}",
+            "⚠️",
+            "Sandbox is not enabled. Start the agent with --sandbox to use this feature.".yellow()
+        );
+        return;
+    }
+
+    let changes = agent.sandbox.changed_files().await;
+    if changes.is_empty() {
+        println!(
+            "\n{}  {}",
+            "📋",
+            "No changes tracked yet.".dimmed()
+        );
+        return;
+    }
+
+    let mut modified = 0usize;
+    let mut created = 0usize;
+    let mut unchanged = 0usize;
+
+    println!(
+        "\n{}  {} tracked change(s):\n",
+        "📋",
+        changes.len().to_string().bright_white()
+    );
+
+    for c in &changes {
+        let (icon, label) = match c.kind {
+            crate::sandbox::ChangeKind::Modified => {
+                modified += 1;
+                ("✏️ ", "modified".bright_yellow().to_string())
+            }
+            crate::sandbox::ChangeKind::Created => {
+                created += 1;
+                ("📄", "created".bright_green().to_string())
+            }
+            crate::sandbox::ChangeKind::Deleted => {
+                modified += 1; // count as a modification
+                ("🗑️", "deleted".bright_red().to_string())
+            }
+            crate::sandbox::ChangeKind::Unchanged => {
+                unchanged += 1;
+                ("⚪", "unchanged".dimmed().to_string())
+            }
+        };
+        let size_info = match (c.original_size, c.current_size) {
+            (Some(orig), Some(curr)) if orig != curr => {
+                format!(" ({} → {} bytes)", orig, curr)
+            }
+            (None, Some(curr)) => format!(" ({} bytes)", curr),
+            _ => String::new(),
+        };
+        println!(
+            "    {} {} [{}]{}",
+            icon,
+            c.path.display().to_string().bright_white(),
+            label,
+            size_info.dimmed()
+        );
+    }
+
+    println!();
+    println!(
+        "  Summary: {} modified, {} created, {} unchanged",
+        modified.to_string().bright_yellow(),
+        created.to_string().bright_green(),
+        unchanged.to_string().dimmed()
+    );
+    println!(
+        "  Use {} to undo all, {} to accept all.\n",
+        "/rollback".bright_white(),
+        "/commit".bright_white()
+    );
+}
+
 /// Auto-save the session (silent, won't error to user)
 fn auto_save_session(agent: &mut Agent) {
     if agent.conversation.messages.is_empty() {
@@ -965,14 +1227,27 @@ fn restore_terminal_state(_: &()) {}
 /// leaving a `ToolUse` block without a matching `ToolResult` in the history.
 async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
     crate::agent::clear_interrupt();
-    // Spawn a lightweight task that watches for SIGINT and sets the flag.
-    // It completes after the first signal, or is aborted when we are done.
-    let guard = tokio::spawn(async {
+    crate::agent::clear_guidance();
+    // Ctrl-C → interrupt flag
+    let interrupt_guard = tokio::spawn(async {
         if tokio::signal::ctrl_c().await.is_ok() {
             crate::agent::request_interrupt();
         }
     });
+    // Ctrl-\ (SIGQUIT) → guidance flag (pipeline executor picks it up between iterations)
+    #[cfg(unix)]
+    let guidance_guard = tokio::spawn(async {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut sigquit) = signal(SignalKind::quit()) {
+            loop {
+                if sigquit.recv().await.is_none() { break; }
+                crate::agent::request_guidance();
+            }
+        }
+    });
     let result = agent.process_message(input).await;
-    guard.abort(); // harmless if the task already fired
+    interrupt_guard.abort();
+    #[cfg(unix)]
+    guidance_guard.abort();
     result
 }

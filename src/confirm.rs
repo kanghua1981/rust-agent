@@ -24,6 +24,8 @@ pub enum ConfirmResult {
     Yes,
     No,
     AlwaysYes,  // Skip future confirmations for this session
+    /// User typed a question or comment — they want clarification before deciding.
+    Clarify(String),
 }
 
 /// Global flag to skip confirmations (set by --yes flag or /yesall command)
@@ -113,7 +115,7 @@ pub fn confirm(action: &ConfirmAction) -> ConfirmResult {
     print!(
         "   {} {}",
         "Proceed?".bright_cyan().bold(),
-        "[y/n/a(always)] ".dimmed()
+        "[y/n/a(always) or type a question] ".dimmed()
     );
     io::stdout().flush().ok();
 
@@ -124,14 +126,22 @@ pub fn confirm(action: &ConfirmAction) -> ConfirmResult {
 
     match input.trim().to_lowercase().as_str() {
         "y" | "yes" => ConfirmResult::Yes,
+        "n" | "no" => {
+            println!("   {} {}", "⏭️", "Skipped".dimmed());
+            ConfirmResult::No
+        }
         "a" | "always" | "yesall" => {
             set_auto_approve(true);
             println!("   {} {}", "✅", "Auto-approve enabled for this session".bright_green());
             ConfirmResult::AlwaysYes
         }
-        _ => {
+        _ if input.trim().is_empty() => {
             println!("   {} {}", "⏭️", "Skipped".dimmed());
             ConfirmResult::No
+        }
+        _ => {
+            // Non-empty, non-command input → user wants to ask a question
+            ConfirmResult::Clarify(input.trim().to_string())
         }
     }
 }
