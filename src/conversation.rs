@@ -32,6 +32,13 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+
+    /// DeepSeek reasoner thinking / extended thinking content.
+    /// Stored in conversation history so it can be echoed back in the next
+    /// request as `reasoning_content` (OpenAI-compatible path) or skipped
+    /// when building Anthropic-format messages.
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String },
 }
 
 /// A single message in the conversation

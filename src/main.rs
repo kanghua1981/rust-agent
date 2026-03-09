@@ -106,7 +106,7 @@ struct Args {
     #[arg(long, default_value_t = 9527)]
     port: u16,
     /// Maximum iterations for tool usage
-    #[arg(long, default_value = "25")]
+    #[arg(long, default_value = "100")]
     max_iterations: usize,
 
     /// Enable sandbox mode: snapshot files before modification,

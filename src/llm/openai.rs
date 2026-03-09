@@ -43,6 +43,8 @@ struct OpenAIChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIMessage {
     content: Option<String>,
+    /// DeepSeek reasoner thinking tokens (only present for reasoning models)
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAIToolCall>>,
 }
 
@@ -121,6 +123,13 @@ impl OpenAIClient {
                 }
                 crate::conversation::Role::Assistant => {
                     let text = msg.text_content();
+                    let reasoning = msg.content.iter().find_map(|b| {
+                        if let ContentBlock::Thinking { thinking } = b {
+                            Some(thinking.clone())
+                        } else {
+                            None
+                        }
+                    });
                     let tool_calls: Vec<serde_json::Value> = msg
                         .content
                         .iter()
@@ -144,6 +153,9 @@ impl OpenAIClient {
                         "role": "assistant",
                     });
 
+                    if let Some(r) = reasoning {
+                        msg_json["reasoning_content"] = serde_json::json!(r);
+                    }
                     if !text.is_empty() {
                         msg_json["content"] = serde_json::json!(text);
                     }
@@ -224,6 +236,14 @@ impl LlmClient for OpenAIClient {
             .context("No choices in OpenAI response")?;
 
         let mut content = Vec::new();
+
+        // DeepSeek reasoner models return thinking tokens separately.
+        // Store them first so they're echoed back in the next request.
+        if let Some(reasoning) = choice.message.reasoning_content {
+            if !reasoning.is_empty() {
+                content.push(ContentBlock::Thinking { thinking: reasoning });
+            }
+        }
 
         if let Some(text) = choice.message.content {
             if !text.is_empty() {

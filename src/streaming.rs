@@ -54,6 +54,8 @@ struct OpenAIStreamChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamDelta {
     content: Option<String>,
+    /// DeepSeek reasoner thinking tokens
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAIStreamToolCall>>,
 }
 
@@ -289,6 +291,7 @@ pub async fn stream_anthropic_response(
                         blocks[index].tool_name =
                             content_block.name.unwrap_or_default();
                     }
+                    // "thinking" blocks: accumulate via ThinkingDelta below
                 }
                 StreamEvent::ContentBlockDelta { index, delta } => {
                     if index < blocks.len() {
@@ -307,8 +310,13 @@ pub async fn stream_anthropic_response(
                                     .tool_input_json
                                     .push_str(&partial_json);
                             }
-                            DeltaData::ThinkingDelta { .. } | DeltaData::SignatureDelta { .. } => {
-                                // Silently skip thinking/signature deltas (extended thinking feature)
+                            DeltaData::ThinkingDelta { thinking } => {
+                                // Accumulate reasoning tokens so they can be echoed back
+                                // in the next request (required by DeepSeek/Anthropic thinking API).
+                                blocks[index].text.push_str(&thinking);
+                            }
+                            DeltaData::SignatureDelta { .. } => {
+                                // Signature delta for extended thinking — not needed.
                             }
                         }
                     }
@@ -362,6 +370,13 @@ pub async fn stream_anthropic_response(
                     None
                 } else {
                     Some(ContentBlock::Text { text: block.text })
+                }
+            }
+            "thinking" => {
+                if block.text.is_empty() {
+                    None
+                } else {
+                    Some(ContentBlock::Thinking { thinking: block.text })
                 }
             }
             "tool_use" => {
@@ -445,6 +460,13 @@ pub async fn stream_openai_response(
             }
             crate::conversation::Role::Assistant => {
                 let text = msg.text_content();
+                let reasoning = msg.content.iter().find_map(|b| {
+                    if let ContentBlock::Thinking { thinking } = b {
+                        Some(thinking.clone())
+                    } else {
+                        None
+                    }
+                });
                 let tool_calls: Vec<serde_json::Value> = msg
                     .content
                     .iter()
@@ -468,6 +490,9 @@ pub async fn stream_openai_response(
                     "role": "assistant",
                 });
 
+                if let Some(r) = reasoning {
+                    msg_json["reasoning_content"] = serde_json::json!(r);
+                }
                 if !text.is_empty() {
                     msg_json["content"] = serde_json::json!(text);
                 }
@@ -523,6 +548,7 @@ pub async fn stream_openai_response(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut accumulated_text = String::new();
+    let mut accumulated_reasoning = String::new();
     let mut tool_accumulators: Vec<BlockAccumulator> = Vec::new();
     let mut stop_reason: Option<String> = None;
     let mut input_tokens: u32 = 0;
@@ -563,6 +589,12 @@ pub async fn stream_openai_response(
             for choice in chunk_response.choices {
                 if let Some(reason) = choice.finish_reason {
                     stop_reason = Some(reason);
+                }
+
+                if let Some(reasoning) = choice.delta.reasoning_content {
+                    if !reasoning.is_empty() {
+                        accumulated_reasoning.push_str(&reasoning);
+                    }
                 }
 
                 if let Some(content) = choice.delta.content {
@@ -611,6 +643,11 @@ pub async fn stream_openai_response(
     }
 
     let mut final_content = Vec::new();
+    // Store reasoning tokens first so they appear before the answer in history.
+    // The next request will echo them back as `reasoning_content`.
+    if !accumulated_reasoning.is_empty() {
+        final_content.push(ContentBlock::Thinking { thinking: accumulated_reasoning });
+    }
     if !accumulated_text.is_empty() {
         final_content.push(ContentBlock::Text { text: accumulated_text });
     }

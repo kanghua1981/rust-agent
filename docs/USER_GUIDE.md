@@ -35,6 +35,11 @@
     - [设置默认模型](#设置默认模型)
     - [通过 CLI 参数指定](#通过-cli-参数指定)
   - [📝 Plan 模式（先分析后执行）](#-plan-模式先分析后执行)
+    - [/plan 斜杠命令（手动）](#plan-斜杠命令手动)
+    - [自动 Pipeline（Planner → Executor → Checker）](#自动-pipelineplanner--executor--checker)
+    - [计划审核](#计划审核)
+    - [执行前注入背景（approve 时）](#执行前注入背景approve-时)
+    - [执行中随时打断（Ctrl+\\）](#执行中随时打断ctrl)
   - [📜 会话管理](#-会话管理)
     - [列出历史会话](#列出历史会话)
     - [恢复会话](#恢复会话)
@@ -49,6 +54,7 @@
     - [查看已加载的 Skills](#查看已加载的-skills)
   - [✏️ 自定义系统提示词](#️-自定义系统提示词)
   - [🔒 安全与确认机制](#-安全与确认机制)
+  - [🛡️ 沙盒模式（文件保护与回滚）](#️-沙盒模式文件保护与回滚)
     - [需要确认的操作](#需要确认的操作)
     - [确认交互](#确认交互)
     - [跳过确认](#跳过确认)
@@ -413,6 +419,9 @@ git checkout -b fix/my-feature
 | `/plan show` | 查看待执行的计划 |
 | `/plan run` | 执行已生成的计划 |
 | `/plan clear` | 清除当前计划 |
+| `/changes` | 查看沙盒模式下所有已修改的文件 |
+| `/rollback` | 撤销沙盒内的全部改动，恢复原始状态 |
+| `/commit` | 将沙盒改动写入真实项目（overlay 模式）或确认保留（snapshot 模式） |
 | `/skills` | 查看已加载的项目 Skills |
 | `/quit` | 退出（自动保存会话） |
 
@@ -486,13 +495,17 @@ git checkout -b fix/my-feature
 
 ## 📝 Plan 模式（先分析后执行）
 
+Agent 支持两种「先分析后执行」机制：**`/plan` 斜杠命令**（手动触发）和**自动 Pipeline**（通过 `models.toml` 配置，自动路由）。
+
+### `/plan` 斜杠命令（手动）
+
 对于复杂任务，先让 Agent 只读分析项目，生成方案后再决定是否执行：
 
 ```
 🤖 > /plan 重构所有 GPIO 初始化代码，统一使用 HAL 库
 
 📝  Generating plan (read-only exploration)...
-（Agent 使用只读工具分析代码：read_file, grep_search, list_directory...）
+（Agent 使用只读工具分析代码：read_file, grep_search, list_directory, run_command...）
 ✅  Plan generated and saved.
   💡 Use /plan run to execute or /plan show to view again.
 ```
@@ -522,7 +535,85 @@ git checkout -b fix/my-feature
 🗑️  Pending plan cleared.
 ```
 
-Plan 阶段只允许只读工具，确保**零副作用**。
+Plan 阶段允许使用只读工具（`read_file`、`grep_search`、`list_directory` 等）以及**只读 shell 命令**（`git status`、`git log`、`git diff`、`find` 等），确保**零副作用**。
+
+---
+
+### 自动 Pipeline（Planner → Executor → Checker）
+
+通过 `models.toml` 配置多角色流水线后，Agent 会根据任务复杂度自动路由（或始终走 Pipeline）。用户**无需学习任何新命令**，整个流程完全透明交互。
+
+#### 流程概览
+
+```
+用户输入
+  └─▶ Planner（只读探索，生成计划）
+            │
+            ▼
+       计划审核（用户控制）
+            │
+            ▼
+       Executor（全工具，按计划执行）
+            │
+            ▼
+       Checker（验证结果，可重试）
+```
+
+#### 计划审核
+
+Planner 生成计划后，会暂停等待你的确认：
+
+```
+📋 Pipeline Plan:
+────────────────────────────────────────────────────────────
+1. 检出新分支并查看文件结构
+2. 识别冲突的模块路径
+3. 按新分支的结构调整 include/import
+...
+────────────────────────────────────────────────────────────
+   Review: [y] approve  [n] reject  [type feedback to refine]
+   > 
+```
+
+| 输入 | 效果 |
+|------|------|
+| `y` / `yes` | 批准并进入执行（见下方「执行前注入背景」） |
+| `n` / `no` | 取消整个 Pipeline |
+| 直接输入文字 | 作为反馈重新生成计划（最多 5 轮） |
+
+#### 执行前注入背景（approve 时）
+
+输入 `y` 后，系统会追加询问你是否有背景信息需要告知执行器。这是最关键的干预时机——当你知道 LLM 可能不清楚的项目细节时，在此补充：
+
+```
+   Review: [y] approve  [n] reject  [type feedback to refine]
+   > y
+   Context: add background info for the executor (Enter to skip)
+   > 注意：新分支已将 module.rs 重构为 foo/mod.rs + foo/types.rs + foo/handler.rs，旧路径已删除
+```
+
+这段背景会以最高优先级注入到 Executor 的初始 prompt，LLM 在第一步就能感知到这个事实，避免找错文件或做出错误假设。
+
+#### 执行中随时打断（Ctrl+\）
+
+Executor 运行期间，你可以在**任意 LLM 迭代之间**按 `Ctrl+\` 暂停并注入新指导：
+
+```
+⚡ Executor running — press Ctrl+\ to pause and inject guidance at any time
+（LLM 正在执行第 3 步...）
+
+按下 Ctrl+\ 后：
+
+⚡ Guidance: type a note for the executor (or press Enter to continue)
+   > 等一下，那个文件已经被删了，你应该去看 src/driver/new_gpio.c
+💡 Guidance injected into executor context.
+```
+
+指导会追加到 Executor 的 system prompt，LLM 在下一次调用中完整接收，**不打乱 API 消息结构**。
+
+> **Ctrl+C vs Ctrl+\**
+> - `Ctrl+C` — 立即中断当前 Pipeline，停止执行
+> - `Ctrl+\` — 暂停等待你的指导，输入后继续执行
 
 ---
 
@@ -724,6 +815,84 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ---
 
+## 🛡️ 沙盒模式（文件保护与回滚）
+
+通过 `--sandbox` 启动参数开启沙盒模式。开启后所有文件修改都在隔离环境中进行，原始项目受到保护，出问题随时可以回滚。
+
+```bash
+./target/release/agent --sandbox
+```
+
+### 两种后端
+
+| 后端 | 触发条件 | 保护范围 | 说明 |
+|------|---------|---------|------|
+| **Overlay**（叠加层） | Linux + 已安装 `fuse-overlayfs` | 全部文件写入，含命令副作用（如 `cargo build` 产物） | 原始项目**完全不动**，所有写入落入上层；Agent 崩溃也不影响源文件 |
+| **Snapshot**（快照） | 跨平台回退方案 | 仅 Agent 工具直接写入的文件 | 每次写入前自动备份；命令（`run_command`）的副作用不纳入跟踪 |
+
+启动时会显示当前使用的后端及操作提示：
+
+```
+🔒  Sandbox enabled (overlay) — original project untouched, all changes in overlay layer
+   Use /changes to view changes, /rollback to undo, /commit to accept.
+```
+
+### 沙盒命令
+
+#### `/changes` — 查看改动
+
+```
+🤖 > /changes
+
+📊  Sandbox changes (3 files):
+  ✏️  modified   src/driver/gpio.c       (312 → 328 bytes)
+  ✏️  modified   include/gpio.h          (80 → 95 bytes)
+  ✨  created    src/driver/gpio_hal.c   (new, 210 bytes)
+```
+
+#### `/rollback` — 撤销全部改动
+
+```
+🤖 > /rollback
+
+🔄  Rolling back all sandbox changes...
+✅  Rollback complete: 2 files restored, 1 file deleted
+```
+
+> ⚠️  rollback 不可逆，执行前请确认。
+
+#### `/commit` — 提交改动
+
+```
+🤖 > /commit
+
+✅  Committed: 2 modified, 1 created
+```
+
+- **Overlay 模式**：将上层修改合并写入原始项目目录，并卸载挂载点。
+- **Snapshot 模式**：清除备份快照，将已在磁盘上的文件视为最终结果。
+
+### 典型工作流
+
+```bash
+# 1. 以沙盒模式启动
+./target/release/agent --sandbox
+
+# 2. 指派任务（所有修改都在隔离层）
+🤖 > 帮我重构 GPIO 驱动，统一用 HAL 接口
+
+# 3. 查看 Agent 做了什么
+🤖 > /changes
+
+# 4a. 满意 → 提交
+🤖 > /commit
+
+# 4b. 不满意 → 回滚
+🤖 > /rollback
+```
+
+---
+
 ## 🧰 内置工具一览
 
 | 工具 | 图标 | 用途 | 需确认 |
@@ -772,6 +941,7 @@ Options:
       --host <HOST>            WebSocket 绑定地址 [默认: 127.0.0.1]
       --port <PORT>            WebSocket 端口 [默认: 9527]
       --max-iterations <N>     工具最大迭代次数 [默认: 25]
+      --sandbox                开启沙盒模式（文件保护+回滚）
   -h, --help                   显示帮助
 ```
 

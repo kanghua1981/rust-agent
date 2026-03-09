@@ -70,6 +70,7 @@ fn estimate_message_tokens(msg: &Message) -> usize {
                 estimate_tokens(name) + estimate_tokens(&input.to_string())
             }
             ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
+            ContentBlock::Thinking { thinking } => estimate_tokens(thinking),
         })
         .sum();
 
@@ -263,6 +264,9 @@ pub fn build_truncation_context(messages: &[Message]) -> String {
                         content.clone()
                     };
                     parts.push(format!("[Msg {}] Tool result ({}): {}", i + 1, status, preview));
+                }
+                ContentBlock::Thinking { .. } => {
+                    // Skip thinking blocks in context summary (they can be very long)
                 }
             }
         }

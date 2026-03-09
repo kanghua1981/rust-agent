@@ -7,7 +7,9 @@
 - **🔧 工具系统**: 内置 13 种工具 — 文件读写、多文件批量读取、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF/电子书读取、网页抓取、内部推理
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
-- **� 多角色流水线**: 配置独立的 Planner / Executor / Checker 角色各用不同模型，完全透明，无需新命令
+- **🔀 多角色流水线**: 配置独立的 Planner / Executor / Checker 角色各用不同模型，自动路由，完全透明
+- **⚡ 执行前背景注入**: approve 计划时可附带背景上下文，直达 Executor 初始 prompt
+- **🛑 执行中实时指导**: Pipeline 运行时按 `Ctrl+\` 随时暂停并向 Executor 注入补充信息
 - **�🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
 - **📡 三种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
@@ -18,6 +20,7 @@
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
 - **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示
+- **🛡️ 沙盒模式**: `--sandbox` 启动，两种后端（OverlayFS / 快照），`/changes` 查看 · `/rollback` 回滚 · `/commit` 提交
 - **🛡️ 上下文安全截断**: 智能保持 tool_use/tool_result 配对完整性，避免 API 错误
 - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低
 
@@ -492,6 +495,27 @@ Agent 在执行以下操作前会要求确认：
 
 ---
 
+## 🛡️ 沙盒模式
+
+通过 `--sandbox` 启动，所有文件修改都在隔离环境中进行，原始项目受到保护：
+
+```bash
+./target/release/agent --sandbox
+```
+
+| 后端 | 条件 | 保护范围 |
+|------|------|----------|
+| **Overlay**（叠加层） | Linux + `fuse-overlayfs` | 全部写入 + 命令副作用 |
+| **Snapshot**（快照） | 跨平台回退 | 仅工具直接写入的文件 |
+
+| 命令 | 说明 |
+|------|------|
+| `/changes` | 列出所有已修改 / 新增 / 删除的文件 |
+| `/rollback` | 撤销全部改动，恢复到改动前 |
+| `/commit` | 将改动落入真实项目（overlay 合并 / 清除快照） |
+
+---
+
 ## 🏗️ 架构
 
 ```
@@ -597,7 +621,7 @@ Plan 模式让 Agent 先分析后执行，避免盲目修改代码：
 🤖 > /plan 重构所有 GPIO 初始化代码，统一使用 HAL 库
 
 📋  Planning: 重构所有 GPIO 初始化代码...
-（Agent 使用只读工具分析代码：read_file, grep_search, list_directory...）
+（Agent 使用只读工具分析代码：read_file, grep_search, list_directory, run_command...）
 ✅  Plan generated. Use /plan show to review, /plan run to execute.
 
 🤖 > /plan show
@@ -607,7 +631,38 @@ Plan 模式让 Agent 先分析后执行，避免盲目修改代码：
 （Agent 开始执行计划，使用全部工具包括写入和编辑）
 ```
 
-Plan 阶段只允许使用只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`fetch_url`、`read_pdf`、`read_ebook`、`think`、`file_search`），确保不会产生任何副作用。
+Plan 阶段允许使用只读工具和**只读 shell 命令**（`git status/log/diff`、`find` 等），确保不产生任何副作用。
+
+---
+
+## ⚡ Pipeline 执行干预
+
+使用自动 Pipeline（Planner → Executor → Checker）时，有两个时机可以向执行器注入你的知识：
+
+### 1. Approve 时附带背景（最推荐）
+
+计划审核输入 `y` 后，系统会追加询问背景信息：
+
+```
+   Review: [y] approve  [n] reject  [type feedback to refine]
+   > y
+   Context: add background info for the executor (Enter to skip)
+   > 新分支已将 module.rs 重构为 foo/mod.rs + foo/types.rs + foo/handler.rs，旧路径已删除
+```
+
+这段内容以最高优先级注入 Executor 的初始 prompt，LLM 在第一步就能感知到。
+
+### 2. 执行中随时打断（Ctrl+\）
+
+Executor 运行期间，在任意 LLM 迭代之间按 `Ctrl+\` 暂停并追加指导：
+
+```
+⚡ Guidance: type a note for the executor (or press Enter to continue)
+   > 等一下，那个文件已经被删了，应该去看 src/driver/new_gpio.c
+💡 Guidance injected into executor context.
+```
+
+> `Ctrl+C` 中断执行 | `Ctrl+\` 暂停注入后继续
 
 ---
 
