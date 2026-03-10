@@ -17,7 +17,7 @@ impl Tool for GrepSearchTool {
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "The search pattern (supports regex)"
+                        "description": "The search pattern (supports regex). When using '|' for alternation, wrap it in parentheses: use '(foo|bar)' instead of 'foo|bar'."
                     },
                     "path": {
                         "type": "string",
@@ -87,6 +87,7 @@ impl Tool for GrepSearchTool {
         } else {
             let mut args = vec![
                 "-rn".to_string(),
+                "-E".to_string(),  // Extended regex: enables |, +, ?, () etc.
                 "--color=never".to_string(),
             ];
 
