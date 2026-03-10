@@ -186,6 +186,11 @@ pub async fn stream_anthropic_response(
         request_body["tools"] = serde_json::json!(formatted_tools);
     }
 
+    tracing::debug!(
+        "Anthropic request body: {}",
+        serde_json::to_string_pretty(&request_body).unwrap_or_default()
+    );
+
     let response = client
         .post(format!("{}/v1/messages", config.base_url))
         .header("x-api-key", &config.api_key)

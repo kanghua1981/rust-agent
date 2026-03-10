@@ -291,12 +291,16 @@ Skills management:
             };
 
             // Serialize content blocks for this message.
-            // Filter out any None / failed-serialization results rather than
-            // letting unwrap_or_default() inject a null element into the
-            // content array, which would cause Anthropic 400 errors.
+            // Filter out Thinking blocks: they are stored in history for the
+            // OpenAI-compatible path (which turns them into `reasoning_content`
+            // in its own message builder), but Anthropic / dashscope Anthropic-
+            // compatible APIs do NOT accept `{"type":"thinking",...}` blocks in
+            // requests and will return 400 "Request body format invalid".
+            // Filter out any None / failed-serialization results too.
             let blocks: Vec<serde_json::Value> = msg
                 .content
                 .iter()
+                .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
                 .filter_map(|b| serde_json::to_value(b).ok())
                 .collect();
 
