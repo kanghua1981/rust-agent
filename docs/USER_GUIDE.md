@@ -893,7 +893,52 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ---
 
-## 🧰 内置工具一览
+## � 多 Agent 协作（多进程专家池）
+
+多 Agent 协作允许主 Agent 将复杂任务分解，并指派给专注于特定子目录或领域的“专家 Agent”实例。
+
+### 为什么需要多 Agent？
+
+- **Monorepo 支持**：在大型项目中，通过 `target_dir` 锁定子 Agent，避免其误触全局代码。
+- **专注度提升**：子 Agent 只关注局部上下文，Token 消耗更低，响应更精准。
+- **并发处理**：主 Agent 可以根据需要同时维持多个独立运行的子任务环境。
+
+### 配置专家 Agent
+
+在 `~/.config/rust_agent/models.toml` 中配置 `sub_agents`。主 Agent 启动时会自动在后台拉起这些服务：
+
+```toml
+# 定义子 Agent 专家池
+[sub_agents.coder]
+port = 9001
+role = "executor"
+
+[sub_agents.reviewer]
+port = 9002
+role = "checker"
+```
+
+### 委派任务 (`call_sub_agent`)
+
+主 Agent 会感知到配置好的专家。你可以直接要求它委派任务：
+
+> 🤖 > "帮我重构 frontend 目录，调用 localhost:9001 的专家专门负责编写样式文件。"
+
+**工具参数说明：**
+- `prompt`: 给专家的具体指令。
+- `server_url`: 专家 Agent 的 WebSocket 地址。
+- `target_dir`: (推荐) 隔离执行的相对路径。
+- `auto_approve`: 是否允许子 Agent 自动执行修改（默认为 false，由主 Agent 转发确认）。
+
+### 透明度与安全
+
+- **实时日志**：主 Agent 的 Terminal 会以前缀 `[Sub-Agent Thinking]` 和 `[Sub-Agent Tool Use]` 实时回放专家的思考和操作流程。
+- **授权代理**：当子 Agent 需要写文件或跑命令时，主 Agent 会截获请求并弹窗询问你，确保安全受控。
+- **禁止递归**：子 Agent 无法再调用其他 Agent，确保任务拓扑简单清晰。
+
+---
+
+## �🧰 内置工具一览
 
 | 工具 | 图标 | 用途 | 需确认 |
 |------|------|------|--------|

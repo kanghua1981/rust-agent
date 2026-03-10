@@ -89,7 +89,7 @@ impl Agent {
         Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(effective_dir),
+            tool_executor: ToolExecutor::new(effective_dir, output.clone()),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -115,7 +115,7 @@ impl Agent {
         Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(effective_dir),
+            tool_executor: ToolExecutor::new(effective_dir, output.clone()),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -669,6 +669,13 @@ impl Agent {
                     &result.output,
                     result.is_error,
                 ));
+
+                // If this was call_sub_agent, the sub-agent's response already contains
+                // the final answer to the user's prompt. We should stop the loop here
+                // to avoid the main agent trying to "summarize" or continue.
+                if tool_name == "call_sub_agent" && !result.is_error {
+                    return Ok(result.output);
+                }
             }
 
             // Check context window after tool results

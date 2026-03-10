@@ -70,7 +70,10 @@ struct AnthropicErrorDetail {
 impl AnthropicClient {
     pub fn new(config: &Config) -> Self {
         AnthropicClient {
-            client: Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
             api_key: config.api_key.clone(),
             base_url: config.base_url.clone(),
             model: config.model.clone(),

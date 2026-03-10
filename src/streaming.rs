@@ -3,6 +3,8 @@
 //! Parses Server-Sent Events from Anthropic's streaming API and yields
 //! text deltas in real-time, while accumulating the full response.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use reqwest::Client;
@@ -140,6 +142,13 @@ struct BlockAccumulator {
     tool_input_json: String,   // accumulated JSON string for tool input
 }
 
+/// Maximum time to wait for the next SSE chunk before declaring the stream dead.
+/// Long thinking-model responses can take 60–90 s between tokens, so 120 s is
+/// generous enough to not false-fire on a slow model while still catching real hangs.
+const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
+/// TCP connect timeout for LLM API requests.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Send a streaming request to Anthropic and print text tokens in real-time.
 /// Returns the complete LlmResponse when done.
 pub async fn stream_anthropic_response(
@@ -148,7 +157,10 @@ pub async fn stream_anthropic_response(
     tools: &[ToolDefinition],
     output: &dyn AgentOutput,
 ) -> Result<LlmResponse> {
-    let client = Client::new();
+    let client = Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_default();
 
     let formatted_tools: Vec<serde_json::Value> = tools
         .iter()
@@ -210,7 +222,18 @@ pub async fn stream_anthropic_response(
     let mut output_tokens: u32 = 0;
     let mut is_printing_text = false;
 
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = {
+        match tokio::time::timeout(STREAM_CHUNK_TIMEOUT, stream.next()).await {
+            Ok(item) => item,
+            Err(_) => {
+                anyhow::bail!(
+                    "LLM stream timed out: no data received for {}s. \
+                     The API server may be overloaded or the connection stalled.",
+                    STREAM_CHUNK_TIMEOUT.as_secs()
+                );
+            }
+        }
+    } {
         // Check for Ctrl-C interrupt; break out of the stream early so
         // the caller can stop cleanly rather than waiting for the full response.
         if crate::agent::is_interrupted() {
@@ -423,7 +446,10 @@ pub async fn stream_openai_response(
     tools: &[ToolDefinition],
     output: &dyn AgentOutput,
 ) -> Result<LlmResponse> {
-    let client = Client::new();
+    let client = Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_default();
 
     // Use OpenAI message formatting logic (already in openai.rs, but we'll inline it for streaming)
     // In a real refactor, we should move these formatters to a shared location.
@@ -555,7 +581,18 @@ pub async fn stream_openai_response(
     let mut output_tokens: u32 = 0;
     let mut is_printing_text = false;
 
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = {
+        match tokio::time::timeout(STREAM_CHUNK_TIMEOUT, stream.next()).await {
+            Ok(item) => item,
+            Err(_) => {
+                anyhow::bail!(
+                    "LLM stream timed out: no data received for {}s. \
+                     The API server may be overloaded or the connection stalled.",
+                    STREAM_CHUNK_TIMEOUT.as_secs()
+                );
+            }
+        }
+    } {
         // Check for Ctrl-C interrupt; break out of the stream early.
         if crate::agent::is_interrupted() {
             break;

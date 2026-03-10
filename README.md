@@ -20,7 +20,8 @@
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
 - **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示
-- **🛡️ 沙盒模式**: `--sandbox` 启动，两种后端（OverlayFS / 快照），`/changes` 查看 · `/rollback` 回滚 · `/commit` 提交
+- **�️ 沙盒模式**: `--sandbox` 启动，两种后端（OverlayFS / 快照），`/changes` 查看 · `/rollback` 回滚 · `/commit` 提交
+- **🤖 多 Agent 协作**: 通过 `call_sub_agent` 工具实现任务委派，支持子目录隔离、实时事件代理及授权转发。可在 `models.toml` 中预设专家 Agent
 - **🛡️ 上下文安全截断**: 智能保持 tool_use/tool_result 配对完整性，避免 API 错误
 - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低
 
@@ -75,6 +76,16 @@ export LLM_PROVIDER=compatible
 ```toml
 # 默认使用的模型别名
 default = "sonnet"
+
+# 多 Agent 专家池 (可选)
+# 启动时自动在后台拉起这些端口的服务进程
+[sub_agents.coder]
+port = 9001
+role = "代码实现专家"
+
+[sub_agents.reviewer]
+port = 9002
+role = "代码审查专家"
 
 [models.sonnet]
 provider = "anthropic"

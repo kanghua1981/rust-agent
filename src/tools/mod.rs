@@ -11,10 +11,15 @@ pub mod read_pdf;
 pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
+pub mod call_sub_agent;
+
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::output::AgentOutput;
 
 /// Definition of a tool that the LLM can use
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +66,7 @@ pub trait Tool: Send + Sync {
 }
 
 impl ToolExecutor {
-    pub fn new(project_dir: PathBuf) -> Self {
+    pub fn new(project_dir: PathBuf, output: Arc<dyn AgentOutput>) -> Self {
         let mut executor = ToolExecutor {
             tools: HashMap::new(),
             project_dir,
@@ -82,6 +87,12 @@ impl ToolExecutor {
         executor.register(Box::new(read_ebook::ReadEbookTool));
         executor.register(Box::new(load_skill::LoadSkillTool));
         executor.register(Box::new(create_skill::CreateSkillTool));
+
+        // Only register call_sub_agent for the main manager agent
+        let agent_role = std::env::var("AGENT_ROLE").unwrap_or_else(|_| "manager".to_string());
+        if agent_role == "manager" {
+            executor.register(Box::new(call_sub_agent::CallSubAgentTool::new(output)));
+        }
 
         executor
     }

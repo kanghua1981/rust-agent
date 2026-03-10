@@ -32,6 +32,10 @@ pub struct ModelsConfig {
     /// Multi-role pipeline configuration.
     #[serde(default)]
     pub pipeline: Option<PipelineConfig>,
+
+    /// Configured sub-agents to start (alias, port, role).
+    #[serde(default)]
+    pub sub_agents: BTreeMap<String, crate::config::SubAgentConfig>,
 }
 
 /// Configuration for a single named role.

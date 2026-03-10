@@ -150,6 +150,22 @@ impl Conversation {
             tracing::info!("Loaded {} memory entries into system prompt", mem.entry_count());
         }
 
+        // Add sub-agents information to system prompt
+        let models_cfg = crate::model_manager::load();
+        if !models_cfg.sub_agents.is_empty() {
+            system_prompt.push_str("\n\n## Available Sub-Agents\n");
+            system_prompt.push_str("You can delegate specialized tasks to the following sub-agents running in server mode. Use the `call_sub_agent` tool with the corresponding `server_url`.\n\n");
+            for (name, sa) in &models_cfg.sub_agents {
+                let role_info = if let Some(role) = &sa.role {
+                    format!(" (Role: {})", role)
+                } else {
+                    String::new()
+                };
+                system_prompt.push_str(&format!("- **{}**: ws://localhost:{}{}\n", name, sa.port, role_info));
+            }
+            system_prompt.push_str("\nWhen delegating, prefer using the `target_dir` parameter to isolate the sub-agent's work to a specific directory.\n");
+        }
+
         Conversation {
             messages: Vec::new(),
             system_prompt,

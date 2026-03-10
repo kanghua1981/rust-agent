@@ -16,6 +16,15 @@ pub struct Config {
     pub max_tool_iterations: usize,
     /// The alias of the active model (if loaded from models.toml).
     pub model_alias: Option<String>,
+    /// Configured sub-agents to start (name -> config).
+    pub sub_agents: std::collections::BTreeMap<String, SubAgentConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAgentConfig {
+    pub port: u16,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +115,8 @@ impl Config {
 
         let max_tokens = toml_max_tokens.unwrap_or(8192);
 
+        let sub_agents = models_cfg.sub_agents.clone();
+
         Ok(Config {
             api_key,
             model,
@@ -116,6 +127,7 @@ impl Config {
             max_conversation_turns: 100,
             max_tool_iterations: args.max_iterations,
             model_alias,
+            sub_agents,
         })
     }
 
@@ -149,6 +161,7 @@ impl Config {
             max_conversation_turns: self.max_conversation_turns,
             max_tool_iterations: self.max_tool_iterations,
             model_alias: Some(resolved.alias.clone()),
+            sub_agents: self.sub_agents.clone(),
         }
     }
 

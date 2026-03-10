@@ -159,7 +159,6 @@ async fn main() -> Result<()> {
 
     // Load config
     let config = config::Config::load(&args)?;
-    // ... rest of the function ...
 
     // Determine project directory
     let project_dir = if let Some(ref workdir) = args.workdir {
@@ -169,6 +168,13 @@ async fn main() -> Result<()> {
     } else {
         std::env::current_dir().unwrap_or_default()
     };
+
+    // Auto-spawn sub-agents configured in models.toml (if we're in CLI mode).
+    // We keep the Child handles so we can kill the processes when the main agent exits.
+    let mut spawned_children: Vec<std::process::Child> = Vec::new();
+    if args.mode == RunMode::Cli && !config.sub_agents.is_empty() {
+        spawned_children = spawn_sub_agents(&config, &project_dir);
+    }
 
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
@@ -183,5 +189,41 @@ async fn main() -> Result<()> {
     };
 
     // Run the agent
-    cli::run(config, project_dir, args.prompt, args.resume, output, args.sandbox).await
+    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.sandbox).await;
+
+    // Kill auto-spawned sub-agents so they don't become orphan processes.
+    // On the next startup the ports would be occupied, causing port-bind failures.
+    for mut child in spawned_children {
+        let _ = child.kill();
+        let _ = child.wait(); // reap to avoid zombie
+    }
+
+    result
+}
+
+fn spawn_sub_agents(config: &config::Config, project_dir: &std::path::Path) -> Vec<std::process::Child> {
+    use std::process::{Command, Stdio};
+
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("agent"));
+    let mut children = Vec::new();
+
+    for (name, sa) in &config.sub_agents {
+        println!("🚀 Auto-spawning sub-agent '{}' on port {}...", name, sa.port);
+
+        let mut cmd = Command::new(&exe);
+        cmd.arg("--mode").arg("server")
+           .arg("--port").arg(sa.port.to_string())
+           .arg("-d").arg(project_dir)
+           .env("AGENT_ROLE", "worker");
+
+        match cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            Ok(child) => {
+                println!("✅ Sub-agent '{}' started (pid {}).", name, child.id());
+                children.push(child);
+            }
+            Err(e) => eprintln!("❌ Failed to spawn sub-agent '{}': {}", name, e),
+        }
+    }
+
+    children
 }
