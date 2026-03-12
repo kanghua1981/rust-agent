@@ -12,7 +12,7 @@ pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
 pub mod call_sub_agent;
-pub mod git;
+// pub mod git; // Removed - Git operations handled by run_command
 
 use std::sync::Arc;
 
@@ -92,7 +92,7 @@ impl ToolExecutor {
         executor.register(Box::new(read_ebook::ReadEbookTool));
         executor.register(Box::new(load_skill::LoadSkillTool));
         executor.register(Box::new(create_skill::CreateSkillTool));
-        executor.register(Box::new(git::GitTool));
+        // executor.register(Box::new(git::GitTool)); // Removed - Git operations handled by run_command
 
         // Only register call_sub_agent for the main manager agent
         let agent_role = std::env::var("AGENT_ROLE").unwrap_or_else(|_| "manager".to_string());
@@ -136,7 +136,7 @@ impl ToolExecutor {
             "read_ebook",
             "load_skill",
             "run_command",
-            "git",
+            // "git", // Removed - Git operations handled by run_command
         ];
         self.tools
             .values()

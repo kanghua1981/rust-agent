@@ -625,7 +625,7 @@ impl Agent {
                 }
 
                 // Check if this tool needs confirmation
-                if needs_confirmation(&tool_name) {
+                if needs_confirmation(&tool_name, &tool_input) {
                     let action = build_confirm_action(&tool_name, &tool_input);
                     let mut approved = false;
                     loop {
@@ -1288,7 +1288,7 @@ Begin execution now."#,
                     continue;
                 }
 
-                if !readonly_only && needs_confirmation(&tool_name) {
+                if !readonly_only && needs_confirmation(&tool_name, &tool_input) {
                     let action = build_confirm_action(&tool_name, &tool_input);
                     let mut approved = false;
                     loop {
@@ -1483,8 +1483,15 @@ fn resolve_tool_path(path: &str, project_dir: &std::path::Path) -> std::path::Pa
 }
 
 /// Check if a tool action needs user confirmation
-fn needs_confirmation(tool_name: &str) -> bool {
-    matches!(tool_name, "write_file" | "edit_file" | "multi_edit_file" | "run_command")
+fn needs_confirmation(tool_name: &str, input: &serde_json::Value) -> bool {
+    match tool_name {
+        "write_file" | "edit_file" | "multi_edit_file" => true,
+        "run_command" => {
+            // All run_command executions need confirmation because they can be dangerous
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Build a ConfirmAction from tool name and input
