@@ -261,11 +261,24 @@ impl AgentOutput for CliOutput {
 ///
 /// Every event is a single JSON line written to stdout.
 /// Confirmations read a JSON response from stdin.
-pub struct StdioOutput;
+pub struct StdioOutput {
+    /// Buffer for streaming tokens to reduce fragmentation
+    buffer: std::sync::Mutex<String>,
+    /// Whether buffering is enabled (default: true)
+    buffering_enabled: bool,
+}
 
 impl StdioOutput {
     pub fn new() -> Self {
-        StdioOutput
+        // Check if buffering should be disabled via environment variable
+        let buffering_enabled = !std::env::var("AGENT_NO_STDIO_BUFFER")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+        
+        StdioOutput {
+            buffer: std::sync::Mutex::new(String::new()),
+            buffering_enabled,
+        }
     }
 
     /// Write a JSON event line to stdout.
@@ -278,6 +291,39 @@ impl StdioOutput {
         println!("{}", line);
         use std::io::Write;
         std::io::stdout().flush().ok();
+    }
+
+    /// Flush the buffer if it contains content
+    fn flush_buffer(&self) {
+        let mut buffer = self.buffer.lock().unwrap();
+        if !buffer.is_empty() {
+            self.emit("streaming_token", serde_json::json!({ "token": &*buffer }));
+            buffer.clear();
+        }
+    }
+
+    /// Check if we should flush the buffer based on content
+    fn should_flush(&self, token: &str, buffer: &str) -> bool {
+        if !self.buffering_enabled {
+            return true;
+        }
+
+        // Always flush on newline (but we'll handle newlines specially in on_streaming_text)
+        if token.contains('\n') {
+            return true;
+        }
+
+        // Flush on sentence boundaries
+        if token.ends_with('.') || token.ends_with('!') || token.ends_with('?') {
+            return true;
+        }
+
+        // Flush if buffer is getting too large (100 chars)
+        if buffer.len() + token.len() > 100 {
+            return true;
+        }
+
+        false
     }
 }
 
@@ -300,14 +346,50 @@ impl AgentOutput for StdioOutput {
     }
 
     fn on_streaming_text(&self, token: &str) {
-        self.emit("streaming_token", serde_json::json!({ "token": token }));
+        // Ignore empty tokens
+        if token.is_empty() {
+            return;
+        }
+        
+        if !self.buffering_enabled {
+            self.emit("streaming_token", serde_json::json!({ "token": token }));
+            return;
+        }
+
+        let mut buffer = self.buffer.lock().unwrap();
+        
+        // If token contains newline, add it to buffer and flush
+        if token.contains('\n') {
+            buffer.push_str(token);
+            if !buffer.is_empty() {
+                self.emit("streaming_token", serde_json::json!({ "token": &*buffer }));
+                buffer.clear();
+            }
+            return;
+        }
+        
+        // Check if we should flush before adding this token
+        if self.should_flush(token, &buffer) {
+            if !buffer.is_empty() {
+                self.emit("streaming_token", serde_json::json!({ "token": &*buffer }));
+                buffer.clear();
+            }
+            // Always emit the current token (it triggered the flush)
+            self.emit("streaming_token", serde_json::json!({ "token": token }));
+        } else {
+            buffer.push_str(token);
+        }
     }
 
     fn on_stream_start(&self) {
+        // Clear buffer when starting a new stream
+        self.buffer.lock().unwrap().clear();
         self.emit("stream_start", serde_json::json!({}));
     }
 
     fn on_stream_end(&self) {
+        // Flush any remaining buffered content
+        self.flush_buffer();
         self.emit("stream_end", serde_json::json!({}));
     }
 
