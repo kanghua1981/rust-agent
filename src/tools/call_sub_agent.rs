@@ -235,7 +235,10 @@ impl Tool for CallSubAgentTool {
 
         let initial_msg = json!({
             "type": "user_message",
-            "data": { "text": full_prompt }
+            "data": { "text": full_prompt },
+            // Pass target_dir as allowed_dir so the sub-agent's tool executor
+            // rejects any write/edit outside this directory.
+            "allowed_dir": input.target_dir,
         });
 
         if let Err(e) = write.send(Message::Text(initial_msg.to_string().into())).await {
@@ -293,7 +296,7 @@ impl Tool for CallSubAgentTool {
                                     self.output.on_tool_result(&format!("↳ {}", name), &ToolResult::success(tool_out));
                                 }
                                 SubAgentEvent::ConfirmRequest { action, details } => {
-                                    let approved = if input.auto_approve {
+                                    let approved = if input.auto_approve || crate::confirm::is_auto_approve() {
                                         true
                                     } else {
                                         // Reconstruct the proper ConfirmAction variant so

@@ -622,22 +622,25 @@ impl AgentOutput for WsOutput {
         // Send confirm_request over WebSocket
         self.emit("confirm_request", action_data);
 
-        // Block and wait for the reader task to forward the response
+        // Block the current thread until the reader task forwards the response.
+        // block_in_place tells the tokio multi-thread scheduler to move other
+        // tasks off this thread, so the reader task can keep running and deliver
+        // the response without deadlocking.
         let rx = self.confirm_rx.lock().unwrap();
-        rx.recv().unwrap_or(ConfirmResult::No)
+        tokio::task::block_in_place(|| rx.recv().unwrap_or(ConfirmResult::No))
     }
 
     fn ask_user(&self, question: &str) -> String {
         self.emit("ask_user", serde_json::json!({ "question": question }));
         let rx = self.ask_user_rx.lock().unwrap();
-        rx.recv().unwrap_or_default()
+        tokio::task::block_in_place(|| rx.recv().unwrap_or_default())
     }
 
     fn review_plan(&self, plan_text: &str) -> PlanReview {
         self.emit("review_plan", serde_json::json!({ "plan": plan_text }));
         // Reuse ask_user channel for the response
         let rx = self.ask_user_rx.lock().unwrap();
-        let response = rx.recv().unwrap_or_default();
+        let response = tokio::task::block_in_place(|| rx.recv().unwrap_or_default());
         // Try JSON: {"action": "approve"|"approve_with_context"|"reject"|"refine",
         //            "context": "...", "feedback": "..."}
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {

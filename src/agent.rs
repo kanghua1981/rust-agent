@@ -79,6 +79,12 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Restrict write/edit tools to paths inside `dir` for this agent.
+    /// Pass `None` to remove the restriction.
+    pub fn set_allowed_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.tool_executor.set_allowed_dir(dir);
+    }
+
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);

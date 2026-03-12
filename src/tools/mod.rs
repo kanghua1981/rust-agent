@@ -12,6 +12,7 @@ pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
 pub mod call_sub_agent;
+pub mod git;
 
 use std::sync::Arc;
 
@@ -56,6 +57,9 @@ impl ToolResult {
 pub struct ToolExecutor {
     tools: HashMap<String, Box<dyn Tool + Send + Sync>>,
     project_dir: PathBuf,
+    /// When set, write/edit/delete tools are restricted to this directory.
+    /// Paths outside it are rejected before the tool runs.
+    allowed_dir: Option<PathBuf>,
 }
 
 /// Trait that all tools must implement
@@ -70,6 +74,7 @@ impl ToolExecutor {
         let mut executor = ToolExecutor {
             tools: HashMap::new(),
             project_dir,
+            allowed_dir: None,
         };
 
         // Register all built-in tools
@@ -87,6 +92,7 @@ impl ToolExecutor {
         executor.register(Box::new(read_ebook::ReadEbookTool));
         executor.register(Box::new(load_skill::LoadSkillTool));
         executor.register(Box::new(create_skill::CreateSkillTool));
+        executor.register(Box::new(git::GitTool));
 
         // Only register call_sub_agent for the main manager agent
         let agent_role = std::env::var("AGENT_ROLE").unwrap_or_else(|_| "manager".to_string());
@@ -100,6 +106,12 @@ impl ToolExecutor {
     fn register(&mut self, tool: Box<dyn Tool + Send + Sync>) {
         let def = tool.definition();
         self.tools.insert(def.name.clone(), tool);
+    }
+
+    /// Restrict write/edit tools to paths inside `dir`.
+    /// Pass `None` to remove the restriction.
+    pub fn set_allowed_dir(&mut self, dir: Option<PathBuf>) {
+        self.allowed_dir = dir;
     }
 
     /// Get all tool definitions for the LLM
@@ -124,6 +136,7 @@ impl ToolExecutor {
             "read_ebook",
             "load_skill",
             "run_command",
+            "git",
         ];
         self.tools
             .values()
@@ -140,6 +153,34 @@ impl ToolExecutor {
     /// prevents orphaned `tool_use` blocks without matching `tool_result`
     /// in the conversation, which would cause Anthropic API 400 errors.
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolResult {
+        // ── Directory guard ───────────────────────────────────────────────────
+        // If an allowed_dir is set, reject write/edit tools that try to touch
+        // paths outside it.  Read-only tools are not restricted.
+        const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit_file"];
+        if let Some(ref allowed) = self.allowed_dir {
+            if WRITE_TOOLS.contains(&name) {
+                if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
+                    let resolved = if Path::new(path_str).is_absolute() {
+                        PathBuf::from(path_str)
+                    } else {
+                        self.project_dir.join(path_str)
+                    };
+                    // canonicalize() fails for not-yet-existing files; use the
+                    // raw resolved path as fallback so new files are still checked.
+                    let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+                    // Normalise allowed_dir the same way.
+                    let allowed_canon = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+                    if !canonical.starts_with(&allowed_canon) {
+                        return ToolResult::error(format!(
+                            "Access denied: '{}' is outside the allowed directory '{}'.",
+                            canonical.display(),
+                            allowed_canon.display()
+                        ));
+                    }
+                }
+            }
+        }
+
         match self.tools.get(name) {
             Some(tool) => {
                 use futures::FutureExt; // catch_unwind on futures
