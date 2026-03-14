@@ -36,7 +36,7 @@ rustyline = "14"
 
 # Async streaming
 tokio-stream = "0.1"
-futures = "0.3"
+futures = { version = "0.3", features = ["thread-pool"] }
 
 # Error handling
 anyhow = "1"
@@ -73,3 +73,6 @@ url = "2"
 
 # WebSocket server (for --mode server)
 tokio-tungstenite = "0.24"
+
+# Browser automation with CDP
+chromiumoxide = "0.6"
