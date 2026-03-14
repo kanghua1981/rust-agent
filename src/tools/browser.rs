@@ -1,5 +1,5 @@
 use super::{Tool, ToolDefinition, ToolResult};
-use chromiumoxide::browser::{Browser, BrowserConfig, HeadlessMode};
+use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::page::{CaptureScreenshotFormat, CaptureScreenshotParams};
 use chromiumoxide::handler::viewport::Viewport;
 use chromiumoxide::page::Page;
@@ -18,7 +18,7 @@ struct BrowserState {
 impl BrowserState {
     /// Create a new browser instance
     async fn new(headless: bool) -> Result<Self, String> {
-        let config = BrowserConfig::builder()
+        let mut builder = BrowserConfig::builder()
             .viewport(Viewport {
                 width: 1920,
                 height: 1080,
@@ -26,8 +26,13 @@ impl BrowserState {
                 emulating_mobile: false,
                 has_touch: false,
                 is_landscape: false,
-            })
-            .headless_mode(if headless { HeadlessMode::True } else { HeadlessMode::False })
+            });
+        
+        if !headless {
+            builder = builder.with_head();
+        }
+        
+        let config = builder
             .build()
             .map_err(|e| format!("Failed to build browser config: {}", e))?;
         
@@ -278,6 +283,7 @@ impl Tool for BrowserTool {
                     clip: None,
                     from_surface: Some(true),
                     capture_beyond_viewport: None,
+                    optimize_for_speed: None,
                 };
                 
                 match state.page.screenshot(params).await {

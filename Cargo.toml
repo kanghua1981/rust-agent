@@ -75,4 +75,4 @@ url = "2"
 tokio-tungstenite = "0.24"
 
 # Browser automation with CDP
-chromiumoxide = "0.6"
+chromiumoxide = "0.9.1"
