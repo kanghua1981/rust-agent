@@ -113,6 +113,12 @@ struct Args {
     /// allowing /rollback to restore all changes.
     #[arg(long)]
     sandbox: bool,
+
+    /// Use the global session store (~/.local/share/rust_agent/sessions/) instead of
+    /// the project-local `.agent/session.json`. Useful when you want to manage
+    /// multiple named sessions across projects.
+    #[arg(long)]
+    global_session: bool,
 }
 
 #[tokio::main]
@@ -189,7 +195,7 @@ async fn main() -> Result<()> {
     };
 
     // Run the agent
-    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.sandbox).await;
+    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.sandbox, args.global_session).await;
 
     // Kill auto-spawned sub-agents so they don't become orphan processes.
     // On the next startup the ports would be occupied, causing port-bind failures.

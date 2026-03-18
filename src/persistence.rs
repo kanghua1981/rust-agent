@@ -5,9 +5,13 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::conversation::{Conversation, Message};
+
+/// Maximum number of messages kept in local `.agent/session.json`.
+/// Older messages are rotated to `.agent/archive/YYYY-MM.jsonl`.
+const LOCAL_MAX_MESSAGES: usize = 100;
 
 /// Metadata for a saved session
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +187,95 @@ pub fn delete_session(session_id: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Path to the local session file: `<workdir>/.agent/session.json`
+pub fn local_session_path(workdir: &Path) -> PathBuf {
+    workdir.join(".agent").join("session.json")
+}
+
+/// Derive a year-month string from the current unix timestamp, e.g. "2026-03"
+fn year_month_string() -> String {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+    let days = secs / 86400;
+    let years = 1970 + days / 365;
+    let remaining_days = days % 365;
+    let months = remaining_days / 30 + 1;
+    format!("{:04}-{:02}", years, months)
+}
+
+/// Save conversation to local `.agent/session.json`.
+///
+/// If the conversation grows past `LOCAL_MAX_MESSAGES`, the oldest excess
+/// messages are appended to `.agent/archive/YYYY-MM.jsonl` and dropped
+/// from `session.json` to keep the active file lean.
+pub fn save_local_session(conversation: &Conversation, workdir: &Path) -> Result<()> {
+    let agent_dir = workdir.join(".agent");
+    std::fs::create_dir_all(&agent_dir)?;
+
+    let mut messages = conversation.messages.clone();
+
+    // Rotate overflow to archive
+    if messages.len() > LOCAL_MAX_MESSAGES {
+        let overflow_count = messages.len() - LOCAL_MAX_MESSAGES;
+        let overflow: Vec<Message> = messages.drain(..overflow_count).collect();
+
+        let archive_dir = agent_dir.join("archive");
+        std::fs::create_dir_all(&archive_dir)?;
+        let archive_path = archive_dir.join(format!("{}.jsonl", year_month_string()));
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&archive_path)?;
+
+        use std::io::Write;
+        for msg in &overflow {
+            let line = serde_json::to_string(msg)?;
+            writeln!(file, "{}", line)?;
+        }
+    }
+
+    let now = now_string();
+    let summary = messages
+        .iter()
+        .find(|m| m.role == crate::conversation::Role::User)
+        .map(|m| crate::ui::truncate_str(&m.text_content(), 80))
+        .unwrap_or_else(|| "(empty)".to_string());
+
+    let session = SavedSession {
+        meta: SessionMeta {
+            id: "local".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+            message_count: messages.len(),
+            summary,
+            working_dir: workdir.display().to_string(),
+        },
+        system_prompt: conversation.system_prompt.clone(),
+        messages,
+    };
+
+    let path = local_session_path(workdir);
+    let json = serde_json::to_string_pretty(&session)?;
+    std::fs::write(&path, json)?;
+
+    Ok(())
+}
+
+/// Load the local session from `.agent/session.json`.
+/// Returns `None` if no local session file is found.
+pub fn load_local_session(workdir: &Path) -> Result<Option<SavedSession>> {
+    let path = local_session_path(workdir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = std::fs::read_to_string(&path)?;
+    let session: SavedSession = serde_json::from_str(&json)?;
+    Ok(Some(session))
 }
 
 /// Restore a saved session into a Conversation

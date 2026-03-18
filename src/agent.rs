@@ -76,6 +76,9 @@ pub struct Agent {
     role_configs: HashMap<String, Config>,
     /// Sandbox for snapshot-based rollback.
     pub sandbox: Sandbox,
+    /// When false (default), sessions are stored in the project's `.agent/session.json`.
+    /// When true, sessions are stored in the global `~/.local/share/rust_agent/sessions/`.
+    pub global_session: bool,
 }
 
 impl Agent {
@@ -108,6 +111,7 @@ impl Agent {
             models_cfg,
             role_configs,
             sandbox,
+            global_session: false,
         }
     }
 
@@ -134,6 +138,7 @@ impl Agent {
             models_cfg,
             role_configs,
             sandbox,
+            global_session: false,
         }
     }
 

@@ -57,6 +57,7 @@ pub async fn run(
     resume_id: Option<String>,
     output: Arc<dyn AgentOutput>,
     sandbox_enabled: bool,
+    global_session: bool,
 ) -> Result<()> {
     ui::print_banner();
     ui::print_workdir();
@@ -70,6 +71,7 @@ pub async fn run(
 
     // Create or restore agent
     let mut agent = if let Some(ref session_id) = resume_id {
+        // Explicit --resume: load from global session store
         match persistence::load_session(session_id) {
             Ok(session) => {
                 let conversation = persistence::restore_conversation(&session);
@@ -88,9 +90,29 @@ pub async fn run(
                 Agent::new(config, project_dir.clone(), output.clone(), sandbox)
             }
         }
+    } else if !global_session {
+        // Default: auto-load local session from .agent/session.json
+        match persistence::load_local_session(&project_dir) {
+            Ok(Some(session)) => {
+                let msg_count = session.messages.len();
+                let conversation = persistence::restore_conversation(&session);
+                println!(
+                    "{}  Resumed local session ({} messages)\n",
+                    "🔄",
+                    msg_count.to_string().bright_white()
+                );
+                Agent::with_conversation(config, project_dir.clone(), conversation, "local".to_string(), output.clone(), sandbox)
+            }
+            Ok(None) => Agent::new(config, project_dir.clone(), output.clone(), sandbox),
+            Err(e) => {
+                tracing::warn!("Failed to load local session: {}", e);
+                Agent::new(config, project_dir.clone(), output.clone(), sandbox)
+            }
+        }
     } else {
         Agent::new(config, project_dir.clone(), output.clone(), sandbox)
     };
+    agent.global_session = global_session;
 
     // Print sandbox status
     if sandbox_enabled {
@@ -317,16 +339,19 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             SlashResult::Continue
         }
         "/save" => {
-            match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
-                Ok(id) => {
-                    agent.set_session_id(id.clone());
-                    println!(
-                        "\n{}  Session saved: {}",
-                        "💾",
-                        id.bright_yellow()
-                    );
+            if agent.global_session {
+                match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
+                    Ok(id) => {
+                        agent.set_session_id(id.clone());
+                        println!("\n{}  Session saved (global): {}", "💾", id.bright_yellow());
+                    }
+                    Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
                 }
-                Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
+            } else {
+                match persistence::save_local_session(&agent.conversation, &agent.project_dir) {
+                    Ok(()) => println!("\n{}  Session saved to {}", "💾", ".agent/session.json".bright_yellow()),
+                    Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
+                }
             }
             SlashResult::Continue
         }
@@ -1171,12 +1196,18 @@ fn auto_save_session(agent: &mut Agent) {
     if agent.conversation.messages.is_empty() {
         return;
     }
-    match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
-        Ok(id) => {
-            agent.set_session_id(id);
+    if agent.global_session {
+        match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
+            Ok(id) => {
+                agent.set_session_id(id);
+            }
+            Err(e) => {
+                tracing::warn!("Auto-save (global) failed: {}", e);
+            }
         }
-        Err(e) => {
-            tracing::warn!("Auto-save failed: {}", e);
+    } else {
+        if let Err(e) = persistence::save_local_session(&agent.conversation, &agent.project_dir) {
+            tracing::warn!("Auto-save (local) failed: {}", e);
         }
     }
 }
