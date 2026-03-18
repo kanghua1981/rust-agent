@@ -100,33 +100,44 @@ pub fn load_skills(workdir: &Path) -> LoadedSkills {
         skills.push(skill);
     }
 
-    // 2. Index .agent/skills/*.md — only name + description
+    // 2. Index .agent/skills/ — supports both *.md files and directories
+    // Directory skills: any subdirectory containing README.md.
+    // Single-file skills: *.md / *.markdown files at the top level.
     let skills_dir = workdir.join(".agent").join("skills");
     if skills_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&skills_dir) {
-            let mut entries: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension()
-                        .is_some_and(|ext| ext == "md" || ext == "markdown")
-                })
-                .collect();
-
+            let mut all_paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
             // Sort for deterministic ordering
-            entries.sort();
+            all_paths.sort();
 
-            for path in entries {
-                let relative = format!(
-                    ".agent/skills/{}",
-                    path.file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                );
-
-                if let Some(entry) = build_skill_index(&path, &relative) {
-                    debug!("Indexed skill '{}' from {}", entry.name, relative);
-                    index.push(entry);
+            for path in all_paths {
+                if path.is_dir() {
+                    // Directory skill: requires a README.md inside
+                    if let Some(readme) = find_readme(&path) {
+                        let dir_name = path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let relative = format!(".agent/skills/{}/", dir_name);
+                        if let Some(entry) = build_skill_index(&readme, &relative) {
+                            debug!("Indexed directory skill '{}' from {}", entry.name, relative);
+                            index.push(entry);
+                        }
+                    }
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext == "md" || ext == "markdown")
+                {
+                    let relative = format!(
+                        ".agent/skills/{}",
+                        path.file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    );
+                    if let Some(entry) = build_skill_index(&path, &relative) {
+                        debug!("Indexed skill '{}' from {}", entry.name, relative);
+                        index.push(entry);
+                    }
                 }
             }
         }
@@ -137,8 +148,9 @@ pub fn load_skills(workdir: &Path) -> LoadedSkills {
 
 /// Load a specific skill by name (for the `load_skill` tool).
 ///
-/// Searches `.agent/skills/` for a file whose frontmatter `name`,
-/// humanised file stem, or raw file stem matches `skill_name`
+/// Searches `.agent/skills/` for:
+///   - A directory whose README.md frontmatter name / dir stem matches.
+///   - A `.md` file whose frontmatter name / file stem matches.
 /// (case-insensitive). Returns `None` if not found.
 pub fn load_skill_by_name(workdir: &Path, skill_name: &str) -> Option<Skill> {
     let skills_dir = workdir.join(".agent").join("skills");
@@ -151,39 +163,58 @@ pub fn load_skill_by_name(workdir: &Path, skill_name: &str) -> Option<Skill> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let ext_ok = path
+
+        if path.is_dir() {
+            // Directory skill
+            let readme = match find_readme(&path) {
+                Some(r) => r,
+                None => continue,
+            };
+            let dir_stem = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let raw = std::fs::read_to_string(&readme).ok().unwrap_or_default();
+            let fm = parse_frontmatter(&raw);
+            let display_name = fm.name.clone().unwrap_or_else(|| humanize_name(&dir_stem));
+
+            if name_matches(&display_name, &dir_stem, &needle) {
+                let relative = format!(".agent/skills/{}/", dir_stem);
+                return load_skill_from_dir(workdir, &path, &display_name, &relative);
+            }
+        } else if path
             .extension()
-            .is_some_and(|ext| ext == "md" || ext == "markdown");
-        if !ext_ok {
-            continue;
-        }
-
-        let file_stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let raw_content = std::fs::read_to_string(&path).ok().unwrap_or_default();
-        let fm = parse_frontmatter(&raw_content);
-        let display_name = fm.name.clone().unwrap_or_else(|| humanize_name(&file_stem));
-
-        // Match by frontmatter name, display name, or raw file stem (case-insensitive)
-        if display_name.to_lowercase() == needle
-            || file_stem.to_lowercase() == needle
-            || file_stem.to_lowercase().replace('-', " ") == needle
-            || file_stem.to_lowercase().replace('_', " ") == needle
+            .is_some_and(|ext| ext == "md" || ext == "markdown")
         {
-            let relative = format!(
-                ".agent/skills/{}",
-                path.file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            );
-            return load_skill_file(&path, &display_name, &relative);
+            let file_stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let raw = std::fs::read_to_string(&path).ok().unwrap_or_default();
+            let fm = parse_frontmatter(&raw);
+            let display_name = fm.name.clone().unwrap_or_else(|| humanize_name(&file_stem));
+
+            if name_matches(&display_name, &file_stem, &needle) {
+                let relative = format!(
+                    ".agent/skills/{}",
+                    path.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                );
+                return load_skill_file(&path, &display_name, &relative);
+            }
         }
     }
 
     None
+}
+
+/// Case-insensitive name matching against display name, stem, and hyphen/underscore variants.
+fn name_matches(display_name: &str, stem: &str, needle: &str) -> bool {
+    display_name.to_lowercase() == *needle
+        || stem.to_lowercase() == *needle
+        || stem.to_lowercase().replace('-', " ") == *needle
+        || stem.to_lowercase().replace('_', " ") == *needle
 }
 
 /// List all available on-demand skill names (for error messages / hints).
@@ -309,6 +340,85 @@ fn build_skill_index(path: &Path, source: &str) -> Option<SkillIndex> {
         source: source.to_string(),
         description,
     })
+}
+
+/// Find a README.md (case-insensitive) inside a skill directory.
+fn find_readme(skill_dir: &Path) -> Option<PathBuf> {
+    for candidate in &["README.md", "readme.md", "Readme.md"] {
+        let p = skill_dir.join(candidate);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Load a directory-based skill.
+///
+/// Returns the README.md body as `content`, with an appended section
+/// listing all associated asset files (scripts, data, examples, etc.)
+/// so the LLM knows which paths to pass to `read_file` or `run_command`.
+fn load_skill_from_dir(workdir: &Path, skill_dir: &Path, name: &str, source: &str) -> Option<Skill> {
+    let readme = find_readme(skill_dir)?;
+    let raw = std::fs::read_to_string(&readme).ok()?;
+    let raw_trimmed = raw.trim();
+    if raw_trimmed.is_empty() {
+        return None;
+    }
+
+    let fm = parse_frontmatter(raw_trimmed);
+    let skill_name = fm.name.unwrap_or_else(|| name.to_string());
+    let mut body = strip_frontmatter(raw_trimmed).trim().to_string();
+
+    // Collect associated asset files (everything except README.md)
+    let assets = collect_skill_assets(skill_dir, workdir);
+    if !assets.is_empty() {
+        body.push_str(
+            "\n\n### Associated files\n\
+             Use `read_file` to inspect or `run_command` to execute these assets:\n",
+        );
+        for asset in &assets {
+            body.push_str(&format!("- `{}`\n", asset));
+        }
+    }
+
+    Some(Skill {
+        name: skill_name,
+        source: source.to_string(),
+        content: body,
+    })
+}
+
+/// Recursively collect all non-README files inside a skill directory,
+/// returning their paths relative to `workdir`.
+fn collect_skill_assets(skill_dir: &Path, workdir: &Path) -> Vec<String> {
+    let mut assets = Vec::new();
+    collect_assets_recursive(skill_dir, workdir, &mut assets);
+    assets.sort();
+    assets
+}
+
+fn collect_assets_recursive(dir: &Path, workdir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_assets_recursive(&path, workdir, out);
+        } else {
+            let fname = path.file_name().map(|s| s.to_string_lossy().to_lowercase());
+            // Skip the README itself
+            if fname.as_deref() == Some("readme.md") {
+                continue;
+            }
+            // Relative to workdir for easy use in tool calls
+            let rel = path
+                .strip_prefix(workdir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| path.to_string_lossy().to_string());
+            out.push(rel);
+        }
+    }
 }
 
 /// Read a single skill file, returning None if it can't be read or is empty.
