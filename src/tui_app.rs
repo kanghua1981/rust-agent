@@ -19,7 +19,8 @@ use std::sync::{mpsc as std_mpsc, Arc};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent,
+    KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -36,6 +37,18 @@ use crate::config::Config;
 use crate::output::{AgentOutput, NotifyLevel, PlanReview, SubAgentOutputEvent};
 use crate::sandbox::Sandbox;
 use crate::tools::ToolResult;
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Constants
+// ───────────────────────────────────────────────────────────────────────────────
+
+/// Target render interval: ~60 fps.
+const RENDER_INTERVAL_MS: u64 = 16;
+/// Lines scrolled per mouse wheel tick.
+const MOUSE_SCROLL_STEP: usize = 3;
+/// Maximum number of output lines kept in memory.
+/// Oldest lines are dropped when this limit is reached, preventing unbounded growth.
+const MAX_OUTPUT_LINES: usize = 5_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Events: agent task → TUI render loop
@@ -58,6 +71,8 @@ pub enum TuiEvent {
     AskUser(String, std_mpsc::SyncSender<String>),
     /// Show the pipeline plan and wait for approve/reject/refine.
     ReviewPlan(String, std_mpsc::SyncSender<PlanReview>),
+    /// Agent task exited (panic, error, or clean quit).
+    AgentDied(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,10 +350,21 @@ impl TuiApp {
     // ── Output helpers ────────────────────────────────────────────────────────
 
     fn push_line(&mut self, line: Line<'static>) {
-        // If a stream was in progress (shouldn't happen in normal flow), finalize it.
-        self.is_streaming = false;
-        self.stream_buf.clear();
+        // If a stream was in progress, the last output_lines entry already holds
+        // the partial content — just reset state, don't discard the line.
+        if self.is_streaming {
+            self.is_streaming = false;
+            self.stream_buf.clear();
+        }
         self.output_lines.push(line);
+        // Cap memory usage: drop the oldest lines when the limit is reached.
+        // Trim in chunks of 10% to amortise the cost of Vec::drain.
+        if self.output_lines.len() > MAX_OUTPUT_LINES {
+            let drop_n = MAX_OUTPUT_LINES / 10;
+            self.output_lines.drain(..drop_n);
+            // Keep the scroll position pointing at the same logical line.
+            self.scroll = self.scroll.saturating_sub(drop_n);
+        }
         if self.auto_scroll {
             self.scroll = self.output_lines.len();
         }
@@ -363,13 +389,49 @@ impl TuiApp {
             TuiEvent::StreamToken(token) => {
                 if self.is_streaming {
                     self.stream_buf.push_str(&token);
-                    // Update the last line in place (O(1) for the vector).
-                    if let Some(last) = self.output_lines.last_mut() {
-                        *last = Line::from(vec![
+
+                    // Split on newlines so multi-line LLM output is shown correctly.
+                    // ratatui Line = single terminal row; embedded \n would be invisible.
+                    if self.stream_buf.contains('\n') {
+                        let mut segments: Vec<String> = self
+                            .stream_buf
+                            .split('\n')
+                            .map(|s| s.to_owned())
+                            .collect();
+                        // The last segment is the new partial (possibly empty) streaming line.
+                        let partial = segments.pop().unwrap_or_default();
+
+                        // Finalize the first segment into the current streaming line.
+                        if let Some(last) = self.output_lines.last_mut() {
+                            let first = segments.remove(0);
+                            *last = Line::from(vec![
+                                Span::styled("◀ ", s(Color::Green)),
+                                Span::raw(first),
+                            ]);
+                        }
+                        // Push all complete middle lines.
+                        for seg in segments {
+                            self.output_lines.push(Line::from(vec![
+                                Span::styled("  ", s(Color::Green)),
+                                Span::raw(seg),
+                            ]));
+                        }
+                        // Push a new streaming line for the remaining partial content.
+                        self.output_lines.push(Line::from(vec![
                             Span::styled("◀ ", s(Color::Green)),
-                            Span::raw(self.stream_buf.clone()),
-                        ]);
+                            Span::raw(partial.clone()),
+                        ]));
+                        self.stream_buf = partial;
+                    } else {
+                        // No newline yet — update the current streaming line in place.
+                        if let Some(last) = self.output_lines.last_mut() {
+                            *last = Line::from(vec![
+                                Span::styled("◀ ", s(Color::Green)),
+                                Span::raw(self.stream_buf.clone()),
+                            ]);
+                        }
                     }
+
                     if self.auto_scroll {
                         self.scroll = self.output_lines.len();
                     }
@@ -377,6 +439,19 @@ impl TuiApp {
             }
 
             TuiEvent::StreamEnd => {
+                // The last output_lines entry already has the correct final content
+                // (stream_buf has no embedded \n after the fix above).
+                // Just promote the last streaming line to a plain (non-◀) line so
+                // it looks settled, then reset state.
+                if self.is_streaming {
+                    if let Some(last) = self.output_lines.last_mut() {
+                        let text = self.stream_buf.clone();
+                        *last = Line::from(vec![
+                            Span::styled("  ", s(Color::DarkGray)),
+                            Span::raw(text),
+                        ]);
+                    }
+                }
                 self.is_streaming = false;
                 self.stream_buf.clear();
             }
@@ -436,6 +511,23 @@ impl TuiApp {
                 self.plan_pending = Some(reply_tx);
                 self.input.clear();
                 self.cursor = 0;
+            }
+
+            TuiEvent::AgentDied(reason) => {
+                self.agent_running = false;
+                // Release any blocked confirm/ask/plan by dropping the senders.
+                self.confirm_pending = None;
+                self.ask_pending = None;
+                self.plan_pending = None;
+                self.input_queue.clear();
+                self.push_line(Line::from(vec![
+                    Span::styled("✗ agent task died: ", b(Color::Red)),
+                    Span::styled(reason, s(Color::Red)),
+                ]));
+                self.push_line(Line::from(vec![Span::styled(
+                    "  TUI still active — Ctrl-Q to quit.",
+                    s(Color::DarkGray),
+                )]));
             }
         }
     }
@@ -505,6 +597,7 @@ impl TuiApp {
                 self.push_line(item("/quit",         "Exit the TUI"));
                 self.push_line(head("── Keyboard shortcuts ─────────────────────────────────────────"));
                 self.push_line(item("PgUp / PgDn",  "Scroll output"));
+                self.push_line(item("Mouse wheel",   "Scroll output"));
                 self.push_line(item("↑ / ↓",        "Command history"));
                 self.push_line(item("Ctrl-C",        "Interrupt agent"));
                 self.push_line(item("Ctrl-Q",        "Quit"));
@@ -688,6 +781,32 @@ impl TuiApp {
         }
         false
     }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent, out_h: u16) {
+        let total = self.output_lines.len();
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                let first = if self.auto_scroll {
+                    total.saturating_sub(out_h as usize)
+                } else {
+                    self.scroll
+                };
+                self.auto_scroll = false;
+                self.scroll = first.saturating_sub(MOUSE_SCROLL_STEP);
+            }
+            MouseEventKind::ScrollDown => {
+                let new_first = self.scroll.saturating_add(MOUSE_SCROLL_STEP);
+                if new_first + out_h as usize >= total {
+                    // Reached the bottom — re-enable auto-scroll.
+                    self.auto_scroll = true;
+                } else {
+                    self.auto_scroll = false;
+                    self.scroll = new_first;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -819,12 +938,12 @@ async fn handle_tui_slash(
     }
     macro_rules! info {
         ($text:expr) => {
-            line!(vec![Span::raw($text.to_string())]);
+            line!(vec![Span::raw($text.to_string())])
         };
     }
     macro_rules! head {
         ($text:expr) => {
-            line!(vec![Span::styled($text.to_string(), b(Color::Cyan))]);
+            line!(vec![Span::styled($text.to_string(), b(Color::Cyan))])
         };
     }
     macro_rules! item {
@@ -832,7 +951,7 @@ async fn handle_tui_slash(
             line!(vec![
                 Span::styled(format!("  {:20}", $label), s(Color::White)),
                 Span::styled($val.to_string(), s(Color::DarkGray)),
-            ]);
+            ])
         };
     }
 
@@ -866,6 +985,7 @@ async fn handle_tui_slash(
             item!("/quit", "Exit the TUI");
             head!("── Keyboard shortcuts ─────────────────────────────────────────");
             item!("PgUp / PgDn", "Scroll output");
+            item!("Mouse wheel", "Scroll output");
             item!("↑ / ↓", "Command history");
             item!("Ctrl-C", "Interrupt agent");
             item!("Ctrl-Q", "Quit");
@@ -1090,7 +1210,7 @@ pub async fn run(
     // ── Agent task (runs entirely on its own tokio worker thread) ─────────
     let agent_out: Arc<dyn AgentOutput> = tui_out.clone();
     let tui_tx2 = tui_tx.clone();
-    let _agent_task = tokio::spawn(async move {
+    let mut agent_task = tokio::spawn(async move {
         let sandbox = if sandbox_enabled {
             Sandbox::new(&project_dir)
         } else {
@@ -1169,11 +1289,17 @@ pub async fn run(
     // ── Terminal setup ────────────────────────────────────────────────────
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::EnterAlternateScreen,
+        EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let mut out_h: u16 = 20;
+    // Guard flag: prevents re-polling the JoinHandle after it resolves.
+    let mut agent_alive = true;
 
     // ── Main render / event loop ──────────────────────────────────────────
     let result = async {
@@ -1188,6 +1314,7 @@ pub async fn run(
             }
 
             // Wait for agent output OR a 16 ms tick (≈60 fps), whichever comes first.
+            // Also watch for the agent task dying unexpectedly (panic / error).
             tokio::select! {
                 biased;
                 Some(ev) = app.rx.recv() => {
@@ -1197,16 +1324,37 @@ pub async fn run(
                         app.handle_tui_event(ev);
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_millis(16)) => {}
+                result = &mut agent_task, if agent_alive => {
+                    // Agent task exited (clean quit, panic, or error).
+                    agent_alive = false;
+                    let reason = match result {
+                        Ok(()) => "agent task exited normally".to_owned(),
+                        Err(e) if e.is_panic() => format!("panic: {:?}", e),
+                        Err(e) => format!("error: {}", e),
+                    };
+                    app.handle_tui_event(TuiEvent::AgentDied(reason));
+                }
+                _ = tokio::time::sleep(Duration::from_millis(RENDER_INTERVAL_MS)) => {}
             }
 
-            // Check keyboard (non-blocking poll; Duration::ZERO avoids blocking tokio).
+            // Check keyboard / mouse (non-blocking poll; Duration::ZERO avoids blocking tokio).
             while crossterm::event::poll(Duration::ZERO)? {
-                if let Ok(Event::Key(key)) = crossterm::event::read() {
-                    if app.handle_key(key, out_h) {
-                        app.quit = true;
-                        break;
+                match crossterm::event::read() {
+                    Ok(Event::Key(key)) => {
+                        if app.handle_key(key, out_h) {
+                            app.quit = true;
+                            break;
+                        }
                     }
+                    Ok(Event::Mouse(mouse)) => {
+                        app.handle_mouse(mouse, out_h);
+                    }
+                    Ok(Event::Resize(_, _)) => {
+                        // Force a full redraw on the next iteration; ratatui
+                        // handles the new geometry automatically via terminal.draw().
+                        terminal.autoresize()?;
+                    }
+                    _ => {}
                 }
             }
 
@@ -1220,7 +1368,11 @@ pub async fn run(
 
     // ── Terminal teardown (always runs) ───────────────────────────────────
     crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::terminal::LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
 
     result
 }
