@@ -526,54 +526,44 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             let _ = writeln!(md, "---\n");
 
             for msg in &agent.conversation.messages {
-                match msg.role {
-                    Role::User => {
-                        let _ = writeln!(md, "## 🧑 You\n");
-                        for block in &msg.content {
-                            match block {
-                                ContentBlock::Text { text } => {
+                    // Skip messages that contain only ToolResult blocks.
+                    let is_tool_result_only = msg.content.iter().all(|b| {
+                        matches!(b, ContentBlock::ToolResult { .. })
+                    });
+
+                    match msg.role {
+                        Role::User if !is_tool_result_only => {
+                            let _ = writeln!(md, "## \u{1F9D1} You\n");
+                            for block in &msg.content {
+                                if let ContentBlock::Text { text } = block {
                                     let _ = writeln!(md, "{}\n", text.trim());
                                 }
-                                ContentBlock::ToolResult { content, is_error, .. } => {
-                                    let label = if is_error.unwrap_or(false) { "Tool Error" } else { "Tool Result" };
-                                    let _ = writeln!(md, "<details><summary>{}</summary>\n", label);
-                                    let preview: String = content.lines().take(20).collect::<Vec<_>>().join("\n");
-                                    let _ = writeln!(md, "```");
-                                    let _ = write!(md, "{}", preview);
-                                    if content.lines().count() > 20 {
-                                        let _ = writeln!(md, "\n… ({} lines total)", content.lines().count());
-                                    } else {
-                                        let _ = writeln!(md);
+                            }
+                            let _ = writeln!(md, "---\n");
+                        }
+                        Role::Assistant => {
+                            let _ = writeln!(md, "## \u{1F916} Agent\n");
+                            for block in &msg.content {
+                                match block {
+                                    ContentBlock::Text { text } if !text.trim().is_empty() => {
+                                        let _ = writeln!(md, "{}\n", text.trim());
                                     }
-                                    let _ = writeln!(md, "```\n</details>\n");
+                                    ContentBlock::ToolUse { name, input: tool_input, .. } => {
+                                        let pretty = serde_json::to_string_pretty(tool_input)
+                                            .unwrap_or_else(|_| tool_input.to_string());
+                                        let _ = writeln!(md, "**Tool:** `{}`\n", name);
+                                        let _ = writeln!(md, "```json");
+                                        let _ = writeln!(md, "{}", pretty);
+                                        let _ = writeln!(md, "```\n");
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
+                            let _ = writeln!(md, "---\n");
                         }
+                        _ => {}
                     }
-                    Role::Assistant => {
-                        let _ = writeln!(md, "## 🤖 Agent\n");
-                        for block in &msg.content {
-                            match block {
-                                ContentBlock::Text { text } if !text.trim().is_empty() => {
-                                    let _ = writeln!(md, "{}\n", text.trim());
-                                }
-                                ContentBlock::ToolUse { name, input: tool_input, .. } => {
-                                    let pretty = serde_json::to_string_pretty(tool_input)
-                                        .unwrap_or_else(|_| tool_input.to_string());
-                                    let _ = writeln!(md, "**Tool:** `{}`\n", name);
-                                    let _ = writeln!(md, "```json");
-                                    let _ = writeln!(md, "{}", pretty);
-                                    let _ = writeln!(md, "```\n");
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    Role::System => {}
                 }
-                let _ = writeln!(md, "---\n");
-            }
 
             match std::fs::write(&path, &md) {
                 Ok(()) => println!(
