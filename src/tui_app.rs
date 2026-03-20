@@ -465,11 +465,28 @@ impl TuiApp {
         self.input.clear();
         self.cursor = 0;
 
+        // Handle slash commands that the TUI owns.
+        match text.as_str() {
+            "/quit" | "/exit" | "/q" => {
+                self.quit = true;
+                return;
+            }
+            "/clear" => {
+                self.output_lines.clear();
+                self.scroll = 0;
+                return;
+            }
+            _ => {}
+        }
+
         // Confirmation mode: interpret as y/n/a.
         if let Some((_, ref reply_tx)) = self.confirm_pending {
             let result = match text.to_lowercase().as_str() {
                 "y" | "yes" => ConfirmResult::Yes,
-                "a" | "always" => ConfirmResult::AlwaysYes,
+                "a" | "always" => {
+                    crate::confirm::set_auto_approve(true);
+                    ConfirmResult::AlwaysYes
+                }
                 _ => ConfirmResult::No,
             };
             reply_tx.send(result).ok();
@@ -744,6 +761,223 @@ fn render(f: &mut ratatui::Frame, app: &TuiApp) -> u16 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Slash command handler (runs inside the agent task, outputs via tui_tx)
+// Returns true if the app should quit.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn handle_tui_slash(
+    input: &str,
+    agent: &mut Agent,
+    tx: &async_mpsc::UnboundedSender<TuiEvent>,
+) -> bool {
+    macro_rules! line {
+        ($spans:expr) => {{
+            let _ = tx.send(TuiEvent::Line(Line::from($spans)));
+        }};
+    }
+    macro_rules! info {
+        ($text:expr) => {
+            line!(vec![Span::raw($text.to_string())]);
+        };
+    }
+    macro_rules! head {
+        ($text:expr) => {
+            line!(vec![Span::styled($text.to_string(), b(Color::Cyan))]);
+        };
+    }
+    macro_rules! item {
+        ($label:expr, $val:expr) => {
+            line!(vec![
+                Span::styled(format!("  {:20}", $label), s(Color::White)),
+                Span::styled($val.to_string(), s(Color::DarkGray)),
+            ]);
+        };
+    }
+
+    match input {
+        "/quit" | "/exit" | "/q" => {
+            crate::cli::auto_save_session(agent);
+            line!(vec![Span::styled("👋 Goodbye! Happy coding!", s(Color::Green))]);
+            return true;
+        }
+
+        "/help" | "/h" => {
+            head!("── Available Commands ─────────────────────────────────────────");
+            item!("/help", "Show this help");
+            item!("/clear", "Clear conversation and output");
+            item!("/usage", "Show token usage");
+            item!("/context", "Show context window status");
+            item!("/memory", "Show agent memory");
+            item!("/skills", "List loaded skills");
+            item!("/model", "List / switch models");
+            item!("/save", "Save current session");
+            item!("/sessions", "List saved sessions");
+            item!("/yesall", "Auto-approve all operations");
+            item!("/confirm", "Re-enable confirmations");
+            item!("/summary", "Generate project summary");
+            item!("/plan <task>", "Generate execution plan");
+            item!("/plan run", "Execute pending plan");
+            item!("/rollback", "Rollback sandbox changes");
+            item!("/commit", "Commit sandbox changes");
+            item!("/changes", "Show sandbox diff");
+            item!("/quit", "Exit the TUI");
+            head!("── Keyboard shortcuts ─────────────────────────────────────────");
+            item!("PgUp / PgDn", "Scroll output");
+            item!("↑ / ↓", "Command history");
+            item!("Ctrl-C", "Interrupt agent");
+            item!("Ctrl-Q", "Quit");
+        }
+
+        "/clear" => {
+            agent.reset();
+            line!(vec![Span::styled("🔄 Conversation cleared.", s(Color::Cyan))]);
+        }
+
+        "/usage" => {
+            let (inp, out) = agent.token_usage();
+            head!("── Token Usage ────────────────────────────────────────────────");
+            item!("Input tokens", inp);
+            item!("Output tokens", out);
+            item!("Total", inp + out);
+        }
+
+        "/context" => {
+            let st = crate::context::check_context(&agent.conversation, &agent.config.model);
+            head!("── Context Window ─────────────────────────────────────────────");
+            item!("Estimated tokens", st.estimated_tokens);
+            item!("Max tokens", st.max_tokens);
+            item!("Usage", format!("{:.1}%", st.usage_percent));
+            item!("Messages", agent.conversation.messages.len());
+        }
+
+        "/memory" => {
+            let mem = &agent.memory;
+            if mem.is_empty() {
+                info!("🧠 Memory is empty.");
+            } else {
+                head!("── Agent Memory ───────────────────────────────────────────────");
+                if !mem.knowledge.is_empty() {
+                    line!(vec![Span::styled("  📖 Project Knowledge:", b(Color::Cyan))]);
+                    for fact in &mem.knowledge {
+                        line!(vec![Span::raw(format!("    • {}", fact))]);
+                    }
+                }
+                if !mem.file_map.is_empty() {
+                    line!(vec![Span::styled("  📁 Key Files:", b(Color::Cyan))]);
+                    for (path, desc) in &mem.file_map {
+                        if desc.is_empty() {
+                            line!(vec![Span::raw(format!("    • {}", path))]);
+                        } else {
+                            line!(vec![Span::raw(format!("    • {}  ({})", path, desc))]);
+                        }
+                    }
+                }
+                if !mem.session_log.is_empty() {
+                    line!(vec![Span::styled("  📝 Session Log:", b(Color::Cyan))]);
+                    for entry in mem.session_log.iter().rev().take(10) {
+                        line!(vec![Span::styled(format!("    • {}", entry), s(Color::DarkGray))]);
+                    }
+                }
+            }
+        }
+
+        "/skills" => {
+            let loaded = crate::skills::load_skills(&agent.project_dir);
+            if loaded.is_empty() {
+                info!("📋 No skills found. Create AGENT.md or add .md files to .agent/skills/");
+            } else {
+                head!("── Skills ─────────────────────────────────────────────────────");
+                for skill in &loaded.skills {
+                    line!(vec![Span::raw(format!("  • {} ({}) [embedded]", skill.name, skill.source))]);
+                }
+                for entry in &loaded.index {
+                    line!(vec![Span::raw(format!("  • {} ({}) [on-demand]", entry.name, entry.source))]);
+                }
+            }
+        }
+
+        "/save" => {
+            if agent.global_session {
+                match crate::persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
+                    Ok(id) => {
+                        agent.set_session_id(id.clone());
+                        line!(vec![Span::styled(format!("💾 Session saved (global): {}", id), s(Color::Yellow))]);
+                    }
+                    Err(e) => line!(vec![Span::styled(format!("✗ Failed to save: {}", e), s(Color::Red))]),
+                }
+            } else {
+                match crate::persistence::save_local_session(&agent.conversation, &agent.project_dir) {
+                    Ok(()) => line!(vec![Span::styled("💾 Session saved to .agent/session.json", s(Color::Yellow))]),
+                    Err(e) => line!(vec![Span::styled(format!("✗ Failed to save: {}", e), s(Color::Red))]),
+                }
+            }
+        }
+
+        "/sessions" => {
+            match crate::persistence::list_sessions() {
+                Ok(sessions) if sessions.is_empty() => info!("No saved sessions found."),
+                Ok(sessions) => {
+                    head!("── Saved Sessions ─────────────────────────────────────────────");
+                    line!(vec![Span::styled(
+                        format!("  {:<10} {:<24} {:<6} {}", "ID", "Updated", "Msgs", "Summary"),
+                        b(Color::White),
+                    )]);
+                    for s_ in &sessions {
+                        line!(vec![Span::raw(format!(
+                            "  {:<10} {:<24} {:<6} {}",
+                            s_.id, s_.updated_at, s_.message_count, s_.summary
+                        ))]);
+                    }
+                }
+                Err(e) => line!(vec![Span::styled(format!("✗ {}", e), s(Color::Red))]),
+            }
+        }
+
+        "/yesall" => {
+            crate::confirm::set_auto_approve(true);
+            line!(vec![Span::styled("✅ Auto-approve enabled.", s(Color::Green))]);
+        }
+
+        "/confirm" => {
+            crate::confirm::set_auto_approve(false);
+            line!(vec![Span::styled("🔒 Confirmations re-enabled.", s(Color::Cyan))]);
+        }
+
+        _ if input == "/summary" || input.starts_with("/summary ") => {
+            crate::cli::handle_summary_command(input, agent).await;
+        }
+
+        _ if input == "/plan" || input.starts_with("/plan ") => {
+            crate::cli::handle_plan_command(input, agent).await;
+        }
+
+        "/rollback" => {
+            crate::cli::handle_rollback_command(agent).await;
+        }
+
+        "/commit" => {
+            crate::cli::handle_commit_command(agent).await;
+        }
+
+        "/changes" => {
+            crate::cli::handle_changes_command(agent).await;
+        }
+
+        _ if input == "/model" || input.starts_with("/model ") => {
+            crate::cli::handle_model_command(input, agent);
+        }
+
+        _ => {
+            line!(vec![
+                Span::styled(format!("❓ Unknown command: {}  ", input), s(Color::Red)),
+                Span::styled("Type /help for available commands.", s(Color::DarkGray)),
+            ]);
+        }
+    }
+    false
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -824,12 +1058,22 @@ pub async fn run(
         loop {
             match input_rx.recv().await {
                 Some(msg) => {
-                    tui_tx2.send(TuiEvent::AgentBusy(true)).ok();
-                    crate::agent::clear_interrupt();
-                    agent.drain_service_events();
-                    agent.process_message(&msg).await.ok();
-                    agent.drain_service_events();
-                    tui_tx2.send(TuiEvent::AgentBusy(false)).ok();
+                    if msg.starts_with('/') {
+                        // Slash commands: handle without marking agent busy (they are fast)
+                        // except async ones that need the agent to do real work.
+                        let quit = handle_tui_slash(&msg, &mut agent, &tui_tx2).await;
+                        if quit {
+                            break;
+                        }
+                        tui_tx2.send(TuiEvent::AgentBusy(false)).ok();
+                    } else {
+                        tui_tx2.send(TuiEvent::AgentBusy(true)).ok();
+                        crate::agent::clear_interrupt();
+                        agent.drain_service_events();
+                        agent.process_message(&msg).await.ok();
+                        agent.drain_service_events();
+                        tui_tx2.send(TuiEvent::AgentBusy(false)).ok();
+                    }
                 }
                 None => break,
             }

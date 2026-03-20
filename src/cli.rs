@@ -500,7 +500,7 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
 /// - `/model add <alias>`    — interactively add a new model entry
 /// - `/model remove <alias>` — remove a model entry
 /// - `/model default <alias>`— set the default model alias
-fn handle_model_command(input: &str, agent: &mut Agent) {
+pub fn handle_model_command(input: &str, agent: &mut Agent) {
     let subcommand = input.strip_prefix("/model").unwrap_or("").trim();
 
     match subcommand {
@@ -783,7 +783,7 @@ fn prompt_line(prompt: &str) -> String {
 /// - `/plan run`       — execute the pending plan
 /// - `/plan show`      — display the pending plan again
 /// - `/plan clear`     — discard the pending plan
-async fn handle_plan_command(input: &str, agent: &mut Agent) {
+pub async fn handle_plan_command(input: &str, agent: &mut Agent) {
     let subcommand = input.strip_prefix("/plan").unwrap_or("").trim();
 
     match subcommand {
@@ -915,7 +915,7 @@ async fn handle_plan_command(input: &str, agent: &mut Agent) {
 ///
 /// - `/summary`            — show existing summary, or offer to generate
 /// - `/summary generate`   — force (re-)generate the project summary
-async fn handle_summary_command(input: &str, agent: &mut Agent) {
+pub async fn handle_summary_command(input: &str, agent: &mut Agent) {
     let subcommand = input.strip_prefix("/summary").unwrap_or("").trim();
     let cwd = &agent.project_dir;
 
@@ -996,7 +996,7 @@ async fn handle_summary_command(input: &str, agent: &mut Agent) {
 }
 
 /// Handle `/rollback` — restore all files to their pre-sandbox state.
-async fn handle_rollback_command(agent: &mut Agent) {
+pub async fn handle_rollback_command(agent: &mut Agent) {
     if !agent.sandbox.is_enabled().await {
         println!(
             "\n{}  {}",
@@ -1070,7 +1070,7 @@ async fn handle_rollback_command(agent: &mut Agent) {
 }
 
 /// Handle `/commit` — accept all sandbox changes (discard snapshots).
-async fn handle_commit_command(agent: &mut Agent) {
+pub async fn handle_commit_command(agent: &mut Agent) {
     if !agent.sandbox.is_enabled().await {
         println!(
             "\n{}  {}",
@@ -1119,7 +1119,7 @@ async fn handle_commit_command(agent: &mut Agent) {
 }
 
 /// Handle `/changes` — display sandbox-tracked file modifications.
-async fn handle_changes_command(agent: &Agent) {
+pub async fn handle_changes_command(agent: &Agent) {
     if !agent.sandbox.is_enabled().await {
         println!(
             "\n{}  {}",
@@ -1199,7 +1199,7 @@ async fn handle_changes_command(agent: &Agent) {
 }
 
 /// Auto-save the session (silent, won't error to user)
-fn auto_save_session(agent: &mut Agent) {
+pub fn auto_save_session(agent: &mut Agent) {
     if agent.conversation.messages.is_empty() {
         return;
     }

@@ -6,8 +6,6 @@
 
 ## File Map
 
-- docs/ASYNC_AGENT_DESIGN.md: read
-- src/service.rs: read
 - src/tools/spawn_sub_agent.rs: read
 - src/tools/query_service.rs: read
 - src/tools/connect_service.rs: read
@@ -17,24 +15,15 @@
 - test_architecture_simple.rs: written (54 lines)
 - src/agent.rs: read
 - src/tools/mod.rs: read
-- Cargo.toml: read
 - src/main.rs: read
 - src/tui_app.rs: read
 - Cargo.lock: read
+- build.sh: read
+- Cargo.toml: read
+- /home/kanghua/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/darling-0.23.0/Cargo.toml: read
 
 ## Session Log
 
-- [04-02 17:31] ran `cargo check`
-- [04-02 17:31] ran `cargo build --release`
-- [04-02 17:32] wrote test_architecture.rs
-- [04-02 17:32] wrote test_architecture_simple.rs
-- [04-02 17:32] ran `rustc test_architecture_simple.rs && ./test_architecture_sim...`
-- [04-02 17:32] read src/agent.rs
-- [04-02 17:32] read src/tools/mod.rs
-- [04-02 17:33] ran `rm -f test_architecture.rs test_architecture_simple.rs`
-- [04-02 17:33] ran `cd /media/kanghua/disk/src/tools/rust_agent && git status --...`
-- [04-03 00:55] listed .
-- [04-03 00:55] read Cargo.toml
 - [04-03 00:55] read src/main.rs
 - [04-03 00:55] read src/tui_app.rs
 - [04-03 00:56] ran `rustc --version`
@@ -44,3 +33,14 @@
 - [04-03 00:57] searched for `darling.*darling`
 - [04-03 00:57] read Cargo.lock
 - [04-03 00:57] read Cargo.lock
+- [04-03 01:01] read build.sh
+- [04-03 01:01] read Cargo.toml
+- [04-03 01:01] read Cargo.toml
+- [04-03 01:01] found files matching `rust-toolchain*`
+- [04-03 01:01] ran `rustc --version`
+- [04-03 01:02] ran `cargo tree -p ratatui`
+- [04-03 01:02] ran `cargo tree -p darling`
+- [04-03 01:03] ran `cargo build --release --ignore-rust-version`
+- [04-03 01:03] ran `./target/release/agent --help | head -20`
+- [04-03 01:04] ran `find ~/.cargo/registry -name "darling-0.23.0" -type d | head...`
+- [04-03 01:04] read /home/kanghua/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/darling-0.23.0/Cargo.toml
