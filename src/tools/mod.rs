@@ -12,6 +12,11 @@ pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
 pub mod call_sub_agent;
+pub mod spawn_sub_agent;
+pub mod connect_service;
+pub mod query_service;
+pub mod subscribe_service;
+pub mod list_services;
 pub mod browser;
 // pub mod git; // Removed - Git operations handled by run_command
 
@@ -96,11 +101,20 @@ impl ToolExecutor {
         executor.register(Box::new(browser::BrowserTool::new()));
         // executor.register(Box::new(git::GitTool)); // Removed - Git operations handled by run_command
 
-        // Only register call_sub_agent for the main manager agent
+        // Only register agent-spawning tools for the main manager agent (not for
+        // worker sub-agents spawned by spawn_sub_agent, to prevent infinite recursion).
         let agent_role = std::env::var("AGENT_ROLE").unwrap_or_else(|_| "manager".to_string());
         if agent_role == "manager" {
-            executor.register(Box::new(call_sub_agent::CallSubAgentTool::new(output)));
+            executor.register(Box::new(call_sub_agent::CallSubAgentTool::new(output.clone())));
+            executor.register(Box::new(spawn_sub_agent::SpawnSubAgentTool::new(output)));
         }
+
+        // Service tools are available to all roles.
+        executor.register(Box::new(connect_service::ConnectServiceTool));
+        executor.register(Box::new(query_service::QueryServiceTool));
+        executor.register(Box::new(subscribe_service::SubscribeServiceTool));
+        executor.register(Box::new(subscribe_service::UnsubscribeServiceTool));
+        executor.register(Box::new(list_services::ListServicesTool));
 
         executor
     }

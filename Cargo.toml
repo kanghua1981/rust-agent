@@ -26,6 +26,7 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Terminal UI
 crossterm = "0.28"
+ratatui = "0.28"
 colored = "2"
 
 # Low-level Unix terminal control (termios save/restore)
@@ -41,6 +42,9 @@ futures = { version = "0.3", features = ["thread-pool"] }
 # Error handling
 anyhow = "1"
 thiserror = "1"
+
+# Lazy global initialization
+once_cell = "1"
 
 # Environment & config
 dotenvy = "0.15"

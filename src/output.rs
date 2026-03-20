@@ -7,6 +7,41 @@
 use crate::confirm::ConfirmAction;
 use crate::tools::ToolResult;
 
+// ── SubAgent / Service event types ──────────────────────────────────────────
+
+/// Events forwarded from a stdio sub-agent to the parent's output layer.
+/// The parent prefixes each event with `[sub:{task_id}]` so multiple concurrent
+/// sub-agents remain visually distinguishable in the output stream.
+#[derive(Debug, Clone)]
+pub enum SubAgentOutputEvent {
+    StreamStart,
+    StreamEnd,
+    Token(String),
+    ToolUse { name: String },
+    ToolDone { name: String, is_error: bool },
+    Done(String),
+    Error(String),
+}
+
+/// Severity level for notifications pushed by an external Service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyLevel {
+    Info,
+    Warning,
+    /// Requires user attention — rendered more prominently.
+    Alert,
+}
+
+impl NotifyLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NotifyLevel::Info    => "info",
+            NotifyLevel::Warning => "warning",
+            NotifyLevel::Alert   => "alert",
+        }
+    }
+}
+
 /// Result of interactive plan review.
 #[derive(Debug, Clone)]
 pub enum PlanReview {
@@ -94,6 +129,55 @@ pub trait AgentOutput: Send + Sync {
 
     /// Context window pressure notification.
     fn on_context_warning(&self, usage_percent: f32, estimated: usize, max: usize);
+
+    // ── SubAgent events ─────────────────────────────────────────
+    /// An event forwarded from a stdio sub-agent.
+    /// `task_id` is a short identifier (e.g. first 4 chars of UUID) used as prefix.
+    /// Default implementation falls back to existing output methods with a prefix so
+    /// implementations that don't override this still produce readable output.
+    fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
+        let prefix = format!("[sub:{}]", task_id);
+        match event {
+            SubAgentOutputEvent::StreamStart => {}
+            SubAgentOutputEvent::StreamEnd   => {}
+            SubAgentOutputEvent::Token(t) => {
+                self.on_streaming_text(&format!("{} {}", prefix, t));
+            }
+            SubAgentOutputEvent::ToolUse { name } => {
+                self.on_warning(&format!("{} ⚙  {}", prefix, name));
+            }
+            SubAgentOutputEvent::ToolDone { name, is_error } => {
+                if *is_error {
+                    self.on_warning(&format!("{} ✗  {}", prefix, name));
+                } else {
+                    self.on_warning(&format!("{} ✓  {}", prefix, name));
+                }
+            }
+            SubAgentOutputEvent::Done(text) => {
+                if !text.is_empty() {
+                    self.on_warning(&format!("{} ✅ 完成: {}", prefix, &text[..text.len().min(120)]));
+                } else {
+                    self.on_warning(&format!("{} ✅ 完成", prefix));
+                }
+            }
+            SubAgentOutputEvent::Error(msg) => {
+                self.on_warning(&format!("{} ❌ {}", prefix, msg));
+            }
+        }
+    }
+
+    // ── Service notifications ───────────────────────────────────
+    /// A notification pushed by an external Service (e.g. CI alert, model response).
+    /// Rendered separately from the main conversation stream (status bar / side panel).
+    /// Default implementation prints a prefixed warning line so old implementations work.
+    fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
+        let icon = match level {
+            NotifyLevel::Info    => "ℹ",
+            NotifyLevel::Warning => "⚠",
+            NotifyLevel::Alert   => "🔔",
+        };
+        self.on_warning(&format!("[svc:{}] {} {}", source, icon, message));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -250,6 +334,47 @@ impl AgentOutput for CliOutput {
 
     fn on_context_warning(&self, usage_percent: f32, estimated: usize, max: usize) {
         crate::ui::print_context_warning(usage_percent, estimated, max);
+    }
+
+    fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
+        use colored::Colorize;
+        use std::io::Write;
+        let prefix = format!("[sub:{}]", task_id).cyan().bold().to_string();
+        match event {
+            SubAgentOutputEvent::StreamStart => {}
+            SubAgentOutputEvent::StreamEnd   => { println!(); }
+            SubAgentOutputEvent::Token(t) => {
+                print!("{}", t);
+                std::io::stdout().flush().ok();
+            }
+            SubAgentOutputEvent::ToolUse { name } => {
+                println!("  {} ⚙  {}", prefix, name.bright_white());
+            }
+            SubAgentOutputEvent::ToolDone { name, is_error } => {
+                if *is_error {
+                    println!("  {} ✗  {}", prefix, name.red());
+                } else {
+                    println!("  {} ✓  {}", prefix, name.green());
+                }
+            }
+            SubAgentOutputEvent::Done(text) => {
+                let preview = if text.len() > 100 { &text[..100] } else { text.as_str() };
+                println!("  {} ✅ {}", prefix, preview.dimmed());
+            }
+            SubAgentOutputEvent::Error(msg) => {
+                println!("  {} ❌ {}", prefix, msg.red());
+            }
+        }
+    }
+
+    fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
+        use colored::Colorize;
+        let (icon, msg_colored) = match level {
+            NotifyLevel::Info    => ("ℹ", message.white().to_string()),
+            NotifyLevel::Warning => ("⚠", message.yellow().to_string()),
+            NotifyLevel::Alert   => ("🔔", message.red().bold().to_string()),
+        };
+        println!("  {} {} {}", format!("[svc:{}]", source).magenta().bold(), icon, msg_colored);
     }
 }
 
@@ -549,6 +674,37 @@ impl AgentOutput for StdioOutput {
             "max_tokens": max,
         }));
     }
+
+    fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
+        let (kind, data) = match event {
+            SubAgentOutputEvent::StreamStart => ("sub_stream_start", serde_json::json!({})),
+            SubAgentOutputEvent::StreamEnd   => ("sub_stream_end",   serde_json::json!({})),
+            SubAgentOutputEvent::Token(t) => (
+                "sub_token", serde_json::json!({ "token": t })
+            ),
+            SubAgentOutputEvent::ToolUse { name } => (
+                "sub_tool_use", serde_json::json!({ "tool": name })
+            ),
+            SubAgentOutputEvent::ToolDone { name, is_error } => (
+                "sub_tool_done", serde_json::json!({ "tool": name, "is_error": is_error })
+            ),
+            SubAgentOutputEvent::Done(text) => (
+                "sub_done", serde_json::json!({ "text": text })
+            ),
+            SubAgentOutputEvent::Error(msg) => (
+                "sub_error", serde_json::json!({ "message": msg })
+            ),
+        };
+        self.emit(kind, serde_json::json!({ "task_id": task_id, "data": data }));
+    }
+
+    fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
+        self.emit("service_notification", serde_json::json!({
+            "source": source,
+            "level": level.as_str(),
+            "message": message,
+        }));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -769,6 +925,37 @@ impl AgentOutput for WsOutput {
             "usage_percent": usage_percent,
             "estimated_tokens": estimated,
             "max_tokens": max,
+        }));
+    }
+
+    fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
+        let (kind, data) = match event {
+            SubAgentOutputEvent::StreamStart => ("sub_stream_start", serde_json::json!({})),
+            SubAgentOutputEvent::StreamEnd   => ("sub_stream_end",   serde_json::json!({})),
+            SubAgentOutputEvent::Token(t) => (
+                "sub_token", serde_json::json!({ "token": t })
+            ),
+            SubAgentOutputEvent::ToolUse { name } => (
+                "sub_tool_use", serde_json::json!({ "tool": name })
+            ),
+            SubAgentOutputEvent::ToolDone { name, is_error } => (
+                "sub_tool_done", serde_json::json!({ "tool": name, "is_error": is_error })
+            ),
+            SubAgentOutputEvent::Done(text) => (
+                "sub_done", serde_json::json!({ "text": text })
+            ),
+            SubAgentOutputEvent::Error(msg) => (
+                "sub_error", serde_json::json!({ "message": msg })
+            ),
+        };
+        self.emit(kind, serde_json::json!({ "task_id": task_id, "data": data }));
+    }
+
+    fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
+        self.emit("service_notification", serde_json::json!({
+            "source": source,
+            "level": level.as_str(),
+            "message": message,
         }));
     }
 }

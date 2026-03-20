@@ -170,6 +170,13 @@ pub async fn run(
     }
 
     'repl: loop {
+        // Drain any pending service push notifications before the next prompt.
+        // Notifications are shown above the prompt line before readline() is
+        // called, so they never interfere with IME composition or raw-mode input.
+        // (Using rustyline's ExternalPrinter would switch the read path from a
+        // simple blocking read to select(), which disrupts CJK IME delivery.)
+        agent.drain_service_events();
+
         let readline = rl.readline("🤖 > ");
 
         match readline {

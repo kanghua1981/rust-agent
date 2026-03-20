@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-
 /// Set by the Ctrl-C handler; checked between tool calls so the agent
 /// can stop cleanly without leaving the conversation in an invalid state.
 static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -49,6 +48,7 @@ use crate::memory::Memory;
 use crate::model_manager;
 use crate::output::AgentOutput;
 use crate::sandbox::Sandbox;
+use crate::service::{ServiceEvent, SERVICE_EVENT_TX};
 use crate::streaming;
 use crate::tools::ToolExecutor;
 
@@ -79,6 +79,10 @@ pub struct Agent {
     /// When false (default), sessions are stored in the project's `.agent/session.json`.
     /// When true, sessions are stored in the global `~/.local/share/rust_agent/sessions/`.
     pub global_session: bool,
+    /// Receiver for push notifications from external services.
+    /// Drained at safe points (between tool iterations) and displayed via
+    /// `AgentOutput::on_service_notification`.
+    service_events: tokio::sync::broadcast::Receiver<ServiceEvent>,
 }
 
 impl Agent {
@@ -112,6 +116,7 @@ impl Agent {
             role_configs,
             sandbox,
             global_session: false,
+            service_events: SERVICE_EVENT_TX.subscribe(),
         }
     }
 
@@ -139,6 +144,7 @@ impl Agent {
             role_configs,
             sandbox,
             global_session: false,
+            service_events: SERVICE_EVENT_TX.subscribe(),
         }
     }
 
@@ -157,6 +163,32 @@ impl Agent {
     pub fn switch_model(&mut self, resolved: &crate::model_manager::ResolvedModel) {
         self.config = self.config.with_resolved_model(resolved);
         self.client = llm::create_client(&self.config);
+    }
+
+    /// Drain all pending service push events and display them via
+    /// `AgentOutput::on_service_notification`.
+    ///
+    /// Called at **safe points** — between tool iterations in the main loop
+    /// and between REPL prompts in cli.rs — so notifications never interrupt
+    /// LLM streaming mid-token.
+    pub fn drain_service_events(&mut self) {
+        use tokio::sync::broadcast::error::TryRecvError;
+        loop {
+            match self.service_events.try_recv() {
+                Ok(ev) => {
+                    self.output.on_service_notification(&ev.source, ev.level, &ev.message);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Lagged(n)) => {
+                    self.output.on_service_notification(
+                        "system",
+                        crate::output::NotifyLevel::Warning,
+                        &format!("Dropped {} service notifications (channel lagged)", n),
+                    );
+                }
+                Err(TryRecvError::Closed) => break,
+            }
+        }
     }
 
     /// Maximum number of retries for transient LLM API errors.
@@ -543,6 +575,10 @@ impl Agent {
                 self.output.on_warning("Interrupted by user.");
                 break;
             }
+
+            // Drain any pending service push notifications so they are displayed
+            // at a safe point (not mid-streaming).
+            self.drain_service_events();
 
             iterations += 1;
             if iterations > max_iterations {
@@ -1212,6 +1248,8 @@ Begin execution now."#,
                 self.output.on_warning("Interrupted by user.");
                 break;
             }
+
+            self.drain_service_events();
 
             // ── Mid-execution guidance (Ctrl-\) ──────────────────────────────
             // Append user guidance to the system prompt so the LLM sees it on

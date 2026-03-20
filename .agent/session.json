@@ -1,0 +1,401 @@
+{
+  "meta": {
+    "id": "local",
+    "created_at": "2026-04-03T00:54:35",
+    "updated_at": "2026-04-03T00:54:35",
+    "message_count": 28,
+    "summary": "帮忙分析下这个工程吧",
+    "working_dir": "/media/kanghua/disk/src/tools/rust_agent"
+  },
+  "system_prompt": "You are an expert AI coding assistant running in a terminal environment.\nYou have access to tools that let you read files, write files, run commands, search code, and more.\n\nCurrent working directory: /media/kanghua/disk/src/tools/rust_agent\nOperating system: linux\n\nGuidelines:\n- Use tools to explore and understand the codebase before making changes\n- Always read relevant files before editing them\n- Make minimal, targeted changes\n- Run tests after making changes when possible\n- Explain what you're doing and why\n- If you're unsure, ask for clarification\n- Use the appropriate tool for each task\n\nWhen writing or editing code:\n- Follow existing code style and conventions\n- Add appropriate error handling\n- Write clean, idiomatic code\n- Consider edge cases\n\nSkills management:\n- When you discover a reusable workflow, build process, or project-specific procedure\n  that would be valuable across sessions, save it as a skill using the `create_skill` tool.\n- ALWAYS use the `create_skill` tool to create or update skills. NEVER use `write_file`\n  or `edit_file` to directly create/modify files in `.agent/skills/`. The `create_skill`\n  tool automatically generates the required YAML frontmatter format.\n- Good candidates for skills: build/deploy steps, cross-compilation recipes, hardware\n  configuration procedures, testing workflows, and any multi-step process you had to\n  figure out by exploring the project.\n- Before creating a skill, check the Available Skills list in this prompt to avoid duplicates.\n- To read the full content of an existing skill, use the `load_skill` tool.\n\n--- Project Summary (from .agent/summary.md) ---\n**项目名称与目的**  \nRust Coding Agent 是一个用 Rust 编写的 AI 编码助手 CLI 工具，类似 Claude Code。它通过 LLM 驱动，能够读写文件、执行命令、搜索代码，并提供交互式智能编程辅助。\n\n**技术栈**  \n- 语言：Rust  \n- 主要依赖：tokio（异步运行时）、reqwest（HTTP 客户端）、clap（CLI 解析）、crossterm（终端 UI）、serde（序列化）、tracing（日志）、tokio-tungstenite（WebSocket）  \n- LLM 支持：Anthropic Claude、OpenAI GPT 及兼容 API（如 Ollama、通义千问）\n\n**目录结构概览**  \n```\nsrc/\n├── main.rs          # 入口点，CLI 参数解析与模式选择\n├── agent.rs         # Agent 核心循环，LLM 调用与工具编排\n├── cli.rs           # 交互式 REPL 与斜杠命令处理\n├── output.rs        # 输出抽象层（CLI/Stdio/WebSocket）\n├── llm/             # LLM 客户端实现（anthropic.rs、openai.rs）\n├── tools/           # 工具集（文件读写、命令执行、搜索等 13 种工具）\n├── pipeline.rs      # 多角色流水线（Planner/Executor/Checker）\n├── conversation.rs  # 对话历史管理\n├── context.rs       # 上下文窗口管理与智能截断\n├── config.rs        # 配置管理（API Key、模型参数）\n├── model_manager.rs # 模型配置（models.toml）与角色管理\n├── ui.rs            # 终端 UI 渲染（颜色、Markdown、Diff）\n├── memory.rs        # 持久记忆系统（.agent/memory.md）\n├── summary.rs       # 项目摘要生成与加载\n├── skills.rs        # Skills 系统（项目级知识注入）\n├── sandbox.rs       # 沙盒模式（OverlayFS/快照）\n└── server.rs        # WebSocket 服务器\ndocs/                # 设计文档与用户指南\nvscode-extension/    # VS Code 扩展（TypeScript 实现）\n```\n\n**构建与运行命令**  \n- 构建：`cargo build --release`（产物位于 `target/release/agent`）  \n- 运行交互模式：`./target/release/agent`  \n- 带初始提示：`./target/release/agent --prompt \"任务描述\"`  \n- 指定工作目录：`./target/release/agent --workdir /path/to/project`  \n- Stdio 模式（JSON 协议）：`./target/release/agent --mode stdio`  \n- WebSocket 服务器：`./target/release/agent --mode server`  \n- 沙盒模式：`./target/release/agent --sandbox`\n\n**工具集**  \n- **文件操作**：read_file、write_file、edit_file、multi_edit_file  \n- **命令执行**：run_command、git（新增）  \n- **搜索与浏览**：grep_search、file_search、list_directory、batch_read_files  \n- **文档处理**：read_pdf、read_ebook  \n- **思考与规划**：think  \n- **技能管理**：load_skill、create_skill  \n- **多代理协作**：call_sub_agent  \n\n**Git 工具特性**  \n- 支持常见 Git 操作：status、branch、checkout、commit、log、diff、add、push、pull 等  \n- 可在修改代码前自动创建分支，实现隔离开发  \n- 集成到规划阶段，允许 LLM 查看版本状态  \n- 支持自定义工作目录和参数传递\n\n--- Project Skills ---\n\n## Available Skills (use `load_skill` tool to read full content)\n- **Browser CDP Implementation** (.agent/skills/browser-cdp-implementation.md) — How to implement and use browser automation with Chrome DevTools Protocol (CDP) in Rust Agent\n- **Multi Agent** (.agent/skills/multi-agent.md) — This skill allows the agent to decompose complex tasks and delegate them to specialized sub-agents running in server …\n\n--- Agent Memory (from previous sessions) ---\nKnown facts:\n• _(No knowledge recorded yet)_\nKey files:\n• test_browser_cdp.sh – read\n• test_browser.sh – read\n• src – searched\n• Cargo.lock – read\n• test_browser_issue.rs – written (75 lines)\n• examples/test_browser_issue.rs – edited\n• Cargo.toml – edited\n• examples/test_browser_simple.rs – read\n• explore_api.rs – written (11 lines)\n• src/tools/browser.rs – edited\n• test_browser_fixed.sh – written (28 lines)\n• test_browser_api.rs – written (82 lines)\n• examples/test_browser_api.rs – edited\n• verify_fix.sh – written (33 lines)\n• src/tools/mod.rs – read\nRecent actions:\n• [03-27 01:35] wrote examples/test_browser_api.rs\n• [03-27 01:35] edited examples/test_browser_api.rs\n• [03-27 01:35] ran `cd /media/kanghua/disk/src/tools/rust_agent && cargo run --e...`\n• [03-27 01:37] ran `rm -f test_browser_issue.rs explore_api.rs test_browser_api....`\n• [03-27 01:37] wrote verify_fix.sh\n• [03-27 01:37] ran `chmod +x verify_fix.sh && ./verify_fix.sh`\n• [03-27 01:38] ran `rm -f verify_fix.sh test_browser_fixed.sh examples/test_brow...`\n• [03-27 01:38] ran `cargo check 2>&1 | grep -E \"(error|warning:|Finished)\" | hea...`\n• [03-27 01:38] read src/tools/mod.rs\n• [03-27 01:38] read src/tools/mod.rs\n\n## Available Sub-Agents\nYou can delegate specialized tasks to the following sub-agents running in server mode. Use the `call_sub_agent` tool with the corresponding `server_url`.\n\n- **backend**: ws://localhost:9002 (Role: coder)\n- **frontend**: ws://localhost:9001 (Role: coder)\n\nWhen delegating, prefer using the `target_dir` parameter to isolate the sub-agent's work to a specific directory.\n",
+  "messages": [
+    {
+      "id": "20889045-51ca-400b-9854-ef017433ab43",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "帮忙分析下这个工程吧"
+        }
+      ]
+    },
+    {
+      "id": "551d628b-2d1b-4f47-9f9a-263e8b4b90ef",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "我来帮您分析这个 Rust Agent 工程。首先让我探索一下项目的结构和关键文件。"
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_OYTN5NKizbL4FOeRfUQXgKcP",
+          "name": "list_directory",
+          "input": {
+            "path": ".",
+            "recursive": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "859efe2c-6e4a-45f0-86e4-c45092927cfa",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_OYTN5NKizbL4FOeRfUQXgKcP",
+          "content": "Contents of '/media/kanghua/disk/src/tools/rust_agent/.':\n\n📁 docs/\n  📄 docs/MULTI_ROLE_DESIGN.md (28.9 KB)\n  📄 docs/USER_GUIDE.md (30.8 KB)\n📁 examples/\n📁 src/\n  📁 src/llm/\n    📄 src/llm/anthropic.rs (4.6 KB)\n    📄 src/llm/mod.rs (1.1 KB)\n    📄 src/llm/openai.rs (8.7 KB)\n  📁 src/tools/\n    📄 src/tools/batch_read.rs (4.4 KB)\n    📄 src/tools/browser.rs (16.3 KB)\n    📄 src/tools/call_sub_agent.rs (22.3 KB)\n    📄 src/tools/create_skill.rs (4.4 KB)\n    📄 src/tools/edit_file.rs (4.1 KB)\n    📄 src/tools/list_dir.rs (4.5 KB)\n    📄 src/tools/load_skill.rs (2.2 KB)\n    📄 src/tools/mod.rs (8.1 KB)\n    📄 src/tools/multi_edit_file.rs (5.7 KB)\n    📄 src/tools/read_ebook.rs (7.6 KB)\n    📄 src/tools/read_file.rs (3.6 KB)\n    📄 src/tools/read_pdf.rs (11.2 KB)\n    📄 src/tools/run_command.rs (5.2 KB)\n    📄 src/tools/search.rs (7.9 KB)\n    📄 src/tools/think.rs (1.9 KB)\n    📄 src/tools/write_file.rs (2.6 KB)\n  📄 src/agent.rs (60.5 KB)\n  📄 src/cli.rs (46.7 KB)\n  📄 src/config.rs (6.9 KB)\n  📄 src/confirm.rs (4.8 KB)\n  📄 src/context.rs (20.4 KB)\n  📄 src/conversation.rs (12.3 KB)\n  📄 src/diff.rs (8.8 KB)\n  📄 src/main.rs (7.1 KB)\n  📄 src/memory.rs (10.2 KB)\n  📄 src/model_manager.rs (8.8 KB)\n  📄 src/output.rs (29.0 KB)\n  📄 src/persistence.rs (8.9 KB)\n  📄 src/pipeline.rs (14.6 KB)\n  📄 src/router.rs (10.5 KB)\n  📄 src/sandbox.rs (27.6 KB)\n  📄 src/server.rs (10.4 KB)\n  📄 src/skills.rs (10.9 KB)\n  📄 src/streaming.rs (25.1 KB)\n  📄 src/summary.rs (1.9 KB)\n  📄 src/ui.rs (18.3 KB)\n📁 vscode-extension/\n  📁 vscode-extension/out/\n    📄 vscode-extension/out/chatView.js (11.6 KB)\n    📄 vscode-extension/out/chatView.js.map (1.4 KB)\n    📄 vscode-extension/out/client.js (2.8 KB)\n    📄 vscode-extension/out/client.js.map (2.4 KB)\n    📄 vscode-extension/out/extension.js (13.4 KB)\n    📄 vscode-extension/out/extension.js.map (9.5 KB)\n  📁 vscode-extension/src/\n    📄 vscode-extension/src/chatView.ts (11.9 KB)\n    📄 vscode-extension/src/client.ts (2.8 KB)\n    📄 vscode-extension/src/extension.ts (12.6 KB)\n  📄 vscode-extension/package-lock.json (2.8 KB)\n  📄 vscode-extension/package.json (3.1 KB)\n  📄 vscode-extension/rust-agent-0.1.0.vsix (55.5 KB)\n  📄 vscode-extension/tsconfig.json (368 B)\n📄 Cargo.lock (80.9 KB)\n📄 Cargo.toml (1.5 KB)\n📄 README.md (28.0 KB)\n📄 build.sh (68 B)"
+        }
+      ]
+    },
+    {
+      "id": "d9f47619-5759-4714-ae54-b873613305e2",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "现在让我查看一些关键文件来了解项目的架构和功能："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_wTgbh6OROvO153ZCyjHXsrf7",
+          "name": "read_file",
+          "input": {
+            "path": "README.md"
+          }
+        }
+      ]
+    },
+    {
+      "id": "4cf043df-6371-4396-96ca-b17571ef0d24",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_wTgbh6OROvO153ZCyjHXsrf7",
+          "content": "File: /media/kanghua/disk/src/tools/rust_agent/README.md (775 total lines)\nShowing lines 1-775:\n\n   1 | # 🤖 Rust Coding Agent\n   2 | \n   3 | 一个用 Rust 编写的 AI 编码助手 CLI 工具，类似 Claude Code。它可以读写文件、执行命令、搜索代码，并通过 LLM 进行智能交互。\n   4 | \n   5 | ## ✨ 特性\n   6 | \n   7 | - **🔧 工具系统**: 内置 13 种工具 — 文件读写、多文件批量读取、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF/电子书读取、网页抓取、内部推理\n   8 | - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成\n   9 | - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改\n  10 | - **🔀 多角色流水线**: 配置独立的 Planner / Executor / Checker 角色各用不同模型，自动路由，完全透明\n  11 | - **⚡ 执行前背景注入**: approve 计划时可附带背景上下文，直达 Executor 初始 prompt\n  12 | - **🛑 执行中实时指导**: Pipeline 运行时按 `Ctrl+\\` 随时暂停并向 Executor 注入补充信息\n  13 | - **�🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面\n  14 | - **📡 三种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器\n  15 | - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API\n  16 | - **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换\n  17 | - **📜 对话持久化**: 支持上下文保持、会话保存与恢复\n  18 | - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识\n  19 | - **🧠 持久记忆**: 自动记录所有工具操作到 `.agent/memory.md`，跨会话保持\n  20 | - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用\n  21 | - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为\n  22 | - **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示\n  23 | - **�️ 沙盒模式**: `--sandbox` 启动，两种后端（OverlayFS / 快照），`/changes` 查看 · `/rollback` 回滚 · `/commit` 提交\n  24 | - **🤖 多 Agent 协作**: 通过 `call_sub_agent` 工具实现任务委派，支持子目录隔离、实时事件代理及授权转发。可在 `models.toml` 中预设专家 Agent\n  25 | - **🛡️ 上下文安全截断**: 智能保持 tool_use/tool_result 配对完整性，避免 API 错误\n  26 | - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低\n  27 | \n  28 | ---\n  29 | \n  30 | ## 📖 完整使用指南\n  31 | \n  32 | ### 第一步：安装与构建\n  33 | \n  34 | ```bash\n  35 | # 克隆项目\n  36 | git clone <repo-url>\n  37 | cd rust_agent\n  38 | \n  39 | # 编译（推荐 release 模式）\n  40 | cargo build --release\n  41 | \n  42 | # 编译产物在 target/release/agent\n  43 | ```\n  44 | \n  45 | ### 第二步：配置 API Key\n  46 | \n  47 | Agent 需要一个 LLM API Key 才能工作。支持多种配置方式：\n  48 | \n  49 | ```bash\n  50 | # 方式一：环境变量（推荐）\n  51 | export ANTHROPIC_API_KEY=sk-ant-xxxxx\n  52 | \n  53 | # 方式二：.env 文件（持久化）\n  54 | # 支持三个位置（后面的覆盖前面的）：\n  55 | #   ~/.config/rust_agent/.env  — 全局配置（XDG 规范）\n  56 | #   ~/.env                     — 用户级配置\n  57 | #   项目目录/.env              — 项目级配置（最高优先级）\n  58 | cp .env.example .env\n  59 | vim .env  # 填入你的 API Key\n  60 | \n  61 | # 方式三：使用 OpenAI 或兼容 API (如通义千问 Qwen, DeepSeek)\n  62 | export OPENAI_API_KEY=sk-xxxxx\n  63 | # 或\n  64 | export LLM_API_KEY=your-key\n  65 | export LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1\n  66 | export LLM_MODEL=qwen-max\n  67 | export LLM_PROVIDER=compatible\n  68 | ```\n  69 | \n  70 | > **注意**: 现在的版本已支持 OpenAI/Compatible Provider 的流式输出 (Streaming)，交互体验更佳。\n  71 | \n  72 | ### 模型管理（推荐）\n  73 | \n  74 | 对于需要频繁切换模型的用户，推荐使用 `~/.config/rust_agent/models.toml` 统一管理：\n  75 | \n  76 | ```toml\n  77 | # 默认使用的模型别名\n  78 | default = \"sonnet\"\n  79 | \n  80 | # 多 Agent 专家池 (可选)\n  81 | # 启动时自动在后台拉起这些端口的服务进程\n  82 | [sub_agents.coder]\n  83 | port = 9001\n  84 | role = \"代码实现专家\"\n  85 | \n  86 | [sub_agents.reviewer]\n  87 | port = 9002\n  88 | role = \"代码审查专家\"\n  89 | \n  90 | [models.sonnet]\n  91 | provider = \"anthropic\"\n  92 | model = \"claude-sonnet-4-20250514\"\n  93 | \n  94 | [models.opus]\n  95 | provider = \"anthropic\"\n  96 | model = \"claude-opus-4-20250514\"\n  97 | \n  98 | [models.gpt4o]\n  99 | provider = \"openai\"\n 100 | model = \"gpt-4o\"\n 101 | \n 102 | [models.qwen]\n 103 | provider = \"compatible\"\n 104 | model = \"qwen-max\"\n 105 | base_url = \"https://dashscope.aliyuncs.com/compatible-mode/v1\"\n 106 | api_key = \"sk-xxxxx\"  # 可选，不设则 fallback 到环境变量\n 107 | ```\n 108 | \n 109 | 也可以在运行时通过 `/model add <alias>` 交互式添加模型，无需手动编辑文件。\n 110 | \n 111 | **配置优先级**：`--model CLI参数` > `models.toml default` > `LLM_MODEL 环境变量` > `硬编码默认值`\n 112 | \n 113 | > **提示**: `.env` 文件仍然有效，推荐只放 API Key；模型/provider/base_url 的管理交给 `models.toml`。\n 114 | \n 115 | ### 多角色流水线（可选）\n 116 | \n 117 | 在 `models.toml` 中配置角色，让不同 LLM 分别负责**规划 / 实施 / 审核**：\n 118 | \n 119 | ```toml\n 120 | # 开启流水线（设为 true 后所有用户输入自动走三角色流程，无需新命令）\n 121 | [pipeline]\n 122 | enabled = false\n 123 | stages = [\"planner\", \"executor\", \"checker\"]\n 124 | max_checker_retries = 2       # Checker 审核失败后允许 Executor 重试次数\n 125 | require_plan_confirm = true   # Planner 完成后展示计划，等待用户确认再执行\n 126 | \n 127 | # 规划者：使用顶配推理模型，只读探索代码库，产出带风险提示的执行计划\n 128 | [roles.planner]\n 129 | model = \"sonnet\"\n 130 | extra_instructions = \"\"\"\n 131 | 优先关注 Rust 所有权规则和借用检查器可能引发的问题。\n 132 | \"\"\"\n 133 | \n 134 | # 实施者：使用成本更低的编码模型，按计划严格执行，产出修改摘要\n 135 | [roles.executor]\n 136 | model = \"deepseek\"\n 137 | extra_instructions = \"\"\"\n 138 | 每次修改后运行 cargo build 验证编译通过。\n 139 | \"\"\"\n 140 | \n 141 | # 审核者：独立阅读实际文件内容，不依赖实施者自述，运行测试后给出 PASS/FAIL\n 142 | [roles.checker]\n 143 | model = \"sonnet\"\n 144 | ```\n 145 | \n 146 | **如何查看当前角色配置**：运行 `/model` 命令，会显示流水线状态和各角色绑定的模型。\n 147 | \n 148 | **自定义角色提示词**：提示词优先级为：\n 149 | `内置默认` → `~/.config/rust_agent/roles/<role>.md` → `.agent/roles/<role>.md` → `models.toml extra_instructions`\n 150 | \n 151 | 详细设计见 [docs/MULTI_ROLE_DESIGN.md](docs/MULTI_ROLE_DESIGN.md)。\n 152 | \n 153 | ### 第三步：启动 Agent\n 154 | \n 155 | ```bash\n 156 | # 交互模式（最常用）\n 157 | ./target/release/agent\n 158 | \n 159 | # 带初始提示启动\n 160 | ./target/release/agent --prompt \"帮我看看当前目录有什么文件\"\n 161 | \n 162 | # 指定工作目录（Agent 会在此目录下操作文件）\n 163 | ./target/release/agent --workdir /path/to/your/project\n 164 | \n 165 | # 使用 OpenAI 模型\n 166 | ./target/release/agent --provider openai --model gpt-4o\n 167 | \n 168 | # 使用自托管/兼容 API\n 169 | ./target/release/agent --provider compatible --model my-model\n 170 | \n 171 | # 跳过所有确认提示（⚠️ 危险，适合自动化场景）\n 172 | ./target/release/agent --yes\n 173 | \n 174 | # 限制工具最大迭代次数（默认 25）\n 175 | ./target/release/agent --max-iterations 50\n 176 | \n 177 | # 开启详细日志（调试用）\n 178 | ./target/release/agent --verbose\n 179 | ```\n 180 | \n 181 | #### Stdio 模式（脚本 / VS Code 集成）\n 182 | \n 183 | 通过 `--mode stdio` 切换为 JSON-over-stdio 协议，每个事件以独立的 JSON 行输出，适合被外部程序驱动：\n 184 | \n 185 | ```bash\n 186 | # 以 stdio 模式运行单次任务\n 187 | ./target/release/agent --mode stdio --yes -p \"列出当前目录结构\"\n 188 | \n 189 | # 输出示例（每行一个 JSON 事件）：\n 190 | # {\"type\":\"thinking\",\"data\":{}}\n 191 | # {\"type\":\"stream_start\",\"data\":{}}\n 192 | # {\"type\":\"streaming_token\",\"data\":{\"token\":\"当前\"}}\n 193 | # {\"type\":\"streaming_token\",\"data\":{\"token\":\"目录\"}}\n 194 | # ...\n 195 | # {\"type\":\"tool_use\",\"data\":{\"tool\":\"list_directory\",\"input\":{\"path\":\".\"}}}\n 196 | # {\"type\":\"tool_result\",\"data\":{\"tool\":\"list_directory\",\"output\":\"...\",\"is_error\":false}}\n 197 | # {\"type\":\"stream_end\",\"data\":{}}\n 198 | ```\n 199 | \n 200 | **Stdio 模式事件类型**：\n 201 | \n 202 | | 事件类型 | 说明 |\n 203 | |----------|------|\n 204 | | `thinking` | LLM 正在处理 |\n 205 | | `stream_start` / `stream_end` | 流式文本响应的开始/结束 |\n 206 | | `streaming_token` | 流式文本 token（`data.token`） |\n 207 | | `assistant_text` | 非流式文本响应（`data.text`） |\n 208 | | `tool_use` | 即将执行工具（`data.tool`, `data.input`） |\n 209 | | `tool_result` | 工具执行结果（`data.output`, `data.is_error`） |\n 210 | | `diff` | 文件变更 diff（`data.path`, `data.diff`） |\n 211 | | `confirm_request` | 请求确认（需回复 `{\"approved\": true}` 或 `{\"approved\": false}`） |\n 212 | | `warning` | 非致命警告 |\n 213 | | `error` | 错误信息 |\n 214 | | `context_warning` | 上下文窗口压力通知 |\n 215 | \n 216 | #### WebSocket 服务器模式（远程 / Web UI 集成）\n 217 | \n 218 | 通过 `--mode server` 启动 WebSocket 服务器，每个连接独立运行一个 Agent 实例：\n 219 | \n 220 | ```bash\n 221 | # 启动 WebSocket 服务器（默认 127.0.0.1:9527）\n 222 | ./target/release/agent --mode server\n 223 | \n 224 | # 指定地址和端口\n 225 | ./target/release/agent --mode server --host 0.0.0.0 --port 8080\n 226 | \n 227 | # 带项目目录\n 228 | ./target/release/agent --mode server --workdir /path/to/project\n 229 | ```\n 230 | \n 231 | **客户端通信协议**：\n 232 | - 发送用户消息：`{\"type\": \"user_message\", \"content\": \"你的问题\"}`\n 233 | - 响应确认请求：`{\"type\": \"confirm_response\", \"approved\": true}`\n 234 | - 服务端事件格式与 Stdio 模式相同（JSON 帧）\n 235 | \n 236 | ---\n 237 | \n 238 | ## 💬 日常使用流程\n 239 | \n 240 | ### 基本交互\n 241 | \n 242 | 启动后进入 REPL 模式，`🤖 >` 是输入提示符：\n 243 | \n 244 | ```\n 245 | 🤖 > 帮我看看这个项目的目录结构\n 246 | ⏳ Thinking...\n 247 | 📂 Tool: list_directory ...\n 248 | ────────────────────────────\n 249 | 这个项目包含以下文件...\n 250 | ────────────────────────────\n 251 | \n 252 | 🤖 > 把 main.c 里的 GPIO 初始化改成上拉模式\n 253 | ⏳ Thinking...\n 254 | 📖 Tool: read_file → main.c\n 255 | ⚠️  Confirm edit_file on main.c? [y/N/a]  y\n 256 | ✏️ Tool: edit_file → main.c\n 257 |    --- a/main.c\n 258 |    +++ b/main.c\n 259 |    @@ -42,1 +42,1 @@\n 260 |    - GPIO_Init(GPIOA, GPIO_PIN_5, GPIO_MODE_INPUT);\n 261 |    + GPIO_Init(GPIOA, GPIO_PIN_5, GPIO_MODE_INPUT | GPIO_PULLUP);\n 262 | ────────────────────────────\n 263 | 已将 GPIO5 修改为上拉输入模式。\n 264 | ────────────────────────────\n 265 | \n 266 | 🤖 > 编译试试看\n 267 | ⏳ Thinking...\n 268 | ⚠️  Confirm run_command: make ? [y/N/a]  y\n 269 | 🔨 Tool: run_command → make\n 270 |    ✅ Build successful\n 271 | ```\n 272 | \n 273 | ### 多轮对话（反复讨论与修改）\n 274 | \n 275 | Agent 会**记住整个对话上下文**，你可以像聊天一样反复迭代：\n 276 | \n 277 | ```\n 278 | 🤖 > 帮我修改设备树里 GPIO4_A1 的配置\n 279 | （Agent 修改了 .dts 文件）\n 280 | \n 281 | 🤖 > 不对，应该是 Active Low，你改反了\n 282 | （Agent 读取上下文，知道你指的是刚才的修改，自动修正）\n 283 | \n 284 | 🤖 > 改好后帮我编译一下设备树\n 285 | （Agent 执行 make dtbs 并反馈结果）\n 286 | \n 287 | 🤖 > 编译报错了，你看看什么问题\n 288 | （Agent 读取错误信息，自动定位问题并修复）\n 289 | ```\n 290 | \n 291 | ### 配合 Git 进行代码审查\n 292 | \n 293 | Agent 没有内置专门的 Git 工具，但它可以通过 `run_command` 执行任何 Git 命令。推荐工作流：\n 294 | \n 295 | ```\n 296 | # 1. 启动前：创建工作分支\n 297 | git checkout -b fix/gpio-pullup\n 298 | \n 299 | # 2. 启动 Agent，指定项目目录\n 300 | ./target/release/agent --workdir /path/to/project\n 301 | \n 302 | # 3. 让 Agent 帮你修改代码\n 303 | 🤖 > 帮我把所有 GPIO 初始化改为带上拉配置\n 304 | \n 305 | # 4. 修改完后，让 Agent 汇报改了什么\n 306 | 🤖 > 帮我执行 git diff，看看改了哪些内容\n 307 | 🤖 > 帮我执行 git status\n 308 | \n 309 | # 5. 确认没问题后，让 Agent 提交\n 310 | 🤖 > 帮我 git add 所有修改的文件，commit 消息写 \"fix: enable GPIO pull-up\"\n 311 | \n 312 | # 6. 退出 Agent，回到 VS Code 进行最终 Review\n 313 | 🤖 > /quit\n 314 | \n 315 | # 7. 在 VS Code 中查看（推荐）\n 316 | #    - Source Control 面板查看所有变更\n 317 | #    - 点击文件名查看 Diff\n 318 | #    - 确认后 Push\n 319 | git push origin fix/gpio-pullup\n 320 | ```\n 321 | \n 322 | ---\n 323 | \n 324 | ## 🔧 内置命令\n 325 | \n 326 | 在 `🤖 >` 提示符下输入以下斜杠命令：\n 327 | \n 328 | | 命令 | 说明 |\n 329 | |------|------|\n 330 | | `/help` | 显示帮助信息 |\n 331 | | `/clear` | 清空对话历史（开始新话题时使用） |\n 332 | | `/usage` | 显示本次会话的 Token 消耗量 |\n 333 | | `/context` | 查看上下文窗口使用率（接近 80% 时会自动截断） |\n 334 | | `/save` | 手动保存当前会话 |\n 335 | | `/sessions` | 列出所有已保存的会话 |\n 336 | | `/skills` | 查看当前加载的 Skills |\n 337 | | `/yesall` | 关闭所有确认提示（本次会话内有效） |\n 338 | | `/confirm` | 重新开启确认提示 |\n 339 | | `/model` | 列出当前模型与所有已配置模型 |\n 340 | | `/model <alias>` | 热切换到指定模型 |\n 341 | | `/model add <alias>` | 交互式添加新模型配置 |\n 342 | | `/model remove <alias>` | 删除模型配置 |\n 343 | | `/model default <alias>` | 设置默认模型 |\n 344 | | `/memory` | 显示持久记忆（项目知识、文件操作记录） |\n 345 | | `/summary` | 查看或生成项目摘要 |\n 346 | | `/summary generate` | 强制（重新）生成项目摘要 |\n 347 | | `/plan <任务>` | 让 Agent 先用只读工具分析，生成执行计划 |\n 348 | | `/plan show` | 查看当前待执行的计划 |\n 349 | | `/plan run` | 执行已生成的计划 |\n 350 | | `/plan clear` | 清除当前计划 |\n 351 | | `/quit` | 退出（会自动保存会话） |\n 352 | \n 353 | ---\n 354 | \n 355 | ## 📜 会话管理\n 356 | \n 357 | Agent 支持**自动保存**对话，适合跨天的长任务：\n 358 | \n 359 | ```bash\n 360 | # 列出所有历史会话\n 361 | ./target/release/agent --sessions\n 362 | \n 363 | # 输出示例：\n 364 | # 📜 Saved Sessions:\n 365 | #   ID         Updated                  Msgs   Summary\n 366 | #   ──────────────────────────────────────────────\n 367 | #   a1b2c3d4   2026-02-15T10:30:00      12     帮我修改 GPIO 配置...\n 368 | #   e5f6g7h8   2026-02-14T16:20:00       8     编译内核模块...\n 369 | \n 370 | # 恢复某个会话继续工作\n 371 | ./target/release/agent --resume a1b2c3d4\n 372 | ```\n 373 | \n 374 | ---\n 375 | \n 376 | ## 🧠 记忆与项目摘要\n 377 | \n 378 | ### 持久记忆 (`.agent/memory.md`)\n 379 | \n 380 | Agent 会自动将以下信息记录到 `.agent/memory.md`，跨会话持久化：\n 381 | \n 382 | - **项目知识**：在对话中发现的重要事实\n 383 | - **文件操作记录**：读取、写入、编辑过的文件\n 384 | - **会话日志**：执行过的关键操作\n 385 | \n 386 | ```\n 387 | 🤖 > /memory\n 388 | 🧠  Agent Memory (15 entries):\n 389 |   📖 Project Knowledge:\n 390 |     • Target board: RK3588 custom board\n 391 |     • Toolchain: aarch64-linux-gnu-\n 392 |   📁 Key Files:\n 393 |     • src/main.c (edited)\n 394 |     • kernel/arch/arm64/boot/dts/rockchip/rk3588-myboard.dts (written)\n 395 |   📝 Session Log:\n 396 |     • edited src/main.c\n 397 |     • ran `make -j8`\n 398 | ```\n 399 | \n 400 | ### 项目摘要 (`.agent/summary.md`)\n 401 | \n 402 | 首次使用时，运行 `/summary` 让 Agent 扫描项目并生成概述，后续会话自动加载：\n 403 | \n 404 | ```\n 405 | 🤖 > /summary\n 406 | 📋  No project summary found.\n 407 |   Generate one now? [y/N] y\n 408 | 📝  Generating project summary...\n 409 | ✅  Project summary saved to .agent/summary.md\n 410 | ```\n 411 | \n 412 | 摘要包含项目名称、技术栈、目录结构、构建命令等，Agent 无需每次重新分析项目。\n 413 | \n 414 | ---\n 415 | \n 416 | ## 📚 Skills 系统\n 417 | \n 418 | Skills 是项目级别的知识文件，让 Agent \"理解\"你的项目规范。\n 419 | \n 420 | ### 目录结构\n 421 | \n 422 | ```\n 423 | your-project/\n 424 | ├── AGENT.md                    # 全局项目指令（自动加载）\n 425 | └── .agent/\n 426 |     └── skills/\n 427 |         ├── modify-dts-gpio.md  # 设备树修改规范\n 428 |         ├── cross-compile.md    # 交叉编译流程\n 429 |         └── add-driver.md       # 驱动开发规范\n 430 | ```\n 431 | \n 432 | ### Skill 文件示例\n 433 | \n 434 | `AGENT.md`（全局指令）：\n 435 | ```markdown\n 436 | # Project: Embedded Linux BSP\n 437 | \n 438 | - Target: RK3588 based custom board\n 439 | - Toolchain: aarch64-linux-gnu-\n 440 | - Kernel source: kernel/\n 441 | - Device tree: kernel/arch/arm64/boot/dts/rockchip/\n 442 | - After any code change, run `make -j$(nproc)` to verify compilation\n 443 | ```\n 444 | \n 445 | `.agent/skills/modify-dts-gpio.md`（GPIO 修改技能）：\n 446 | ```markdown\n 447 | # Skill: Modify GPIO in Device Tree\n 448 | \n 449 | ## File locations\n 450 | - Board DTS: kernel/arch/arm64/boot/dts/rockchip/rk3588-myboard.dts\n 451 | - Pin control includes: kernel/include/dt-bindings/pinctrl/rockchip.h\n 452 | \n 453 | ## Conventions\n 454 | - Use rockchip,pins format: <bank RK_PXn function &config>\n 455 | - Always specify pull-up/pull-down explicitly\n 456 | - Do NOT modify .dtsi files, only the board .dts\n 457 | \n 458 | ## Verification\n 459 | After editing, run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs\n 460 | ```\n 461 | \n 462 | ### 查看已加载的 Skills\n 463 | \n 464 | ```\n 465 | 🤖 > /skills\n 466 | 📋  3 skill(s) loaded:\n 467 |   • Project Instructions (AGENT.md)\n 468 |   • Modify Dts Gpio (.agent/skills/modify-dts-gpio.md)\n 469 |   • Cross Compile (.agent/skills/cross-compile.md)\n 470 | ```\n 471 | \n 472 | ---\n 473 | \n 474 | ## 🔌 支持的 LLM Provider\n 475 | \n 476 | | Provider | 启动参数 | 环境变量 |\n 477 | |----------|----------|----------|\n 478 | | Anthropic Claude（默认） | `--provider anthropic` | `ANTHROPIC_API_KEY` |\n 479 | | OpenAI | `--provider openai` | `OPENAI_API_KEY` |\n 480 | | 兼容 API（Ollama 等） | `--provider compatible` | `LLM_API_KEY` + `LLM_BASE_URL` |\n 481 | \n 482 | > **推荐**：使用 `~/.config/rust_agent/models.toml` 管理多个模型，运行时通过 `/model <alias>` 快速切换，无需重启 Agent。详见上文「模型管理」章节。\n 483 | \n 484 | ---\n 485 | \n 486 | ## 🛡️ 安全机制\n 487 | \n 488 | Agent 在执行以下操作前会要求确认：\n 489 | \n 490 | - **写入文件** (`write_file`)：显示文件路径和行数\n 491 | - **编辑文件** (`edit_file` / `multi_edit_file`)：显示文件路径，执行后展示 Diff\n 492 | - **执行命令** (`run_command`)：显示完整命令内容\n 493 | \n 494 | ```\n 495 | ⚠️  Write file: src/driver.c (45 lines)\n 496 |    Proceed? [y]es / [n]o / [a]lways:\n 497 | ```\n 498 | \n 499 | - 输入 `y`：确认本次操作\n 500 | - 输入 `n`：拒绝（Agent 会知道你拒绝了，并调整策略）\n 501 | - 输入 `a`：本次会话内跳过所有确认\n 502 | \n 503 | 也可以通过 `--yes` 启动参数或 `/yesall` 命令全局跳过。auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什么。\n 504 | \n 505 | 只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`fetch_url`、`read_pdf`、`read_ebook`、`think`、`file_search`）不需要确认。\n 506 | \n 507 | ---\n 508 | \n 509 | ## 🛡️ 沙盒模式\n 510 | \n 511 | 通过 `--sandbox` 启动，所有文件修改都在隔离环境中进行，原始项目受到保护：\n 512 | \n 513 | ```bash\n 514 | ./target/release/agent --sandbox\n 515 | ```\n 516 | \n 517 | | 后端 | 条件 | 保护范围 |\n 518 | |------|------|----------|\n 519 | | **Overlay**（叠加层） | Linux + `fuse-overlayfs` | 全部写入 + 命令副作用 |\n 520 | | **Snapshot**（快照） | 跨平台回退 | 仅工具直接写入的文件 |\n 521 | \n 522 | | 命令 | 说明 |\n 523 | |------|------|\n 524 | | `/changes` | 列出所有已修改 / 新增 / 删除的文件 |\n 525 | | `/rollback` | 撤销全部改动，恢复到改动前 |\n 526 | | `/commit` | 将改动落入真实项目（overlay 合并 / 清除快照） |\n 527 | \n 528 | ---\n 529 | \n 530 | ## 🏗️ 架构\n 531 | \n 532 | ```\n 533 | src/\n 534 | ├── main.rs          # 入口：CLI 参数解析 (clap)，--mode 选择输出后端，.env 加载\n 535 | ├── config.rs        # 配置管理（API Key、Provider、模型参数、角色 Config 构造）\n 536 | ├── model_manager.rs # 模型管理（models.toml 读写、RoleConfig、PipelineConfig）\n 537 | ├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput / WsOutput 实现\n 538 | ├── cli.rs           # 交互式 REPL 循环 (rustyline)，斜杠命令处理\n 539 | ├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式 + 角色分发\n 540 | ├── pipeline.rs      # (Phase 3) 多角色流水线 Runner，Artifact 传递与反馈环\n 541 | ├── conversation.rs  # 对话历史：Message / ContentBlock 数据模型，system prompt 构建\n 542 | ├── context.rs       # 上下文窗口管理、自动截断（保持 tool_use/tool_result 配对完整）\n 543 | ├── streaming.rs     # Anthropic SSE 流式输出（通过 &dyn AgentOutput 解耦）\n 544 | ├── server.rs        # WebSocket 服务器：per-connection Agent 生命周期\n 545 | ├── confirm.rs       # 危险操作的用户确认机制（含 auto-approve 可视化）\n 546 | ├── persistence.rs   # 会话保存与恢复 (JSON)\n 547 | ├── diff.rs          # 文件修改的 Diff 展示\n 548 | ├── memory.rs        # 持久记忆系统（.agent/memory.md）\n 549 | ├── summary.rs       # 项目摘要管理（.agent/summary.md）\n 550 | ├── skills.rs        # Skills 加载系统（AGENT.md + .agent/skills/*.md）\n 551 | ├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染，UTF-8 安全截断）\n 552 | ├── llm/\n 553 | │   ├── mod.rs       # LlmClient trait 定义\n 554 | │   ├── anthropic.rs # Anthropic Claude API 实现\n 555 | │   └── openai.rs    # OpenAI 兼容 API 实现\n 556 | └── tools/\n 557 |     ├── mod.rs          # Tool trait + ToolExecutor 注册中心 + readonly_definitions\n 558 |     ├── read_file.rs    # 📖 读取文件（支持行范围）\n 559 |     ├── write_file.rs   # ✏️ 写入/创建文件\n 560 |     ├── edit_file.rs    # 🔧 精确替换文件内容（find & replace）\n 561 |     ├── multi_edit_file.rs # 🔧 单文件多处批量编辑\n 562 |     ├── batch_read.rs   # 📚 批量读取多个文件\n 563 |     ├── run_command.rs  # ⚡ 执行 Shell 命令（含超时控制）\n 564 |     ├── search.rs       # 🔍 Grep 搜索 + 📁 文件名搜索\n 565 |     ├── list_dir.rs     # 📂 列出目录内容（含文件大小、权限）\n 566 |     ├── think.rs        # 💭 内部推理（无副作用，不消耗工具配额）\n 567 |     ├── read_pdf.rs     # 📄 PDF 文本提取（marker / pdftotext / mutool）\n 568 |     ├── read_ebook.rs   # 📕 电子书读取（Calibre ebook-convert / pandoc）\n 569 |     └── fetch_url.rs    # 🌐 网页抓取与正文提取（readable / pandoc / 内置 regex）\n 570 | ```\n 571 | \n 572 | ### 输出抽象层\n 573 | \n 574 | `output.rs` 中定义了 `AgentOutput` trait，所有 Agent 内部的 I/O（文本输出、工具事件、Diff 预览、确认提示）都通过此 trait 抽象，而非直接写 stdout：\n 575 | \n 576 | ```\n 577 | ┌──────────────┐\n 578 | │   main.rs    │  --mode cli    → Arc<CliOutput>   → 彩色终端交互\n 579 | │  (选择模式)   │  --mode stdio  → Arc<StdioOutput> → JSON 行协议\n 580 | │              │  --mode server → Arc<WsOutput>    → WebSocket JSON 帧\n 581 | └──────┬───────┘\n 582 |        │ Arc<dyn AgentOutput>\n 583 |        ▼\n 584 | ┌──────────────┐     ┌──────────────┐\n 585 | │   agent.rs   │────▶│ streaming.rs │\n 586 | │  (核心循环)   │     │  (SSE 解析)   │\n 587 | └──────────────┘     └──────────────┘\n 588 |   output.on_tool_use()    output.on_streaming_text()\n 589 |   output.on_diff()        output.on_stream_start()\n 590 |   output.confirm()        output.on_stream_end()\n 591 | ```\n 592 | \n 593 | 要添加新的输出模式（如 MCP Server），只需实现 `AgentOutput` trait 即可，无需修改 Agent 逻辑。\n 594 | \n 595 | ---\n 596 | \n 597 | ## � 内置工具一览\n 598 | \n 599 | | 工具 | 图标 | 用途 | 需确认 |\n 600 | |------|------|------|--------|\n 601 | | `read_file` | 📖 | 读取文件内容（支持行范围选择） | ❌ |\n 602 | | `batch_read_files` | 📚 | 一次读取多个文件 | ❌ |\n 603 | | `write_file` | ✏️ | 创建或覆盖写入文件 | ✅ |\n 604 | | `edit_file` | 🔧 | 精确 find & replace 编辑 | ✅ |\n 605 | | `multi_edit_file` | 🔧 | 单文件多处批量编辑 | ✅ |\n 606 | | `run_command` | ⚡ | 执行 Shell 命令（含超时控制） | ✅ |\n 607 | | `grep_search` | 🔍 | 按正则搜索文件内容 | ❌ |\n 608 | | `file_search` | 📁 | 按 glob 搜索文件名 | ❌ |\n 609 | | `list_directory` | 📂 | 列出目录内容（含大小/权限） | ❌ |\n 610 | | `think` | 💭 | 内部推理，无副作用 | ❌ |\n 611 | | `read_pdf` | 📄 | PDF 文本提取 | ❌ |\n 612 | | `read_ebook` | 📕 | 电子书读取（MOBI/EPUB/AZW3 等） | ❌ |\n 613 | | `fetch_url` | 🌐 | 网页抓取与正文提取 | ❌ |\n 614 | \n 615 | ### 外部依赖（可选）\n 616 | \n 617 | 部分工具依赖系统命令，Agent 会自动按优先级尝试：\n 618 | \n 619 | | 工具 | 后端 | 安装方式 |\n 620 | |------|------|----------|\n 621 | | `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |\n 622 | | `read_ebook` | ebook-convert → pandoc | `apt install calibre` / `apt install pandoc` |\n 623 | | `fetch_url` | readable → pandoc → 内置 regex | `npm install -g @nickersoft/readability-cli` / `apt install pandoc` |\n 624 | \n 625 | ---\n 626 | \n 627 | ## 📋 Plan 模式\n 628 | \n 629 | Plan 模式让 Agent 先分析后执行，避免盲目修改代码：\n 630 | \n 631 | ```\n 632 | 🤖 > /plan 重构所有 GPIO 初始化代码，统一使用 HAL 库\n 633 | \n 634 | 📋  Planning: 重构所有 GPIO 初始化代码...\n 635 | （Agent 使用只读工具分析代码：read_file, grep_search, list_directory, run_command...）\n 636 | ✅  Plan generated. Use /plan show to review, /plan run to execute.\n 637 | \n 638 | 🤖 > /plan show\n 639 | （显示计划内容）\n 640 | \n 641 | 🤖 > /plan run\n 642 | （Agent 开始执行计划，使用全部工具包括写入和编辑）\n 643 | ```\n 644 | \n 645 | Plan 阶段允许使用只读工具和**只读 shell 命令**（`git status/log/diff`、`find` 等），确保不产生任何副作用。\n 646 | \n 647 | ---\n 648 | \n 649 | ## ⚡ Pipeline 执行干预\n 650 | \n 651 | 使用自动 Pipeline（Planner → Executor → Checker）时，有两个时机可以向执行器注入你的知识：\n 652 | \n 653 | ### 1. Approve 时附带背景（最推荐）\n 654 | \n 655 | 计划审核输入 `y` 后，系统会追加询问背景信息：\n 656 | \n 657 | ```\n 658 |    Review: [y] approve  [n] reject  [type feedback to refine]\n 659 |    > y\n 660 |    Context: add background info for the executor (Enter to skip)\n 661 |    > 新分支已将 module.rs 重构为 foo/mod.rs + foo/types.rs + foo/handler.rs，旧路径已删除\n 662 | ```\n 663 | \n 664 | 这段内容以最高优先级注入 Executor 的初始 prompt，LLM 在第一步就能感知到。\n 665 | \n 666 | ### 2. 执行中随时打断（Ctrl+\\）\n 667 | \n 668 | Executor 运行期间，在任意 LLM 迭代之间按 `Ctrl+\\` 暂停并追加指导：\n 669 | \n 670 | ```\n 671 | ⚡ Guidance: type a note for the executor (or press Enter to continue)\n 672 |    > 等一下，那个文件已经被删了，应该去看 src/driver/new_gpio.c\n 673 | 💡 Guidance injected into executor context.\n 674 | ```\n 675 | \n 676 | > `Ctrl+C` 中断执行 | `Ctrl+\\` 暂停注入后继续\n 677 | \n 678 | ---\n 679 | \n 680 | ## ✏️ 自定义系统提示词\n 681 | \n 682 | 可以通过 Markdown 文件自定义 LLM 的系统提示词：\n 683 | \n 684 | | 文件位置 | 作用域 | 优先级 |\n 685 | |----------|--------|--------|\n 686 | | `~/.config/rust_agent/system_prompt.md` | 全局（所有项目） | 低 |\n 687 | | `<项目>/.agent/system_prompt.md` | 当前项目 | 高 |\n 688 | \n 689 | **追加模式**（默认）— 直接写内容，追加到默认提示词之后：\n 690 | ```markdown\n 691 | 你是一个嵌入式 C 开发专家，擅长 ARM Cortex-M。\n 692 | 请用中文回复。\n 693 | 代码注释使用英文。\n 694 | ```\n 695 | \n 696 | **替换模式** — 第一行写 `# OVERRIDE`，完全替换默认提示词：\n 697 | ```markdown\n 698 | # OVERRIDE\n 699 | 你是一个 Rust 系统编程专家。\n 700 | 当前项目路径已在环境中设置。\n 701 | 按照项目 .editorconfig 的代码风格编写。\n 702 | ```\n 703 | \n 704 | **加载顺序**：\n 705 | ```\n 706 | 默认提示词 → 全局 system_prompt.md → 项目 system_prompt.md → summary → skills → memory\n 707 | ```\n 708 | \n 709 | ---\n 710 | \n 711 | ## �🛠️ 开发者：扩展工具\n 712 | \n 713 | 要添加新工具，需要以下步骤：\n 714 | \n 715 | 1. 在 `src/tools/` 下创建新文件\n 716 | 2. 实现 `Tool` trait：\n 717 | ```rust\n 718 | pub struct MyNewTool;\n 719 | \n 720 | #[async_trait::async_trait]\n 721 | impl Tool for MyNewTool {\n 722 |     fn definition(&self) -> ToolDefinition {\n 723 |         ToolDefinition {\n 724 |             name: \"my_tool\".to_string(),\n 725 |             description: \"What this tool does\".to_string(),\n 726 |             parameters: serde_json::json!({ ... }),\n 727 |         }\n 728 |     }\n 729 |     async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {\n 730 |         // 实现逻辑\n 731 |         ToolResult::success(\"done\")\n 732 |     }\n 733 | }\n 734 | ```\n 735 | 3. 在 `src/tools/mod.rs` 中：\n 736 |    - 添加 `pub mod my_tool;`\n 737 |    - 在 `ToolExecutor::new()` 中 `executor.register(Box::new(my_tool::MyNewTool));`\n 738 |    - 如果是只读工具，加入 `readonly_definitions()` 的 `READONLY_TOOLS` 列表\n 739 | 4. 在 `src/agent.rs` 的 `record_tool_to_memory()` 中添加记忆记录分支\n 740 | 5. 在 `src/ui.rs` 的 `print_tool_use()` 中添加图标和输入显示\n 741 | 6. 如果需要确认，在 `needs_confirmation()` 和 `build_confirm_action()` 中添加\n 742 | \n 743 | 参考实现：`src/tools/think.rs`（最简单）、`src/tools/fetch_url.rs`（中等）、`src/tools/edit_file.rs`（复杂）\n 744 | \n 745 | ---\n 746 | \n 747 | ## `.agent/` 目录结构\n 748 | \n 749 | Agent 在项目下自动管理 `.agent/` 目录：\n 750 | \n 751 | ```\n 752 | your-project/\n 753 | ├── AGENT.md                        # 全局项目指令（自动加载）\n 754 | └── .agent/\n 755 |     ├── memory.md                   # 持久记忆（自动维护）\n 756 |     ├── summary.md                  # 项目摘要（/summary 生成）\n 757 |     ├── system_prompt.md            # 自定义系统提示词（可选）\n 758 |     ├── roles/                      # 角色提示词覆盖（可选）\n 759 |     │   ├── planner.md              # 覆盖或追加 Planner 的系统提示词\n 760 |     │   ├── executor.md             # 覆盖或追加 Executor 的系统提示词\n 761 |     │   └── checker.md              # 覆盖或追加 Checker 的系统提示词\n 762 |     └── skills/                     # 项目级 Skills\n 763 |         ├── modify-dts-gpio.md\n 764 |         └── cross-compile.md\n 765 | ```\n 766 | \n 767 | 建议在 `.gitignore` 中添加：\n 768 | ```\n 769 | .agent/memory.md\n 770 | .agent/sessions/\n 771 | ```\n 772 | \n 773 | ---\n 774 | \n 775 | ## 📄 License"
+        }
+      ]
+    },
+    {
+      "id": "37e2a69e-8f86-427f-b24f-ff4aa4d96593",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "现在让我查看主要的源代码文件来了解架构："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_l4emxWuQbCa5gmmkmVd36Mi1",
+          "name": "read_file",
+          "input": {
+            "path": "src/main.rs"
+          }
+        }
+      ]
+    },
+    {
+      "id": "02a55a23-e1d2-496b-ab7e-4e71bd6318a8",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_l4emxWuQbCa5gmmkmVd36Mi1",
+          "content": "File: /media/kanghua/disk/src/tools/rust_agent/src/main.rs (235 total lines)\nShowing lines 1-235:\n\n   1 | mod cli;\n   2 | mod config;\n   3 | mod confirm;\n   4 | mod context;\n   5 | mod diff;\n   6 | mod llm;\n   7 | mod memory;\n   8 | mod model_manager;\n   9 | mod output;\n  10 | mod persistence;\n  11 | mod skills;\n  12 | mod streaming;\n  13 | mod summary;\n  14 | mod tools;\n  15 | mod agent;\n  16 | mod conversation;\n  17 | mod pipeline;\n  18 | mod router;\n  19 | mod sandbox;\n  20 | mod server;\n  21 | mod ui;\n  22 | \n  23 | use std::sync::Arc;\n  24 | \n  25 | use anyhow::Result;\n  26 | use clap::Parser;\n  27 | use tracing_subscriber::EnvFilter;\n  28 | \n  29 | /// The mode the agent runs in.\n  30 | #[derive(Debug, Clone, PartialEq)]\n  31 | pub enum RunMode {\n  32 |     /// Interactive terminal with colored output (default).\n  33 |     Cli,\n  34 |     /// JSON-over-stdio for non-terminal consumers.\n  35 |     Stdio,\n  36 |     /// WebSocket server for remote consumers (VS Code, Web UI).\n  37 |     Server,\n  38 | }\n  39 | \n  40 | impl std::str::FromStr for RunMode {\n  41 |     type Err = String;\n  42 |     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {\n  43 |         match s.to_lowercase().as_str() {\n  44 |             \"cli\" => Ok(RunMode::Cli),\n  45 |             \"stdio\" => Ok(RunMode::Stdio),\n  46 |             \"server\" | \"ws\" | \"websocket\" => Ok(RunMode::Server),\n  47 |             other => Err(format!(\"unknown mode '{}', expected: cli, stdio, server\", other)),\n  48 |         }\n  49 |     }\n  50 | }\n  51 | \n  52 | impl std::fmt::Display for RunMode {\n  53 |     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n  54 |         match self {\n  55 |             RunMode::Cli => write!(f, \"cli\"),\n  56 |             RunMode::Stdio => write!(f, \"stdio\"),\n  57 |             RunMode::Server => write!(f, \"server\"),\n  58 |         }\n  59 |     }\n  60 | }\n  61 | \n  62 | #[derive(Parser, Debug)]\n  63 | #[command(name = \"agent\", about = \"🤖 Rust Coding Agent - An AI-powered CLI coding assistant\")]\n  64 | struct Args {\n  65 |     /// Optional initial prompt to start with\n  66 |     #[arg(short, long)]\n  67 |     prompt: Option<String>,\n  68 | \n  69 |     /// Model to use (e.g., claude-sonnet-4-20250514, gpt-4o)\n  70 |     #[arg(short, long, env = \"LLM_MODEL\", default_value = \"claude-sonnet-4-20250514\")]\n  71 |     model: String,\n  72 | \n  73 |     /// API provider: anthropic, openai, or compatible\n  74 |     #[arg(long, env = \"LLM_PROVIDER\", default_value = \"anthropic\")]\n  75 |     provider: String,\n  76 | \n  77 |     /// Working directory (defaults to current directory)\n  78 |     #[arg(short = 'd', long)]\n  79 |     workdir: Option<String>,\n  80 | \n  81 |     /// Enable verbose/debug logging\n  82 |     #[arg(short, long)]\n  83 |     verbose: bool,\n  84 | \n  85 |     /// Skip all confirmation prompts (dangerous!)\n  86 |     #[arg(short = 'y', long = \"yes\")]\n  87 |     auto_approve: bool,\n  88 | \n  89 |     /// Resume a previous conversation session by ID\n  90 |     #[arg(short, long)]\n  91 |     resume: Option<String>,\n  92 | \n  93 |     /// List saved conversation sessions\n  94 |     #[arg(long)]\n  95 |     sessions: bool,\n  96 | \n  97 |     /// Output mode: cli (default), stdio (JSON protocol), server (WebSocket)\n  98 |     #[arg(long, default_value = \"cli\")]\n  99 |     mode: RunMode,\n 100 | \n 101 |     /// Host to bind the WebSocket server to (only for --mode server)\n 102 |     #[arg(long, default_value = \"127.0.0.1\")]\n 103 |     host: String,\n 104 | \n 105 |     /// Port for the WebSocket server (only for --mode server)\n 106 |     #[arg(long, default_value_t = 9527)]\n 107 |     port: u16,\n 108 |     /// Maximum iterations for tool usage\n 109 |     #[arg(long, default_value = \"100\")]\n 110 |     max_iterations: usize,\n 111 | \n 112 |     /// Enable sandbox mode: snapshot files before modification,\n 113 |     /// allowing /rollback to restore all changes.\n 114 |     #[arg(long)]\n 115 |     sandbox: bool,\n 116 | \n 117 |     /// Use the global session store (~/.local/share/rust_agent/sessions/) instead of\n 118 |     /// the project-local `.agent/session.json`. Useful when you want to manage\n 119 |     /// multiple named sessions across projects.\n 120 |     #[arg(long)]\n 121 |     global_session: bool,\n 122 | }\n 123 | \n 124 | #[tokio::main]\n 125 | async fn main() -> Result<()> {\n 126 |     // Load .env files FIRST, so clap env variables are found during parse.\n 127 |     // Priority (later wins): ~/.config/rust_agent/.env → ~/.env → CWD chain\n 128 |     // This ensures a user-level .env in the home directory also works.\n 129 |     if let Some(home) = dirs::home_dir() {\n 130 |         // Lowest priority: ~/.config/rust_agent/.env (XDG-style)\n 131 |         let xdg_env = dirs::config_dir()\n 132 |             .unwrap_or_else(|| home.join(\".config\"))\n 133 |             .join(\"rust_agent\")\n 134 |             .join(\".env\");\n 135 |         dotenvy::from_path(&xdg_env).ok();\n 136 | \n 137 |         // Medium priority: ~/.env\n 138 |         dotenvy::from_path(home.join(\".env\")).ok();\n 139 |     }\n 140 |     // Highest priority: .env in CWD or its parents (standard dotenvy behavior)\n 141 |     dotenvy::dotenv().ok();\n 142 | \n 143 |     let args = Args::parse();\n 144 | \n 145 |     // Initialize logging\n 146 |     let filter = if args.verbose {\n 147 |         EnvFilter::new(\"debug\")\n 148 |     } else {\n 149 |         EnvFilter::new(\"warn\")\n 150 |     };\n 151 |     tracing_subscriber::fmt()\n 152 |         .with_env_filter(filter)\n 153 |         .with_target(false)\n 154 |         .init();\n 155 | \n 156 |     // Set auto-approve if requested\n 157 |     if args.auto_approve {\n 158 |         confirm::set_auto_approve(true);\n 159 |     }\n 160 | \n 161 |     // Handle --sessions: list and exit\n 162 |     if args.sessions {\n 163 |         return cli::list_sessions_and_exit();\n 164 |     }\n 165 | \n 166 |     // Load config\n 167 |     let config = config::Config::load(&args)?;\n 168 | \n 169 |     // Determine project directory\n 170 |     let project_dir = if let Some(ref workdir) = args.workdir {\n 171 |         std::path::PathBuf::from(workdir)\n 172 |             .canonicalize()\n 173 |             .unwrap_or_else(|_| std::path::PathBuf::from(workdir))\n 174 |     } else {\n 175 |         std::env::current_dir().unwrap_or_default()\n 176 |     };\n 177 | \n 178 |     // Auto-spawn sub-agents configured in models.toml (if we're in CLI mode).\n 179 |     // We keep the Child handles so we can kill the processes when the main agent exits.\n 180 |     let mut spawned_children: Vec<std::process::Child> = Vec::new();\n 181 |     if args.mode == RunMode::Cli && !config.sub_agents.is_empty() {\n 182 |         spawned_children = spawn_sub_agents(&config, &project_dir);\n 183 |     }\n 184 | \n 185 |     // Server mode has its own event loop — launch and return\n 186 |     if args.mode == RunMode::Server {\n 187 |         return server::run(config, project_dir, &args.host, args.port).await;\n 188 |     }\n 189 | \n 190 |     // Build the output backend based on --mode\n 191 |     let output: Arc<dyn output::AgentOutput> = match args.mode {\n 192 |         RunMode::Cli => Arc::new(output::CliOutput::new()),\n 193 |         RunMode::Stdio => Arc::new(output::StdioOutput::new()),\n 194 |         RunMode::Server => unreachable!(), // handled above\n 195 |     };\n 196 | \n 197 |     // Run the agent\n 198 |     let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.sandbox, args.global_session).await;\n 199 | \n 200 |     // Kill auto-spawned sub-agents so they don't become orphan processes.\n 201 |     // On the next startup the ports would be occupied, causing port-bind failures.\n 202 |     for mut child in spawned_children {\n 203 |         let _ = child.kill();\n 204 |         let _ = child.wait(); // reap to avoid zombie\n 205 |     }\n 206 | \n 207 |     result\n 208 | }\n 209 | \n 210 | fn spawn_sub_agents(config: &config::Config, project_dir: &std::path::Path) -> Vec<std::process::Child> {\n 211 |     use std::process::{Command, Stdio};\n 212 | \n 213 |     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from(\"agent\"));\n 214 |     let mut children = Vec::new();\n 215 | \n 216 |     for (name, sa) in &config.sub_agents {\n 217 |         println!(\"🚀 Auto-spawning sub-agent '{}' on port {}...\", name, sa.port);\n 218 | \n 219 |         let mut cmd = Command::new(&exe);\n 220 |         cmd.arg(\"--mode\").arg(\"server\")\n 221 |            .arg(\"--port\").arg(sa.port.to_string())\n 222 |            .arg(\"-d\").arg(project_dir)\n 223 |            .env(\"AGENT_ROLE\", \"worker\");\n 224 | \n 225 |         match cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {\n 226 |             Ok(child) => {\n 227 |                 println!(\"✅ Sub-agent '{}' started (pid {}).\", name, child.id());\n 228 |                 children.push(child);\n 229 |             }\n 230 |             Err(e) => eprintln!(\"❌ Failed to spawn sub-agent '{}': {}\", name, e),\n 231 |         }\n 232 |     }\n 233 | \n 234 |     children\n 235 | }"
+        }
+      ]
+    },
+    {
+      "id": "9123eed1-e155-42b2-8fc8-0707a4fe1a34",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "现在让我查看核心的 agent.rs 文件："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_cKAcZ8vBKdp8gaC6yJCROMHw",
+          "name": "read_file",
+          "input": {
+            "end_line": 100,
+            "path": "src/agent.rs",
+            "start_line": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "5b93aa75-2802-4593-9682-e80dd0b308db",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_cKAcZ8vBKdp8gaC6yJCROMHw",
+          "content": "File: /media/kanghua/disk/src/tools/rust_agent/src/agent.rs (1558 total lines)\nShowing lines 1-100:\n\n   1 | //! Agent core: orchestrates LLM calls, tool execution, streaming,\n   2 | //! context window management, and operation confirmation.\n   3 | \n   4 | use std::collections::HashMap;\n   5 | use std::path::PathBuf;\n   6 | use std::sync::Arc;\n   7 | use std::sync::atomic::{AtomicBool, Ordering};\n   8 | \n   9 | use anyhow::Result;\n  10 | \n  11 | /// Set by the Ctrl-C handler; checked between tool calls so the agent\n  12 | /// can stop cleanly without leaving the conversation in an invalid state.\n  13 | static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);\n  14 | \n  15 | pub fn request_interrupt() {\n  16 |     INTERRUPT_REQUESTED.store(true, Ordering::Relaxed);\n  17 | }\n  18 | \n  19 | pub fn clear_interrupt() {\n  20 |     INTERRUPT_REQUESTED.store(false, Ordering::Relaxed);\n  21 | }\n  22 | \n  23 | pub fn is_interrupted() -> bool {\n  24 |     INTERRUPT_REQUESTED.load(Ordering::Relaxed)\n  25 | }\n  26 | \n  27 | /// Set by the Ctrl-\\ (SIGQUIT) handler; checked between LLM iterations in the\n  28 | /// pipeline executor so the user can inject real-time guidance at any safe point.\n  29 | static GUIDANCE_REQUESTED: AtomicBool = AtomicBool::new(false);\n  30 | \n  31 | pub fn request_guidance() {\n  32 |     GUIDANCE_REQUESTED.store(true, Ordering::Relaxed);\n  33 | }\n  34 | \n  35 | pub fn clear_guidance() {\n  36 |     GUIDANCE_REQUESTED.store(false, Ordering::Relaxed);\n  37 | }\n  38 | \n  39 | pub fn is_guidance_requested() -> bool {\n  40 |     GUIDANCE_REQUESTED.load(Ordering::Relaxed)\n  41 | }\n  42 | \n  43 | use crate::config::{Config, Provider};\n  44 | use crate::confirm::ConfirmAction;\n  45 | use crate::context;\n  46 | use crate::conversation::{ContentBlock, Conversation, Message};\n  47 | use crate::llm::{self, LlmClient};\n  48 | use crate::memory::Memory;\n  49 | use crate::model_manager;\n  50 | use crate::output::AgentOutput;\n  51 | use crate::sandbox::Sandbox;\n  52 | use crate::streaming;\n  53 | use crate::tools::ToolExecutor;\n  54 | \n  55 | /// The main Agent that orchestrates LLM calls and tool execution\n  56 | pub struct Agent {\n  57 |     pub config: Config,\n  58 |     pub project_dir: PathBuf,\n  59 |     client: Box<dyn LlmClient>,\n  60 |     tool_executor: ToolExecutor,\n  61 |     pub conversation: Conversation,\n  62 |     pub memory: Memory,\n  63 |     total_input_tokens: u64,\n  64 |     total_output_tokens: u64,\n  65 |     /// Per-role token usage: maps role name → (input_tokens, output_tokens).\n  66 |     /// Tracks cost breakdown across router, planner, executor, checker, agent, summary, etc.\n  67 |     role_token_usage: HashMap<String, (u64, u64)>,\n  68 |     session_id: Option<String>,\n  69 |     output: Arc<dyn AgentOutput>,\n  70 |     /// Holds a pending plan generated by `generate_plan()`, ready for `execute_plan()`.\n  71 |     pub pending_plan: Option<String>,\n  72 |     /// Loaded models.toml config, kept for role resolution at runtime.\n  73 |     pub models_cfg: model_manager::ModelsConfig,\n  74 |     /// Per-role Config cache, built once on construction.\n  75 |     /// Key is role name (e.g. \"planner\", \"executor\", \"checker\").\n  76 |     role_configs: HashMap<String, Config>,\n  77 |     /// Sandbox for snapshot-based rollback.\n  78 |     pub sandbox: Sandbox,\n  79 |     /// When false (default), sessions are stored in the project's `.agent/session.json`.\n  80 |     /// When true, sessions are stored in the global `~/.local/share/rust_agent/sessions/`.\n  81 |     pub global_session: bool,\n  82 | }\n  83 | \n  84 | impl Agent {\n  85 |     /// Restrict write/edit tools to paths inside `dir` for this agent.\n  86 |     /// Pass `None` to remove the restriction.\n  87 |     pub fn set_allowed_dir(&mut self, dir: Option<std::path::PathBuf>) {\n  88 |         self.tool_executor.set_allowed_dir(dir);\n  89 |     }\n  90 | \n  91 |     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {\n  92 |         let client = llm::create_client(&config);\n  93 |         let memory = Memory::load(&project_dir);\n  94 |         let conversation = Conversation::new(&project_dir);\n  95 |         let models_cfg = model_manager::load();\n  96 |         let role_configs = build_role_configs(&config, &models_cfg);\n  97 |         let effective_dir = sandbox.working_dir().to_path_buf();\n  98 |         Agent {\n  99 |             config,\n 100 |             client,"
+        }
+      ]
+    },
+    {
+      "id": "0ccc768a-bc3a-4ddf-9da2-530f6fa43971",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "让我继续查看 agent.rs 的核心方法："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_rxGIu3YvYtRQO8thJN0Zcj1Y",
+          "name": "read_file",
+          "input": {
+            "end_line": 200,
+            "path": "src/agent.rs",
+            "start_line": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "9f5da579-9af4-4d9e-b724-3fc0179d9d4a",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_rxGIu3YvYtRQO8thJN0Zcj1Y",
+          "content": "File: /media/kanghua/disk/src/tools/rust_agent/src/agent.rs (1558 total lines)\nShowing lines 100-200:\n\n 100 |             client,\n 101 |             tool_executor: ToolExecutor::new(effective_dir, output.clone()),\n 102 |             conversation,\n 103 |             memory,\n 104 |             total_input_tokens: 0,\n 105 |             total_output_tokens: 0,\n 106 |             role_token_usage: HashMap::new(),\n 107 |             session_id: None,\n 108 |             output,\n 109 |             project_dir,\n 110 |             pending_plan: None,\n 111 |             models_cfg,\n 112 |             role_configs,\n 113 |             sandbox,\n 114 |             global_session: false,\n 115 |         }\n 116 |     }\n 117 | \n 118 |     /// Create agent with a restored conversation\n 119 |     pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {\n 120 |         let client = llm::create_client(&config);\n 121 |         let memory = Memory::load(&project_dir);\n 122 |         let models_cfg = model_manager::load();\n 123 |         let role_configs = build_role_configs(&config, &models_cfg);\n 124 |         let effective_dir = sandbox.working_dir().to_path_buf();\n 125 |         Agent {\n 126 |             config,\n 127 |             client,\n 128 |             tool_executor: ToolExecutor::new(effective_dir, output.clone()),\n 129 |             conversation,\n 130 |             memory,\n 131 |             total_input_tokens: 0,\n 132 |             total_output_tokens: 0,\n 133 |             role_token_usage: HashMap::new(),\n 134 |             session_id: Some(session_id),\n 135 |             output,\n 136 |             project_dir,\n 137 |             pending_plan: None,\n 138 |             models_cfg,\n 139 |             role_configs,\n 140 |             sandbox,\n 141 |             global_session: false,\n 142 |         }\n 143 |     }\n 144 | \n 145 |     /// Get or create a session ID for persistence\n 146 |     pub fn session_id(&self) -> Option<&str> {\n 147 |         self.session_id.as_deref()\n 148 |     }\n 149 | \n 150 |     /// Set session ID\n 151 |     pub fn set_session_id(&mut self, id: String) {\n 152 |         self.session_id = Some(id);\n 153 |     }\n 154 | \n 155 |     /// Switch the active model at runtime.\n 156 |     /// Rebuilds the underlying LLM client with the new config.\n 157 |     pub fn switch_model(&mut self, resolved: &crate::model_manager::ResolvedModel) {\n 158 |         self.config = self.config.with_resolved_model(resolved);\n 159 |         self.client = llm::create_client(&self.config);\n 160 |     }\n 161 | \n 162 |     /// Maximum number of retries for transient LLM API errors.\n 163 |     const LLM_MAX_RETRIES: u32 = 3;\n 164 | \n 165 |     /// Check whether an error message indicates a transient/recoverable failure.\n 166 |     fn is_transient_error(err_msg: &str) -> bool {\n 167 |         let lower = err_msg.to_lowercase();\n 168 |         lower.contains(\"dns error\")\n 169 |             || lower.contains(\"connection reset\")\n 170 |             || lower.contains(\"connection refused\")\n 171 |             || lower.contains(\"timed out\")\n 172 |             || lower.contains(\"timeout\")\n 173 |             || lower.contains(\"broken pipe\")\n 174 |             || lower.contains(\"try again\")\n 175 |             || lower.contains(\"temporarily unavailable\")\n 176 |             || lower.contains(\"eof before\")\n 177 |             || lower.contains(\"connection closed\")\n 178 |             || lower.contains(\"connection aborted\")\n 179 |             || lower.contains(\"network unreachable\")\n 180 |             || lower.contains(\"host unreachable\")\n 181 |             || lower.contains(\"error sending request\")\n 182 |             || lower.contains(\"failed to send\")\n 183 |             || lower.contains(\"failed to lookup address\")\n 184 |             || lower.contains(\"api error (429)\")\n 185 |             || lower.contains(\"api error (500)\")\n 186 |             || lower.contains(\"api error (502)\")\n 187 |             || lower.contains(\"api error (503)\")\n 188 |             || lower.contains(\"api error (504)\")\n 189 |             || lower.contains(\"overloaded\")\n 190 |     }\n 191 | \n 192 |     /// Call the LLM with automatic retry for transient network errors\n 193 |     /// (DNS failures, connection resets, timeouts, 5xx server errors, etc.).\n 194 |     /// Uses exponential backoff: 2s, 4s, 8s between retries.\n 195 |     async fn call_llm_with_retry(\n 196 |         &self,\n 197 |         conversation: &Conversation,\n 198 |         tools: &[crate::tools::ToolDefinition],\n 199 |     ) -> Result<crate::llm::LlmResponse> {\n 200 |         // Show which model is handling this turn"
+        }
+      ]
+    },
+    {
+      "id": "1890d288-2c28-408f-ac17-12258a009cc8",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "现在让我查看工具系统的实现："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_TwJNEhr6XaLioNTXFrPj22x5",
+          "name": "read_file",
+          "input": {
+            "path": "src/tools/mod.rs"
+          }
+        }
+      ]
+    },
+    {
+      "id": "9295aa8a-c7e3-4baa-b97a-5d69de852b14",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_TwJNEhr6XaLioNTXFrPj22x5",
+          "content": "File: /media/kanghua/disk/src/tools/rust_agent/src/tools/mod.rs (216 total lines)\nShowing lines 1-216:\n\n   1 | pub mod read_file;\n   2 | pub mod write_file;\n   3 | pub mod edit_file;\n   4 | pub mod multi_edit_file;\n   5 | pub mod run_command;\n   6 | pub mod search;\n   7 | pub mod list_dir;\n   8 | pub mod batch_read;\n   9 | pub mod think;\n  10 | pub mod read_pdf;\n  11 | pub mod read_ebook;\n  12 | pub mod load_skill;\n  13 | pub mod create_skill;\n  14 | pub mod call_sub_agent;\n  15 | pub mod browser;\n  16 | // pub mod git; // Removed - Git operations handled by run_command\n  17 | \n  18 | use std::sync::Arc;\n  19 | \n  20 | use serde::{Deserialize, Serialize};\n  21 | use std::collections::HashMap;\n  22 | use std::path::{Path, PathBuf};\n  23 | \n  24 | use crate::output::AgentOutput;\n  25 | \n  26 | /// Definition of a tool that the LLM can use\n  27 | #[derive(Debug, Clone, Serialize, Deserialize)]\n  28 | pub struct ToolDefinition {\n  29 |     pub name: String,\n  30 |     pub description: String,\n  31 |     pub parameters: serde_json::Value,\n  32 | }\n  33 | \n  34 | /// Result of executing a tool\n  35 | #[derive(Debug, Clone)]\n  36 | pub struct ToolResult {\n  37 |     pub output: String,\n  38 |     pub is_error: bool,\n  39 | }\n  40 | \n  41 | impl ToolResult {\n  42 |     pub fn success(output: impl Into<String>) -> Self {\n  43 |         ToolResult {\n  44 |             output: output.into(),\n  45 |             is_error: false,\n  46 |         }\n  47 |     }\n  48 | \n  49 |     pub fn error(output: impl Into<String>) -> Self {\n  50 |         ToolResult {\n  51 |             output: output.into(),\n  52 |             is_error: true,\n  53 |         }\n  54 |     }\n  55 | }\n  56 | \n  57 | /// The tool executor that manages all available tools\n  58 | pub struct ToolExecutor {\n  59 |     tools: HashMap<String, Box<dyn Tool + Send + Sync>>,\n  60 |     project_dir: PathBuf,\n  61 |     /// When set, write/edit/delete tools are restricted to this directory.\n  62 |     /// Paths outside it are rejected before the tool runs.\n  63 |     allowed_dir: Option<PathBuf>,\n  64 | }\n  65 | \n  66 | /// Trait that all tools must implement\n  67 | #[async_trait::async_trait]\n  68 | pub trait Tool: Send + Sync {\n  69 |     fn definition(&self) -> ToolDefinition;\n  70 |     async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult;\n  71 | }\n  72 | \n  73 | impl ToolExecutor {\n  74 |     pub fn new(project_dir: PathBuf, output: Arc<dyn AgentOutput>) -> Self {\n  75 |         let mut executor = ToolExecutor {\n  76 |             tools: HashMap::new(),\n  77 |             project_dir,\n  78 |             allowed_dir: None,\n  79 |         };\n  80 | \n  81 |         // Register all built-in tools\n  82 |         executor.register(Box::new(read_file::ReadFileTool));\n  83 |         executor.register(Box::new(write_file::WriteFileTool));\n  84 |         executor.register(Box::new(edit_file::EditFileTool));\n  85 |         executor.register(Box::new(multi_edit_file::MultiEditFileTool));\n  86 |         executor.register(Box::new(run_command::RunCommandTool));\n  87 |         executor.register(Box::new(search::GrepSearchTool));\n  88 |         executor.register(Box::new(search::FileSearchTool));\n  89 |         executor.register(Box::new(list_dir::ListDirTool));\n  90 |         executor.register(Box::new(batch_read::BatchReadFilesTool));\n  91 |         executor.register(Box::new(think::ThinkTool));\n  92 |         executor.register(Box::new(read_pdf::ReadPdfTool));\n  93 |         executor.register(Box::new(read_ebook::ReadEbookTool));\n  94 |         executor.register(Box::new(load_skill::LoadSkillTool));\n  95 |         executor.register(Box::new(create_skill::CreateSkillTool));\n  96 |         executor.register(Box::new(browser::BrowserTool::new()));\n  97 |         // executor.register(Box::new(git::GitTool)); // Removed - Git operations handled by run_command\n  98 | \n  99 |         // Only register call_sub_agent for the main manager agent\n 100 |         let agent_role = std::env::var(\"AGENT_ROLE\").unwrap_or_else(|_| \"manager\".to_string());\n 101 |         if agent_role == \"manager\" {\n 102 |             executor.register(Box::new(call_sub_agent::CallSubAgentTool::new(output)));\n 103 |         }\n 104 | \n 105 |         executor\n 106 |     }\n 107 | \n 108 |     fn register(&mut self, tool: Box<dyn Tool + Send + Sync>) {\n 109 |         let def = tool.definition();\n 110 |         self.tools.insert(def.name.clone(), tool);\n 111 |     }\n 112 | \n 113 |     /// Restrict write/edit tools to paths inside `dir`.\n 114 |     /// Pass `None` to remove the restriction.\n 115 |     pub fn set_allowed_dir(&mut self, dir: Option<PathBuf>) {\n 116 |         self.allowed_dir = dir;\n 117 |     }\n 118 | \n 119 |     /// Get all tool definitions for the LLM\n 120 |     pub fn definitions(&self) -> Vec<ToolDefinition> {\n 121 |         self.tools.values().map(|t| t.definition()).collect()\n 122 |     }\n 123 | \n 124 |     /// Get only read-only tool definitions (no file writes or edits).\n 125 |     /// Used during the planning phase so the LLM can explore but not modify anything.\n 126 |     /// `run_command` is included so the planner can run read-only shell/git commands\n 127 |     /// (e.g. `git status`, `git log`, `git diff`, `find`, `cat`) — the planner system\n 128 |     /// prompt instructs it never to run commands that mutate state.\n 129 |     pub fn readonly_definitions(&self) -> Vec<ToolDefinition> {\n 130 |         const READONLY_TOOLS: &[&str] = &[\n 131 |             \"read_file\",\n 132 |             \"batch_read_files\",\n 133 |             \"read_pdf\",\n 134 |             \"list_directory\",\n 135 |             \"grep_search\",\n 136 |             \"file_search\",\n 137 |             \"think\",\n 138 |             \"read_ebook\",\n 139 |             \"load_skill\",\n 140 |             \"run_command\",\n 141 |             \"browser\",\n 142 |             // \"git\", // Removed - Git operations handled by run_command\n 143 |         ];\n 144 |         self.tools\n 145 |             .values()\n 146 |             .map(|t| t.definition())\n 147 |             .filter(|d| READONLY_TOOLS.contains(&d.name.as_str()))\n 148 |             .collect()\n 149 |     }\n 150 | \n 151 |     /// Execute a tool by name.\n 152 |     ///\n 153 |     /// Wraps the tool execution in `catch_unwind` so that a panic inside\n 154 |     /// a tool (e.g. slice-index-out-of-range) is turned into a\n 155 |     /// `ToolResult::Error` instead of crashing the whole agent.  This\n 156 |     /// prevents orphaned `tool_use` blocks without matching `tool_result`\n 157 |     /// in the conversation, which would cause Anthropic API 400 errors.\n 158 |     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolResult {\n 159 |         // ── Directory guard ───────────────────────────────────────────────────\n 160 |         // If an allowed_dir is set, reject write/edit tools that try to touch\n 161 |         // paths outside it.  Read-only tools are not restricted.\n 162 |         const WRITE_TOOLS: &[&str] = &[\"write_file\", \"edit_file\", \"multi_edit_file\"];\n 163 |         if let Some(ref allowed) = self.allowed_dir {\n 164 |             if WRITE_TOOLS.contains(&name) {\n 165 |                 if let Some(path_str) = input.get(\"path\").and_then(|v| v.as_str()) {\n 166 |                     let resolved = if Path::new(path_str).is_absolute() {\n 167 |                         PathBuf::from(path_str)\n 168 |                     } else {\n 169 |                         self.project_dir.join(path_str)\n 170 |                     };\n 171 |                     // canonicalize() fails for not-yet-existing files; use the\n 172 |                     // raw resolved path as fallback so new files are still checked.\n 173 |                     let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());\n 174 |                     // Normalise allowed_dir the same way.\n 175 |                     let allowed_canon = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());\n 176 |                     if !canonical.starts_with(&allowed_canon) {\n 177 |                         return ToolResult::error(format!(\n 178 |                             \"Access denied: '{}' is outside the allowed directory '{}'.\",\n 179 |                             canonical.display(),\n 180 |                             allowed_canon.display()\n 181 |                         ));\n 182 |                     }\n 183 |                 }\n 184 |             }\n 185 |         }\n 186 | \n 187 |         match self.tools.get(name) {\n 188 |             Some(tool) => {\n 189 |                 use futures::FutureExt; // catch_unwind on futures\n 190 | \n 191 |                 let result = std::panic::AssertUnwindSafe(\n 192 |                     tool.execute(input, &self.project_dir),\n 193 |                 )\n 194 |                 .catch_unwind()\n 195 |                 .await;\n 196 | \n 197 |                 match result {\n 198 |                     Ok(r) => r,\n 199 |                     Err(panic_val) => {\n 200 |                         let panic_msg = if let Some(s) = panic_val.downcast_ref::<&str>() {\n 201 |                             s.to_string()\n 202 |                         } else if let Some(s) = panic_val.downcast_ref::<String>() {\n 203 |                             s.clone()\n 204 |                         } else {\n 205 |                             \"unknown panic\".to_string()\n 206 |                         };\n 207 |                         let msg = format!(\"Tool '{}' panicked: {}\", name, panic_msg);\n 208 |                         tracing::error!(\"{}\", msg);\n 209 |                         ToolResult::error(msg)\n 210 |                     }\n 211 |                 }\n 212 |             }\n 213 |             None => ToolResult::error(format!(\"Unknown tool: {}\", name)),\n 214 |         }\n 215 |     }\n 216 | }"
+        }
+      ]
+    },
+    {
+      "id": "f7bf97ca-a22c-46aa-a552-a7dba7b4fa4d",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "现在让我查看 Cargo.toml 来了解项目的依赖："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_okBBHer8dTxeBdE1nkfci6sf",
+          "name": "read_file",
+          "input": {
+            "path": "Cargo.toml"
+          }
+        }
+      ]
+    },
+    {
+      "id": "4772cf85-1a5d-49b7-82c4-07b9ca4113fd",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_okBBHer8dTxeBdE1nkfci6sf",
+          "content": "File: /media/kanghua/disk/src/tools/rust_agent/Cargo.toml (78 total lines)\nShowing lines 1-78:\n\n   1 | [package]\n   2 | name = \"rust_agent\"\n   3 | version = \"0.1.0\"\n   4 | edition = \"2021\"\n   5 | description = \"A CLI coding agent powered by LLM, similar to Claude Code\"\n   6 | license = \"MIT\"\n   7 | \n   8 | [[bin]]\n   9 | name = \"agent\"\n  10 | path = \"src/main.rs\"\n  11 | \n  12 | [dependencies]\n  13 | # Async runtime\n  14 | tokio = { version = \"1\", features = [\"full\"] }\n  15 | \n  16 | # HTTP client for LLM API (rustls = pure Rust TLS, no system OpenSSL dependency)\n  17 | reqwest = { version = \"0.12\", default-features = false, features = [\"json\", \"stream\", \"rustls-tls\"] }\n  18 | \n  19 | # Serialization\n  20 | serde = { version = \"1\", features = [\"derive\"] }\n  21 | serde_json = \"1\"\n  22 | toml = \"0.8\"\n  23 | \n  24 | # CLI interface\n  25 | clap = { version = \"4\", features = [\"derive\", \"env\"] }\n  26 | \n  27 | # Terminal UI\n  28 | crossterm = \"0.28\"\n  29 | colored = \"2\"\n  30 | \n  31 | # Low-level Unix terminal control (termios save/restore)\n  32 | libc = \"0.2\"\n  33 | \n  34 | # Interactive line editor\n  35 | rustyline = \"14\"\n  36 | \n  37 | # Async streaming\n  38 | tokio-stream = \"0.1\"\n  39 | futures = { version = \"0.3\", features = [\"thread-pool\"] }\n  40 | \n  41 | # Error handling\n  42 | anyhow = \"1\"\n  43 | thiserror = \"1\"\n  44 | \n  45 | # Environment & config\n  46 | dotenvy = \"0.15\"\n  47 | dirs = \"5\"\n  48 | \n  49 | # Logging\n  50 | tracing = \"0.1\"\n  51 | tracing-subscriber = { version = \"0.3\", features = [\"env-filter\"] }\n  52 | \n  53 | # UUID for message IDs\n  54 | uuid = { version = \"1\", features = [\"v4\"] }\n  55 | \n  56 | # Regex for parsing\n  57 | regex = \"1\"\n  58 | \n  59 | # File watching / globbing\n  60 | glob = \"0.3\"\n  61 | \n  62 | # Syntax highlighting in terminal\n  63 | syntect = \"5\"\n  64 | \n  65 | # Markdown rendering in terminal\n  66 | termimad = \"0.30\"\n  67 | \n  68 | # Async trait support\n  69 | async-trait = \"0.1\"\n  70 | \n  71 | # URL parsing\n  72 | url = \"2\"\n  73 | \n  74 | # WebSocket server (for --mode server)\n  75 | tokio-tungstenite = \"0.24\"\n  76 | \n  77 | # Browser automation with CDP\n  78 | chromiumoxide = \"0.9.1\""
+        }
+      ]
+    },
+    {
+      "id": "c8bbea88-4c83-4bd9-81d9-bd592bac6355",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "让我查看一下项目的文档来了解更多设计细节："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_3EkpSvljNF7BsyHl4Df7XWAD",
+          "name": "read_file",
+          "input": {
+            "end_line": 100,
+            "path": "docs/MULTI_ROLE_DESIGN.md",
+            "start_line": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "c0f41526-1951-4c48-a527-d40e82b446f1",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_3EkpSvljNF7BsyHl4Df7XWAD",
+          "content": "File: /media/kanghua/disk/src/tools/rust_agent/docs/MULTI_ROLE_DESIGN.md (698 total lines)\nShowing lines 1-100:\n\n   1 | # Multi-Role Agent 架构设计文档\n   2 | \n   3 | > 设计目标：在现有 `Agent` 框架基础上，扩展支持用户自定义角色（如规划者、实施者、审核者），\n   4 | > 每个角色绑定独立的模型与系统提示词，并通过标准化的**上下文传递协议**串联为一条自动流水线。\n   5 | \n   6 | ---\n   7 | \n   8 | ## 目录\n   9 | \n  10 | 1. [核心概念与术语](#1-核心概念与术语)\n  11 | 2. [信息流设计：角色间如何传递上下文](#2-信息流设计角色间如何传递上下文)\n  12 | 3. [系统提示词设计（每个角色的 Prompt）](#3-系统提示词设计每个角色的-prompt)\n  13 | 4. [配置文件格式（models.toml 扩展）](#4-配置文件格式modelstoml-扩展)\n  14 | 5. [核心数据结构设计](#5-核心数据结构设计)\n  15 | 6. [执行流程（状态机）](#6-执行流程状态机)\n  16 | 7. [错误处理与自愈机制](#7-错误处理与自愈机制)\n  17 | 8. [对现有代码的影响分析](#8-对现有代码的影响分析)\n  18 | 9. [分阶段实施计划](#9-分阶段实施计划)\n  19 | 10. [未解决的设计问题（待决策）](#10-未解决的设计问题待决策)\n  20 | \n  21 | ---\n  22 | \n  23 | ## 1. 核心概念与术语\n  24 | \n  25 | | 术语 | 说明 |\n  26 | |:---|:---|\n  27 | | **Role（角色）** | 一个具有独立模型配置和系统提示词的执行单元，如 `planner`、`executor`、`checker` |\n  28 | | **Stage（阶段）** | 流水线中的一个执行节点，每个 Stage 对应一个 Role |\n  29 | | **Artifact（制品）** | 一个 Stage 产出的结构化结果，作为下一个 Stage 的输入 |\n  30 | | **Pipeline（流水线）** | 多个 Stage 按顺序串联的完整执行流程 |\n  31 | | **Handoff（交接）** | 上一个 Stage 将 Artifact 注入下一个 Stage 的过程 |\n  32 | | **Feedback Loop（反馈环）** | Checker 发现问题后将反馈传回 Executor 重试的闭环 |\n  33 | \n  34 | ---\n  35 | \n  36 | ## 2. 信息流设计：角色间如何传递上下文\n  37 | \n  38 | 这是整个架构中最关键的问题：**每个角色的输入来自哪里，输出传递给谁？**\n  39 | \n  40 | ### 2.1 三角色标准流水线\n  41 | \n  42 | ```\n  43 | 用户输入 (User Task)\n  44 |        │\n  45 |        ▼\n  46 | ┌─────────────┐    Artifact: Plan\n  47 | │   Planner   │ ──────────────────────────────────────────────────────────────►\n  48 | │  (规划者)   │\n  49 | └─────────────┘\n  50 |   只读工具: read_file, list_dir, grep_search\n  51 |   输入: 用户原始任务\n  52 |   输出: 结构化的执行计划 (Markdown)\n  53 | \n  54 |                                            ┌──────────────┐    Artifact: Result\n  55 |                                            │  Implementer │ ────────────────────►\n  56 |                                            │   (实施者)   │\n  57 |                                            └──────────────┘\n  58 |                                              全量工具: read/write/edit/cmd\n  59 |                                              输入: [用户任务 + 规划结果]\n  60 |                                              输出: 修改摘要 + 影响文件列表\n  61 | \n  62 |                                                                   ┌───────────┐\n  63 |                                                                   │  Checker  │\n  64 |                                                                   │  (审核者) │\n  65 |                                                                   └───────────┘\n  66 |                                                                    只读+运行工具\n  67 |                                                                    输入: [用户任务\n  68 |                                                                          + 规划结果\n  69 |                                                                          + 修改摘要\n  70 |                                                                          + 文件Diff]\n  71 |                                                                    输出: 通过 ✅ \n  72 |                                                                          or 问题报告 ❌\n  73 |                                                                          \n  74 |                               ◄──────────────── 反馈环 (问题报告 → Executor 重试) ──────────\n  75 | ```\n  76 | \n  77 | ### 2.2 Artifact 格式规范\n  78 | \n  79 | 每个 Stage 必须输出符合以下格式的 Artifact，供下一个 Stage 解析。\n  80 | 格式选择 Markdown（可读性好，LLM 天然理解）而非 JSON（省去解析开销）。\n  81 | \n  82 | #### Planner → Implementer：Plan Artifact\n  83 | \n  84 | ```markdown\n  85 | ## PLAN_ARTIFACT\n  86 | \n  87 | ### 任务摘要\n  88 | <用户原始任务的一句话概括>\n  89 | \n  90 | ### 受影响的文件\n  91 | - `src/agent.rs` — 添加 planner_config 字段\n  92 | - `src/model_manager.rs` — 扩展 roles 字段解析\n  93 | - `src/config.rs` — 新增 with_role_config 方法\n  94 | \n  95 | ### 执行步骤\n  96 | 1. **[读]** 阅读 `src/agent.rs` 第 1-50 行，确认 Agent 结构体当前字段\n  97 | 2. **[改]** 在 `src/agent.rs` 中为 `Agent` 结构体新增 `role_configs: HashMap<String, Config>` 字段\n  98 | 3. **[改]** 修改 `Agent::new()` 构造函数，从 `models.toml` 加载 roles 配置\n  99 | 4. **[运行]** 执行 `cargo build` 验证编译通过\n 100 | 5. **[改]** 修改 `generate_plan()` 使用 planner 角色的 Config 调用 LLM"
+        }
+      ]
+    },
+    {
+      "id": "fc5bc3a3-06a3-4137-b6d0-c5c4ad06432c",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "现在让我查看一些示例文件来了解如何使用这个工具："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_Cy4W2YhY7Gb2ZwMx6EmxK2nT",
+          "name": "list_directory",
+          "input": {
+            "path": "examples"
+          }
+        }
+      ]
+    },
+    {
+      "id": "4cfc70a1-5f8b-419e-a91e-349b71bf3453",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_Cy4W2YhY7Gb2ZwMx6EmxK2nT",
+          "content": "Directory '/media/kanghua/disk/src/tools/rust_agent/examples' is empty"
+        }
+      ]
+    },
+    {
+      "id": "9bdf6ce7-04f9-4ad8-9b21-f332e37fc81b",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "让我查看一下项目的构建和运行状态："
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_bvGKwFirG9exYm2bBpuxZS22",
+          "name": "run_command",
+          "input": {
+            "command": "cargo check"
+          }
+        }
+      ]
+    },
+    {
+      "id": "59b4c4bf-e9aa-415b-a104-8d3e4601e4ab",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_bvGKwFirG9exYm2bBpuxZS22",
+          "content": "User declined to execute this operation.",
+          "is_error": true
+        }
+      ]
+    },
+    {
+      "id": "b6838915-a843-4d99-96c0-6bde3927b7d8",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "# 在项目目录启动 agent\nagent\n# 说几句话后退出，检查是否生成了\ncat .agent/session.json | head -5\n# 再次启动，看是否打印 \"Resumed local session\"\nagent"
+        }
+      ]
+    },
+    {
+      "id": "f497c127-e5a8-4a0b-b0e0-d7e9473fb6b9",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "[Pipeline completed] Task: # 在项目目录启动 agent\nagent\n# 说几句话后退出，检查是否生成了\ncat .agent/session.json | head -5\n# 再次启动，看是否打印 \"Resumed local session\"\nagent\n\nResult summary:\n"
+        }
+      ]
+    },
+    {
+      "id": "d43736b7-df26-4c91-bce3-efb02c9fdace",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "我重新设计了架构，你帮忙看下逻辑设计的怎么样？"
+        }
+      ]
+    },
+    {
+      "id": "ac4a825f-5372-40e8-903e-dfc9d9d9d8af",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "[Pipeline completed] Task: 我重新设计了架构，你帮忙看下逻辑设计的怎么样？\n\nResult summary:\n"
+        }
+      ]
+    },
+    {
+      "id": "f0906425-2f25-4464-adcc-ae76a2efc44d",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "hello"
+        }
+      ]
+    },
+    {
+      "id": "e12e19f1-ef38-4a86-b1a0-de8da8b30611",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "你好！我看到你正在使用 Rust Agent 项目。让我先检查一下当前项目的状态，然后帮你分析架构设计。"
+        },
+        {
+          "type": "tool_use",
+          "id": "call_00_Oj2gUadTG9oZqqwvUlhgrOBU",
+          "name": "run_command",
+          "input": {
+            "command": "pwd"
+          }
+        }
+      ]
+    },
+    {
+      "id": "65a4f1ae-54f9-44a2-84cb-0527f913ed89",
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_00_Oj2gUadTG9oZqqwvUlhgrOBU",
+          "content": "User declined to execute this operation.",
+          "is_error": true
+        }
+      ]
+    }
+  ]
+}
