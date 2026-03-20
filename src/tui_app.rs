@@ -321,12 +321,16 @@ impl TuiApp {
         let welcome = Line::from(vec![
             Span::styled("🤖  Agent TUI  ", b(Color::Cyan)),
             Span::styled(
-                "PgUp/PgDn: scroll   Ctrl-C: interrupt   Ctrl-Q: quit",
+                "PgUp/PgDn·wheel: scroll   Ctrl-C: interrupt   Ctrl-Q: quit",
                 s(Color::DarkGray),
             ),
         ]);
+        let hint = Line::from(vec![Span::styled(
+            "  💡 Shift+drag to select & copy text  (mouse capture is active)",
+            s(Color::DarkGray),
+        )]);
         Self {
-            output_lines: vec![welcome],
+            output_lines: vec![welcome, hint],
             scroll: 0,
             auto_scroll: true,
             stream_buf: String::new(),
@@ -594,6 +598,7 @@ impl TuiApp {
                 self.push_line(item("/rollback",     "Rollback sandbox changes"));
                 self.push_line(item("/commit",       "Commit sandbox changes"));
                 self.push_line(item("/changes",      "Show sandbox diff"));
+                self.push_line(item("/export [file]", "Export chat to Markdown file"));
                 self.push_line(item("/quit",         "Exit the TUI"));
                 self.push_line(head("── Keyboard shortcuts ─────────────────────────────────────────"));
                 self.push_line(item("PgUp / PgDn",  "Scroll output"));
@@ -982,6 +987,7 @@ async fn handle_tui_slash(
             item!("/rollback", "Rollback sandbox changes");
             item!("/commit", "Commit sandbox changes");
             item!("/changes", "Show sandbox diff");
+            item!("/export [file]", "Export chat to Markdown file");
             item!("/quit", "Exit the TUI");
             head!("── Keyboard shortcuts ─────────────────────────────────────────");
             item!("PgUp / PgDn", "Scroll output");
@@ -1124,6 +1130,121 @@ async fn handle_tui_slash(
 
         "/changes" => {
             crate::cli::handle_changes_command(agent).await;
+        }
+
+        _ if input == "/export" || input.starts_with("/export ") => {
+            use std::fmt::Write as FmtWrite;
+            use std::time::{SystemTime, UNIX_EPOCH};
+            use crate::conversation::{ContentBlock, Role};
+
+            // Build a UTC timestamp string without any external crate.
+            let ts_string = {
+                let secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let s  = secs % 60;
+                let m  = (secs / 60) % 60;
+                let h  = (secs / 3600) % 24;
+                let days = secs / 86400;
+                // Gregorian calendar from day-count (valid for ~2000-2100).
+                let z   = days + 719468;
+                let era = z / 146097;
+                let doe = z - era * 146097;
+                let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+                let y   = yoe + era * 400;
+                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                let mp  = (5 * doy + 2) / 153;
+                let d   = doy - (153 * mp + 2) / 5 + 1;
+                let mo  = if mp < 10 { mp + 3 } else { mp - 9 };
+                let yr  = if mo <= 2 { y + 1 } else { y };
+                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", yr, mo, d, h, m, s)
+            };
+
+            // Determine output filename.
+            let filename = {
+                let custom = input.strip_prefix("/export").unwrap_or("").trim();
+                if custom.is_empty() {
+                    // YYYY-MM-DD-HHMMSS from the timestamp string.
+                    let compact = ts_string
+                        .replace(" UTC", "")
+                        .replace(' ', "-")
+                        .replace(':', "");
+                    format!("conversation-{}.md", compact)
+                } else if custom.ends_with(".md") {
+                    custom.to_owned()
+                } else {
+                    format!("{}.md", custom)
+                }
+            };
+            let path = agent.project_dir.join(&filename);
+
+            let mut md = String::new();
+            let _ = writeln!(md, "# Conversation Export\n");
+            let _ = writeln!(md, "Generated: {}\n", ts_string);
+            let _ = writeln!(md, "---\n");
+
+            for msg in &agent.conversation.messages {
+                match msg.role {
+                    Role::User => {
+                        let _ = writeln!(md, "## 🧑 You\n");
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    let _ = writeln!(md, "{}\n", text.trim());
+                                }
+                                ContentBlock::ToolResult { content, is_error, .. } => {
+                                    let label = if is_error.unwrap_or(false) { "Tool Error" } else { "Tool Result" };
+                                    let _ = writeln!(md, "<details><summary>{}</summary>\n", label);
+                                    let preview: String = content.lines().take(20).collect::<Vec<_>>().join("\n");
+                                    let _ = writeln!(md, "```");
+                                    let _ = write!(md, "{}", preview);
+                                    if content.lines().count() > 20 {
+                                        let _ = writeln!(md, "\n… ({} lines total)", content.lines().count());
+                                    } else {
+                                        let _ = writeln!(md);
+                                    }
+                                    let _ = writeln!(md, "```\n</details>\n");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Role::Assistant => {
+                        let _ = writeln!(md, "## 🤖 Agent\n");
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } if !text.trim().is_empty() => {
+                                    let _ = writeln!(md, "{}\n", text.trim());
+                                }
+                                ContentBlock::ToolUse { name, input, .. } => {
+                                    let pretty = serde_json::to_string_pretty(input)
+                                        .unwrap_or_else(|_| input.to_string());
+                                    let _ = writeln!(md, "**Tool:** `{}`\n", name);
+                                    let _ = writeln!(md, "```json");
+                                    let _ = writeln!(md, "{}", pretty);
+                                    let _ = writeln!(md, "```\n");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Role::System => {}
+                }
+                let _ = writeln!(md, "---\n");
+            }
+
+            match std::fs::write(&path, &md) {
+                Ok(()) => line!(vec![
+                    Span::styled("💾 Saved: ", b(Color::Green)),
+                    Span::styled(path.display().to_string(), s(Color::White)),
+                    Span::styled(format!(" ({} bytes)", md.len()), s(Color::DarkGray)),
+                ]),
+                Err(e) => line!(vec![Span::styled(
+                    format!("✗ Export failed: {}", e),
+                    s(Color::Red),
+                )]),
+            }
         }
 
         _ if input == "/model" || input.starts_with("/model ") => {

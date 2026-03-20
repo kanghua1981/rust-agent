@@ -480,6 +480,112 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             handle_mode_command(input, agent);
             SlashResult::Continue
         }
+        _ if input == "/export" || input.starts_with("/export ") => {
+            use std::fmt::Write as FmtWrite;
+            use std::time::{SystemTime, UNIX_EPOCH};
+            use crate::conversation::{ContentBlock, Role};
+
+            let ts_string = {
+                let secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let s  = secs % 60;
+                let m  = (secs / 60) % 60;
+                let h  = (secs / 3600) % 24;
+                let days = secs / 86400;
+                let z   = days + 719468;
+                let era = z / 146097;
+                let doe = z - era * 146097;
+                let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+                let y   = yoe + era * 400;
+                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                let mp  = (5 * doy + 2) / 153;
+                let d   = doy - (153 * mp + 2) / 5 + 1;
+                let mo  = if mp < 10 { mp + 3 } else { mp - 9 };
+                let yr  = if mo <= 2 { y + 1 } else { y };
+                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", yr, mo, d, h, m, s)
+            };
+
+            let filename = {
+                let custom = input.strip_prefix("/export").unwrap_or("").trim();
+                if custom.is_empty() {
+                    let compact = ts_string.replace(" UTC", "").replace(' ', "-").replace(':', "");
+                    format!("conversation-{}.md", compact)
+                } else if custom.ends_with(".md") {
+                    custom.to_owned()
+                } else {
+                    format!("{}.md", custom)
+                }
+            };
+            let path = agent.project_dir.join(&filename);
+
+            let mut md = String::new();
+            let _ = writeln!(md, "# Conversation Export\n");
+            let _ = writeln!(md, "Generated: {}\n", ts_string);
+            let _ = writeln!(md, "---\n");
+
+            for msg in &agent.conversation.messages {
+                match msg.role {
+                    Role::User => {
+                        let _ = writeln!(md, "## 🧑 You\n");
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    let _ = writeln!(md, "{}\n", text.trim());
+                                }
+                                ContentBlock::ToolResult { content, is_error, .. } => {
+                                    let label = if is_error.unwrap_or(false) { "Tool Error" } else { "Tool Result" };
+                                    let _ = writeln!(md, "<details><summary>{}</summary>\n", label);
+                                    let preview: String = content.lines().take(20).collect::<Vec<_>>().join("\n");
+                                    let _ = writeln!(md, "```");
+                                    let _ = write!(md, "{}", preview);
+                                    if content.lines().count() > 20 {
+                                        let _ = writeln!(md, "\n… ({} lines total)", content.lines().count());
+                                    } else {
+                                        let _ = writeln!(md);
+                                    }
+                                    let _ = writeln!(md, "```\n</details>\n");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Role::Assistant => {
+                        let _ = writeln!(md, "## 🤖 Agent\n");
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } if !text.trim().is_empty() => {
+                                    let _ = writeln!(md, "{}\n", text.trim());
+                                }
+                                ContentBlock::ToolUse { name, input: tool_input, .. } => {
+                                    let pretty = serde_json::to_string_pretty(tool_input)
+                                        .unwrap_or_else(|_| tool_input.to_string());
+                                    let _ = writeln!(md, "**Tool:** `{}`\n", name);
+                                    let _ = writeln!(md, "```json");
+                                    let _ = writeln!(md, "{}", pretty);
+                                    let _ = writeln!(md, "```\n");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Role::System => {}
+                }
+                let _ = writeln!(md, "---\n");
+            }
+
+            match std::fs::write(&path, &md) {
+                Ok(()) => println!(
+                    "\n{}  Saved: {}  {}",
+                    "💾",
+                    path.display().to_string().bright_white(),
+                    format!("({} bytes)", md.len()).dimmed()
+                ),
+                Err(e) => ui::print_error(&format!("Export failed: {}", e)),
+            }
+            SlashResult::Continue
+        }
         _ => {
             // Unknown slash command, treat as regular message
             if input.starts_with('/') {

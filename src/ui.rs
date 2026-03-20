@@ -445,6 +445,10 @@ pub fn print_help() {
         "/commit".bright_white()
     );
     println!(
+        "  {} - Export conversation to Markdown",
+        "/export [file]".bright_white()
+    );
+    println!(
         "  {}     - Exit the agent",
         "/quit".bright_white()
     );
