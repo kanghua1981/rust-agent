@@ -83,6 +83,9 @@ pub struct Agent {
     /// Drained at safe points (between tool iterations) and displayed via
     /// `AgentOutput::on_service_notification`.
     service_events: tokio::sync::broadcast::Receiver<ServiceEvent>,
+    /// When set, overrides the adaptive router for every message.
+    /// `None` means use the normal router logic.
+    pub force_mode: Option<crate::router::ExecutionMode>,
 }
 
 impl Agent {
@@ -117,6 +120,7 @@ impl Agent {
             sandbox,
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
+            force_mode: None,
         }
     }
 
@@ -145,6 +149,7 @@ impl Agent {
             sandbox,
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
+            force_mode: None,
         }
     }
 
@@ -353,9 +358,16 @@ impl Agent {
             .unwrap_or(false)
     }
 
+    /// Override the adaptive router for all subsequent messages.
+    /// Pass `None` to restore normal router behaviour.
+    pub fn set_force_mode(&mut self, mode: Option<crate::router::ExecutionMode>) {
+        self.force_mode = mode;
+    }
+
     /// Determine the execution mode for a given user message.
     ///
-    /// Uses the router configuration from models.toml:
+    /// If `force_mode` is set it takes priority over everything else.
+    /// Otherwise uses the router configuration from models.toml:
     /// - `router = "auto"`:            heuristic + optional LLM classification
     /// - `router = "always_pipeline"`:  always full pipeline
     /// - `router = "always_simple"`:    always basic loop
@@ -366,6 +378,11 @@ impl Agent {
         user_input: &str,
     ) -> crate::router::ExecutionMode {
         use crate::router::{ExecutionMode, RouterMode};
+
+        // Manual override always wins.
+        if let Some(forced) = self.force_mode {
+            return forced;
+        }
 
         let router_mode = self
             .models_cfg

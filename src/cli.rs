@@ -476,6 +476,10 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             }
             SlashResult::Continue
         }
+        _ if input == "/mode" || input.starts_with("/mode ") => {
+            handle_mode_command(input, agent);
+            SlashResult::Continue
+        }
         _ => {
             // Unknown slash command, treat as regular message
             if input.starts_with('/') {
@@ -1196,6 +1200,60 @@ pub async fn handle_changes_command(agent: &Agent) {
         "/rollback".bright_white(),
         "/commit".bright_white()
     );
+}
+
+/// Handle `/mode [simple|plan|pipeline|auto]` command.
+///
+/// - `/mode`              — show current override (or "auto")
+/// - `/mode simple`       — force BasicLoop for every message
+/// - `/mode plan`         — force PlanAndExecute for every message
+/// - `/mode pipeline`     — force FullPipeline for every message
+/// - `/mode auto`         — clear override, let the router decide
+fn handle_mode_command(input: &str, agent: &mut Agent) {
+    use crate::router::ExecutionMode;
+
+    let sub = input.strip_prefix("/mode").unwrap_or("").trim();
+
+    match sub {
+        "" => {
+            let current = match agent.force_mode {
+                Some(ExecutionMode::BasicLoop)     => "simple (forced)".to_string(),
+                Some(ExecutionMode::PlanAndExecute) => "plan (forced)".to_string(),
+                Some(ExecutionMode::FullPipeline)  => "pipeline (forced)".to_string(),
+                None => "auto (router decides)".to_string(),
+            };
+            println!("\n{}  Current execution mode: {}", "🔀", current.bright_white());
+            println!("  Use {} to change:", "/mode <option>".bright_cyan());
+            println!("    {}      — single-model loop, fast & cheap", "simple".bright_yellow());
+            println!("    {}        — planner + executor, no checker", "plan".bright_yellow());
+            println!("    {}    — full planner → executor → checker", "pipeline".bright_yellow());
+            println!("    {}        — let the router decide (default)", "auto".bright_yellow());
+            println!();
+        }
+        "simple" => {
+            agent.set_force_mode(Some(ExecutionMode::BasicLoop));
+            println!("\n{}  Mode locked to {}: single-model loop for all messages.", "🔀", "simple".bright_green());
+        }
+        "plan" => {
+            agent.set_force_mode(Some(ExecutionMode::PlanAndExecute));
+            println!("\n{}  Mode locked to {}: planner + executor for all messages.", "🔀", "plan".bright_green());
+        }
+        "pipeline" => {
+            agent.set_force_mode(Some(ExecutionMode::FullPipeline));
+            println!("\n{}  Mode locked to {}: full pipeline for all messages.", "🔀", "pipeline".bright_green());
+        }
+        "auto" => {
+            agent.set_force_mode(None);
+            println!("\n{}  Mode reset to {}: adaptive router will classify each task.", "🔀", "auto".bright_green());
+        }
+        other => {
+            println!(
+                "\n{}  Unknown mode: {}. Valid options: simple, plan, pipeline, auto",
+                "❓",
+                other.bright_red()
+            );
+        }
+    }
 }
 
 /// Auto-save the session (silent, won't error to user)

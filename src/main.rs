@@ -100,7 +100,7 @@ struct Args {
     #[arg(long)]
     sessions: bool,
 
-    /// Output mode: cli (default), stdio (JSON protocol), server (WebSocket)
+    /// Output mode: cli (default), tui (split-screen ratatui), stdio (JSON protocol), server (WebSocket)
     #[arg(long, default_value = "cli")]
     mode: RunMode,
 

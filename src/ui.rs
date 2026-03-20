@@ -421,6 +421,10 @@ pub fn print_help() {
         "/model".bright_white()
     );
     println!(
+        "  {}     - Set execution mode: simple/plan/pipeline/auto",
+        "/mode".bright_white()
+    );
+    println!(
         "  {}  - View or generate project summary",
         "/summary".bright_white()
     );

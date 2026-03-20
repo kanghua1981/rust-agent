@@ -465,7 +465,8 @@ impl TuiApp {
         self.input.clear();
         self.cursor = 0;
 
-        // Handle slash commands that the TUI owns.
+        // Handle slash commands that the TUI owns immediately in the render thread
+        // (these never block on the agent task, so they respond even while agent is busy).
         match text.as_str() {
             "/quit" | "/exit" | "/q" => {
                 self.quit = true;
@@ -474,6 +475,39 @@ impl TuiApp {
             "/clear" => {
                 self.output_lines.clear();
                 self.scroll = 0;
+                return;
+            }
+            "/help" | "/h" => {
+                let head = |t: &str| Line::from(vec![Span::styled(t.to_string(), b(Color::Cyan))]);
+                let item = |label: &'static str, desc: &'static str| Line::from(vec![
+                    Span::styled(format!("  {:22}", label), s(Color::White)),
+                    Span::styled(desc, s(Color::DarkGray)),
+                ]);
+                self.push_line(head("── Available Commands ─────────────────────────────────────────"));
+                self.push_line(item("/help",         "Show this help (instant, even while busy)"));
+                self.push_line(item("/clear",        "Clear output"));
+                self.push_line(item("/usage",        "Token usage statistics"));
+                self.push_line(item("/context",      "Context window status"));
+                self.push_line(item("/memory",       "Show agent memory"));
+                self.push_line(item("/skills",       "List loaded skills"));
+                self.push_line(item("/model",        "List / switch models"));
+                self.push_line(item("/mode",         "Set execution mode: simple/plan/pipeline/auto"));
+                self.push_line(item("/save",         "Save current session"));
+                self.push_line(item("/sessions",     "List saved sessions"));
+                self.push_line(item("/yesall",       "Auto-approve all operations"));
+                self.push_line(item("/confirm",      "Re-enable confirmations"));
+                self.push_line(item("/summary",      "Generate project summary"));
+                self.push_line(item("/plan <task>",  "Generate execution plan"));
+                self.push_line(item("/plan run",     "Execute pending plan"));
+                self.push_line(item("/rollback",     "Rollback sandbox changes"));
+                self.push_line(item("/commit",       "Commit sandbox changes"));
+                self.push_line(item("/changes",      "Show sandbox diff"));
+                self.push_line(item("/quit",         "Exit the TUI"));
+                self.push_line(head("── Keyboard shortcuts ─────────────────────────────────────────"));
+                self.push_line(item("PgUp / PgDn",  "Scroll output"));
+                self.push_line(item("↑ / ↓",        "Command history"));
+                self.push_line(item("Ctrl-C",        "Interrupt agent"));
+                self.push_line(item("Ctrl-Q",        "Quit"));
                 return;
             }
             _ => {}
@@ -514,11 +548,19 @@ impl TuiApp {
         }
 
         if self.agent_running {
-            self.push_line(Line::from(vec![
-                Span::styled("⏳ queued  ", s(Color::DarkGray)),
-                Span::raw(text.clone()),
-            ]));
-            self.input_queue.push_back(text);
+            if text.starts_with('/') {
+                // Slash commands always bypass the user-message queue.
+                // They will execute in the agent task as soon as the current
+                // LLM iteration ends — but they won't be stuck behind queued
+                // user messages and won't be shown as "⏳ queued".
+                self.input_tx.send(text).ok();
+            } else {
+                self.push_line(Line::from(vec![
+                    Span::styled("⏳ queued  ", s(Color::DarkGray)),
+                    Span::raw(text.clone()),
+                ]));
+                self.input_queue.push_back(text);
+            }
         } else {
             self.dispatch(text);
         }
@@ -810,6 +852,7 @@ async fn handle_tui_slash(
             item!("/memory", "Show agent memory");
             item!("/skills", "List loaded skills");
             item!("/model", "List / switch models");
+            item!("/mode", "Set execution mode: simple/plan/pipeline/auto");
             item!("/save", "Save current session");
             item!("/sessions", "List saved sessions");
             item!("/yesall", "Auto-approve all operations");
@@ -965,6 +1008,49 @@ async fn handle_tui_slash(
 
         _ if input == "/model" || input.starts_with("/model ") => {
             crate::cli::handle_model_command(input, agent);
+        }
+
+        _ if input == "/mode" || input.starts_with("/mode ") => {
+            use crate::router::ExecutionMode;
+            let sub = input.strip_prefix("/mode").unwrap_or("").trim();
+            match sub {
+                "" => {
+                    let current = match agent.force_mode {
+                        Some(ExecutionMode::BasicLoop)      => "simple (forced)",
+                        Some(ExecutionMode::PlanAndExecute) => "plan (forced)",
+                        Some(ExecutionMode::FullPipeline)   => "pipeline (forced)",
+                        None => "auto (router decides)",
+                    };
+                    head!("── Execution Mode ─────────────────────────────────────────────");
+                    item!("Current", current);
+                    item!("/mode simple",   "force single-model loop");
+                    item!("/mode plan",     "force planner + executor");
+                    item!("/mode pipeline", "force full pipeline");
+                    item!("/mode auto",     "let router decide (default)");
+                }
+                "simple" => {
+                    agent.set_force_mode(Some(ExecutionMode::BasicLoop));
+                    line!(vec![Span::styled("🔀 Mode locked to simple: single-model loop.", s(Color::Green))]);
+                }
+                "plan" => {
+                    agent.set_force_mode(Some(ExecutionMode::PlanAndExecute));
+                    line!(vec![Span::styled("🔀 Mode locked to plan: planner + executor.", s(Color::Green))]);
+                }
+                "pipeline" => {
+                    agent.set_force_mode(Some(ExecutionMode::FullPipeline));
+                    line!(vec![Span::styled("🔀 Mode locked to pipeline: full pipeline.", s(Color::Green))]);
+                }
+                "auto" => {
+                    agent.set_force_mode(None);
+                    line!(vec![Span::styled("🔀 Mode reset to auto: router will classify each task.", s(Color::Green))]);
+                }
+                other => {
+                    line!(vec![Span::styled(
+                        format!("❓ Unknown mode: {}. Use simple/plan/pipeline/auto", other),
+                        s(Color::Red),
+                    )]);
+                }
+            }
         }
 
         _ => {
