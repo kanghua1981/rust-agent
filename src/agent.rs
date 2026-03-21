@@ -1073,12 +1073,64 @@ Summary:"#,
     /// the codebase but cannot modify anything.  The resulting plan text is
     /// stored in `self.pending_plan` and returned.
     pub async fn generate_plan(&mut self, task: &str) -> Result<String> {
+        // ── Build context sections to inject ─────────────────────────────
+        // 1. Project summary (from .agent/summary.md)
+        let summary_section = crate::summary::load(&self.project_dir)
+            .map(|s| format!("\n\n## Project Summary\n{}", s))
+            .unwrap_or_default();
+
+        // 2. Memory: project knowledge + file map
+        let memory = crate::memory::Memory::load(&self.project_dir);
+        let mut memory_section = String::new();
+        if !memory.knowledge.is_empty() || !memory.file_map.is_empty() {
+            memory_section.push_str("\n\n## Project Knowledge (from memory)");
+            for k in &memory.knowledge {
+                memory_section.push_str(&format!("\n- {}", k));
+            }
+            if !memory.file_map.is_empty() {
+                memory_section.push_str("\n\n## Known Important Files");
+                for (path, desc) in &memory.file_map {
+                    memory_section.push_str(&format!("\n- {}: {}", path, desc));
+                }
+            }
+        }
+
+        // 3. Recent conversation history (last 6 turns = 3 user+assistant pairs)
+        //    Gives planner context on what has already been discussed / done.
+        let history_section = {
+            let msgs = &self.conversation.messages;
+            let recent: Vec<_> = msgs.iter().rev().take(6).collect();
+            if recent.is_empty() {
+                String::new()
+            } else {
+                let mut buf = String::from("\n\n## Recent Conversation History (most recent first)");
+                for msg in recent {
+                    let role = match msg.role {
+                        crate::conversation::Role::User      => "User",
+                        crate::conversation::Role::Assistant => "Assistant",
+                        crate::conversation::Role::System    => continue,
+                    };
+                    // Only include Text blocks to keep this concise
+                    let text: String = msg.content.iter()
+                        .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !text.trim().is_empty() {
+                        let preview = if text.len() > 400 { format!("{}…", &text[..400]) } else { text };
+                        buf.push_str(&format!("\n[{}]: {}", role, preview.trim()));
+                    }
+                }
+                buf
+            }
+        };
+
         let planning_prompt = format!(
             r#"The user wants to accomplish the following task:
 
 {}
+{}{}{}
 
-Please analyze the task carefully. You may use the read-only tools available to explore the codebase and gather information.
+Please analyze the task carefully in the context above. You may use the read-only tools available to explore the codebase and gather any additional information you need.
 You also have access to `run_command` — use it ONLY for read-only exploration commands such as:
   git status, git log, git diff, git show, git branch, git remote -v,
   find, cat, ls, wc, head, tail, cargo metadata, etc.
@@ -1093,7 +1145,7 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
 4. Any dependencies on other steps
 
 ⚠️  Do NOT execute any modifications — only produce the plan."#,
-            task
+            task, summary_section, memory_section, history_section
         );
 
         // Use a separate conversation branch for planning so the main
@@ -1117,25 +1169,15 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
 
         let readonly_tools = Self::with_ask_user(self.tool_executor.readonly_definitions());
 
-        // Run a mini agent-loop with only read-only tools
-        let max_iters = 10; // planning shouldn't need many iterations
+        // Use the same iteration budget as the main loop so planning never gets
+        // silently truncated on complex projects.
+        let max_iters = self.config.max_tool_iterations;
         let mut plan_text = String::new();
+        let mut exhausted = true;
 
         for _ in 0..max_iters {
             // Use the planner role model if configured
             let response = self.call_llm_as_role("planner", &plan_conversation, &readonly_tools).await?;
-
-            // Print text content for non-streaming providers
-            let planner_cfg = self.role_configs.get("planner").unwrap_or(&self.config);
-            if planner_cfg.provider != Provider::Anthropic {
-                for block in &response.content {
-                    if let ContentBlock::Text { text } = block {
-                        if !text.is_empty() {
-                            self.output.on_assistant_text(text);
-                        }
-                    }
-                }
-            }
 
             // Track tokens
             if let Some(ref usage) = response.usage {
@@ -1144,16 +1186,16 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
 
             let has_tool_use = response.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
-            // Collect text from this turn
-            for block in &response.content {
-                if let ContentBlock::Text { text } = block {
-                    plan_text.push_str(text);
-                }
-            }
-
             plan_conversation.add_message(Message::assistant(response.content.clone()));
 
             if !has_tool_use {
+                // LLM finished naturally — collect the plan text.
+                for block in &response.content {
+                    if let ContentBlock::Text { text } = block {
+                        plan_text.push_str(text);
+                    }
+                }
+                exhausted = false;
                 break;
             }
 
@@ -1195,6 +1237,28 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
                     &result.output,
                     result.is_error,
                 ));
+            }
+        }
+
+        // If the loop exhausted all iterations without the LLM stopping naturally,
+        // force one final call with no tools available so it has to write the plan.
+        if exhausted {
+            self.output.on_assistant_text(
+                "\n[Exploration limit reached — consolidating findings into a plan…]\n"
+            );
+            plan_conversation.add_message(Message::user(
+                "You have finished exploring. Now write the complete, detailed, numbered \
+                 step-by-step plan based on everything you have discovered. \
+                 Do not call any more tools — output only the plan text."
+            ));
+            let final_response = self.call_llm_as_role("planner", &plan_conversation, &[]).await?;
+            if let Some(ref usage) = final_response.usage {
+                self.track_tokens("planner", usage);
+            }
+            for block in &final_response.content {
+                if let ContentBlock::Text { text } = block {
+                    plan_text.push_str(text);
+                }
             }
         }
 

@@ -593,8 +593,8 @@ impl TuiApp {
                 self.push_line(item("/yesall",       "Auto-approve all operations"));
                 self.push_line(item("/confirm",      "Re-enable confirmations"));
                 self.push_line(item("/summary",      "Generate project summary"));
-                self.push_line(item("/plan <task>",  "Generate execution plan"));
-                self.push_line(item("/plan run",     "Execute pending plan"));
+                self.push_line(item("/plan <task>",  "Step 1: explore & plan (read-only)"));
+                self.push_line(item("/plan run",     "Step 2: execute the pending plan"));
                 self.push_line(item("/rollback",     "Rollback sandbox changes"));
                 self.push_line(item("/commit",       "Commit sandbox changes"));
                 self.push_line(item("/changes",      "Show sandbox diff"));
@@ -982,8 +982,8 @@ async fn handle_tui_slash(
             item!("/yesall", "Auto-approve all operations");
             item!("/confirm", "Re-enable confirmations");
             item!("/summary", "Generate project summary");
-            item!("/plan <task>", "Generate execution plan");
-            item!("/plan run", "Execute pending plan");
+            item!("/plan <task>", "Step 1: explore & plan (read-only, no files changed)");
+            item!("/plan run", "Step 2: execute the pending plan (modifies files)");
             item!("/rollback", "Rollback sandbox changes");
             item!("/commit", "Commit sandbox changes");
             item!("/changes", "Show sandbox diff");
@@ -1166,26 +1166,36 @@ async fn handle_tui_slash(
             match subcommand {
                 "" => {
                     head!("── Plan Mode ───────────────────────────────────────────────────");
-                    line!(vec![Span::raw("  /plan <task>   Generate a plan for a task")]);
-                    line!(vec![Span::raw("  /plan run      Execute the pending plan")]);
+                    line!(vec![Span::raw("  /plan <task>   Step 1: explore codebase, generate a plan (no files changed)")]);
+                    line!(vec![Span::raw("  /plan run      Step 2: execute the pending plan (actually modifies files)")]);
                     line!(vec![Span::raw("  /plan show     Display the pending plan")]);
                     line!(vec![Span::raw("  /plan clear    Discard the pending plan")]);
                     if agent.pending_plan.is_some() {
                         line!(vec![Span::styled(
-                            "💡 A pending plan exists. Use /plan show or /plan run.",
+                            "💡 A pending plan exists — type /plan run to execute it.",
                             s(Color::Green),
+                        )]);
+                    } else {
+                        line!(vec![Span::styled(
+                            "💡 Tip: /plan only PLANS (read-only). Run /plan run afterwards to actually execute.",
+                            s(Color::DarkGray),
                         )]);
                     }
                 }
                 "run" => {
                     if let Some(plan) = agent.pending_plan.clone() {
                         line!(vec![Span::styled("🚀 Executing plan…", b(Color::Cyan))]);
+                        let _ = tx.send(TuiEvent::AgentBusy(true));
                         match agent.execute_plan(&plan).await {
-                            Ok(_) => crate::cli::auto_save_session(agent),
+                            Ok(_) => {
+                                crate::cli::auto_save_session(agent);
+                                line!(vec![Span::styled("✅ Plan executed.", s(Color::Green))]);
+                            }
                             Err(e) => line!(vec![Span::styled(
                                 format!("✗ Plan execution failed: {}", e), s(Color::Red)
                             )]),
                         }
+                        let _ = tx.send(TuiEvent::AgentBusy(false));
                     } else {
                         line!(vec![Span::styled(
                             "⚠️  No pending plan. Use /plan <task> to generate one first.",
@@ -1224,18 +1234,28 @@ async fn handle_tui_slash(
                     }
                 }
                 task => {
-                    line!(vec![Span::styled("📝 Generating plan…", s(Color::Cyan))]);
+                    // Step 1: read-only exploration + plan generation.
+                    // Mark busy so the status bar shows "● thinking…" during the LLM loop.
+                    line!(vec![Span::styled(
+                        "📝 Analyzing codebase and generating plan… (no files will be changed)",
+                        s(Color::Cyan),
+                    )]);
+                    let _ = tx.send(TuiEvent::AgentBusy(true));
                     match agent.generate_plan(task).await {
                         Ok(_) => {
+                            let _ = tx.send(TuiEvent::AgentBusy(false));
                             line!(vec![Span::styled(
-                                "✅ Plan generated. Use /plan show to view, /plan run to execute.",
-                                s(Color::Green),
+                                "✅ Plan ready. Type /plan show to review, then /plan run to execute.",
+                                b(Color::Green),
                             )]);
                             crate::cli::auto_save_session(agent);
                         }
-                        Err(e) => line!(vec![Span::styled(
-                            format!("✗ Plan generation failed: {}", e), s(Color::Red)
-                        )]),
+                        Err(e) => {
+                            let _ = tx.send(TuiEvent::AgentBusy(false));
+                            line!(vec![Span::styled(
+                                format!("✗ Plan generation failed: {}", e), s(Color::Red)
+                            )]);
+                        }
                     }
                 }
             }
