@@ -1,0 +1,126 @@
+/* ─── Reset & Base ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── CSS Variables ─────────────────────────────────────────── */
+:root {
+  --bg:          #0d0f17;
+  --bg2:         #13161f;
+  --bg3:         #1a1d2a;
+  --surface:     #1e2130;
+  --border:      #2a2d3e;
+  --border2:     #353850;
+
+  --text:        #e2e4ed;
+  --text2:       #9499b0;
+  --text3:       #5d6180;
+
+  --accent:      #6366f1;
+  --accent-dim:  #3730a3;
+  --accent-glow: rgba(99,102,241,0.15);
+
+  --green:       #10b981;
+  --green-dim:   rgba(16,185,129,0.15);
+  --red:         #ef4444;
+  --red-dim:     rgba(239,68,68,0.15);
+  --yellow:      #f59e0b;
+  --yellow-dim:  rgba(245,158,11,0.15);
+  --blue:        #3b82f6;
+  --blue-dim:    rgba(59,130,246,0.15);
+
+  --radius:      10px;
+  --radius-lg:   14px;
+  --shadow:      0 4px 24px rgba(0,0,0,0.4);
+}
+
+/* ─── Scrollbars ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+/* ─── Button reset ───────────────────────────────────────────── */
+button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: inherit; }
+a { color: inherit; text-decoration: none; }
+textarea, input { font-family: inherit; font-size: inherit; }
+
+/* ─── Code blocks (inside markdown) ─────────────────────────── */
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+pre code { background: none; border: none; padding: 0; }
+
+/* ─── Markdown content ───────────────────────────────────────── */
+.md-content p { margin: 6px 0; }
+.md-content h1,.md-content h2,.md-content h3 { margin: 12px 0 6px; font-weight: 600; color: var(--text); }
+.md-content ul,.md-content ol { padding-left: 20px; margin: 6px 0; }
+.md-content li { margin: 2px 0; }
+.md-content blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+  color: var(--text2);
+  margin: 8px 0;
+}
+.md-content hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.md-content table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.md-content th,.md-content td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.md-content th { background: var(--bg3); font-weight: 600; }
+
+/* ─── Utilities ──────────────────────────────────────────────── */
+.truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: 4px; }
+.gap-2 { gap: 8px; }
+.gap-3 { gap: 12px; }
+
+/* ─── Cursor blink ───────────────────────────────────────────── */
+@keyframes blink {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+.cursor::after {
+  content: '▋';
+  display: inline-block;
+  animation: blink 1s step-end infinite;
+  color: var(--accent);
+  margin-left: 2px;
+}
+
+/* ─── Spin ───────────────────────────────────────────────────── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.spin { animation: spin 1s linear infinite; display: inline-block; }
+
+/* ─── Fade-in ────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.2s ease-out; }
