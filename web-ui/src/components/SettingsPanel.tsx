@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { isDesktopApp, getEnvironmentInfo } from '../utils/environment';
 import type { ConfigPreset } from '../types/agent';
 
 export const SettingsPanel: React.FC = () => {
@@ -89,7 +90,30 @@ export const SettingsPanel: React.FC = () => {
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px', maxWidth: '700px', margin: '0 auto', width: '100%' }}>
-      <h2 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text)', marginBottom: '20px' }}>设置</h2>
+      <h2 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text)', marginBottom: '12px' }}>设置</h2>
+
+      {/* Environment Info */}
+      {isDesktopApp() && (
+        <div style={{
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          padding: '12px 16px',
+          borderRadius: '10px',
+          marginBottom: '20px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+        }}>
+          <span style={{ fontSize: '20px' }}>🖥️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: '13px', fontWeight: '600', color: 'white' }}>
+              桌面应用模式
+            </div>
+            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.8)', marginTop: '2px' }}>
+              请先启动 Agent 服务器，然后在下方配置连接地址
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', background: 'var(--bg2)', padding: '4px', borderRadius: '10px' }}>

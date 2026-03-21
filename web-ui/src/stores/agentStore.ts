@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, ConfigPreset } from '../types/agent';
+import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface DiffEntry {
   id: string;
@@ -77,12 +78,14 @@ interface AgentState {
 
 // Load persisted config from localStorage
 const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; presets: ConfigPreset[] }> => {
+  const defaultServerUrl = getDefaultServerUrl();
+  
   try {
     const stored = localStorage.getItem('rust-agent-config');
     if (stored) {
       const parsed = JSON.parse(stored);
       return {
-        serverUrl: parsed.serverUrl || 'ws://localhost:9527',
+        serverUrl: parsed.serverUrl || defaultServerUrl,
         autoApprove: parsed.autoApprove ?? false,
         agentMode: parsed.agentMode || 'auto',
         presets: parsed.presets || [],
@@ -91,14 +94,17 @@ const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; prese
   } catch (e) {
     console.warn('Failed to load persisted config:', e);
   }
-  return { presets: [] };
+  return { 
+    serverUrl: defaultServerUrl,
+    presets: [] 
+  };
 };
 
 const persistedConfig = loadPersistedConfig();
 
 const initialState = {
   connectionStatus: 'disconnected' as ConnectionStatus,
-  serverUrl: persistedConfig.serverUrl || 'ws://localhost:9527',
+  serverUrl: persistedConfig.serverUrl || getDefaultServerUrl(),
   workdir: undefined,
   messages: [],
   currentMessage: '',
@@ -112,7 +118,7 @@ const initialState = {
   sessionInfo: null,
   presets: persistedConfig.presets || [],
   config: {
-    serverUrl: persistedConfig.serverUrl || 'ws://localhost:9527',
+    serverUrl: persistedConfig.serverUrl || getDefaultServerUrl(),
     autoApprove: persistedConfig.autoApprove ?? false,
     agentMode: persistedConfig.agentMode || ('auto' as const),
   },
