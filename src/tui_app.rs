@@ -1718,24 +1718,24 @@ pub async fn run(
     let term_program = std::env::var("TERM_PROGRAM")
         .unwrap_or_default()
         .to_lowercase();
-    let is_limited_terminal = term_program.contains("gnome")
-        || term_program.contains("vte")
-        || term_program == "vscode"
-        || std::env::var("VTE_VERSION").is_ok()
-        || std::env::var("VSCODE_INJECTION").is_ok();
-    if is_limited_terminal {
-        let name = if term_program == "vscode" || std::env::var("VSCODE_INJECTION").is_ok() {
-            "VS Code integrated terminal"
-        } else {
-            "gnome-terminal (VTE)"
-        };
-        eprintln!(
-            "\x1b[33mWarning: {} has known TUI rendering issues.\n\
-             Recommended alternatives: kitty, alacritty, wezterm, or any xterm-compatible terminal.\x1b[0m",
-            name
-        );
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
+    // let is_limited_terminal = term_program.contains("gnome")
+    //     || term_program.contains("vte")
+    //     || term_program == "vscode"
+    //     || std::env::var("VTE_VERSION").is_ok()
+    //     || std::env::var("VSCODE_INJECTION").is_ok();
+    // if is_limited_terminal {
+    //     let name = if term_program == "vscode" || std::env::var("VSCODE_INJECTION").is_ok() {
+    //         "VS Code integrated terminal"
+    //     } else {
+    //         "gnome-terminal (VTE)"
+    //     };
+    //     eprintln!(
+    //         "\x1b[33mWarning: {} has known TUI rendering issues.\n\
+    //          Recommended alternatives: kitty, alacritty, wezterm, or any xterm-compatible terminal.\x1b[0m",
+    //         name
+    //     );
+    //     tokio::time::sleep(Duration::from_secs(2)).await;
+    // }
 
     // ── Terminal setup ────────────────────────────────────────────────────
     crossterm::terminal::enable_raw_mode()?;
