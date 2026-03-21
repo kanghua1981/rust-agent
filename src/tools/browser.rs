@@ -318,8 +318,9 @@ impl Tool for BrowserTool {
                 match state.page.content().await {
                     Ok(html) => {
                         // Truncate HTML if too long
-                        let truncated = if html.len() > 5000 {
-                            format!("{}... (truncated, total {} chars)", &html[..5000], html.len())
+                        let truncated = if html.chars().count() > 5000 {
+                            let truncated_text = crate::ui::truncate_str(&html, 5000);
+                            format!("{}... (truncated, total {} chars)", truncated_text, html.chars().count())
                         } else {
                             html
                         };

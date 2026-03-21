@@ -155,7 +155,7 @@ pub trait AgentOutput: Send + Sync {
             }
             SubAgentOutputEvent::Done(text) => {
                 if !text.is_empty() {
-                    self.on_warning(&format!("{} ✅ 完成: {}", prefix, &text[..text.len().min(120)]));
+                    self.on_warning(&format!("{} ✅ 完成: {}", prefix, crate::ui::truncate_str(text, 120)));
                 } else {
                     self.on_warning(&format!("{} ✅ 完成", prefix));
                 }
@@ -358,7 +358,7 @@ impl AgentOutput for CliOutput {
                 }
             }
             SubAgentOutputEvent::Done(text) => {
-                let preview = if text.len() > 100 { &text[..100] } else { text.as_str() };
+                let preview = crate::ui::truncate_str(text, 100);
                 println!("  {} ✅ {}", prefix, preview.dimmed());
             }
             SubAgentOutputEvent::Error(msg) => {

@@ -1116,7 +1116,7 @@ Summary:"#,
                         .collect::<Vec<_>>()
                         .join(" ");
                     if !text.trim().is_empty() {
-                        let preview = if text.len() > 400 { format!("{}…", &text[..400]) } else { text };
+                        let preview = crate::ui::truncate_str(&text, 400);
                         buf.push_str(&format!("\n[{}]: {}", role, preview.trim()));
                     }
                 }

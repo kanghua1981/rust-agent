@@ -216,6 +216,34 @@ model = "sonnet"
 | `error` | 错误信息 |
 | `context_warning` | 上下文窗口压力通知 |
 
+#### 多 Agent 协作模式
+
+Agent 支持两种子 Agent 调用机制，实现任务分解与委派：
+
+**1. `call_sub_agent` - 连接预启动的 WebSocket 服务器**
+```bash
+# 配置专家池（models.toml）
+[sub_agents.coder]
+port = 9001
+role = "代码实现专家"
+
+[sub_agents.reviewer]
+port = 9002
+role = "代码审查专家"
+```
+
+**2. `spawn_sub_agent` - 动态创建 stdio 子进程**
+```bash
+# 无需预配置，按需创建临时子进程
+# 适合一次性小任务，默认自动批准工具调用
+```
+
+**特点对比：**
+- **`call_sub_agent`**: 长期服务，保持状态，适合专家池
+- **`spawn_sub_agent`**: 临时任务，用完即焚，无需维护
+
+两种方式都支持 `target_dir` 参数隔离工作目录，确保子 Agent 不会误操作全局文件。
+
 #### WebSocket 服务器模式（远程 / Web UI 集成）
 
 通过 `--mode server` 启动 WebSocket 服务器，每个连接独立运行一个 Agent 实例：
@@ -268,15 +296,19 @@ model = "sonnet"
 | 按键 | 功能 |
 |------|------|
 | `Enter` | 发送消息 |
-| `↑` / `↓` | 滚动输出区 |
-| `PgUp` / `PgDn` | 翻页滚动 |
-| `Ctrl+C` | 退出 |
+| `↑` / `↓` | 命令历史 |
+| `PgUp` / `PgDn` | 翻页滚动输出区 |
+| `鼠标滚轮` | 滚动输出区 |
+| `Ctrl+C` | 中断 Agent（Agent 空闲时退出） |
+| `Ctrl+Q` | 退出 TUI |
 | `Ctrl+L` | 清空输出区 |
 
 **特点**：
 - 输入框**始终可用**，agent 处理上一条消息时可继续输入下一条（自动排队）
-- 所有斜杠命令（`/plan`、`/model`、`/quit` 等）在 TUI 模式下同样有效
+- 所有斜杠命令（`/plan`、`/model`、`/mode`、`/quit` 等）在 TUI 模式下同样有效
 - 支持彩色输出与 streaming 实时显示
+- 支持鼠标滚轮滚动
+- 自动滚动与手动滚动模式切换
 
 ---
 
@@ -381,6 +413,8 @@ git push origin fix/gpio-pullup
 | `/skills` | 查看当前加载的 Skills |
 | `/yesall` | 关闭所有确认提示（本次会话内有效） |
 | `/confirm` | 重新开启确认提示 |
+| `/mode` | 查看或设置执行模式：simple/plan/pipeline/auto |
+| `/mode <simple|plan|pipeline|auto>` | 设置执行模式 |
 | `/model` | 列出当前模型与所有已配置模型 |
 | `/model <alias>` | 热切换到指定模型 |
 | `/model add <alias>` | 交互式添加新模型配置 |
@@ -639,7 +673,7 @@ src/
 
 ---
 
-## � 内置工具一览
+## 🧰 内置工具一览
 
 | 工具 | 图标 | 用途 | 需确认 |
 |------|------|------|--------|
@@ -656,6 +690,16 @@ src/
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
 | `read_ebook` | 📕 | 电子书读取（MOBI/EPUB/AZW3 等） | ❌ |
 | `fetch_url` | 🌐 | 网页抓取与正文提取 | ❌ |
+| `call_sub_agent` | 🤝 | 委派任务给预启动的 WebSocket 专家 Agent | ✅ |
+| `spawn_sub_agent` | 👶 | 动态创建 stdio 子进程处理临时任务 | ✅ |
+| `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
+| `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
+| `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
+| `connect_service` | 🔌 | 注册外部服务（WebSocket/REST） | ❌ |
+| `query_service` | ❓ | 查询已注册的外部服务 | ❌ |
+| `subscribe_service` | 📡 | 订阅服务推送通知 | ❌ |
+| `unsubscribe_service` | 📡 | 取消订阅服务 | ❌ |
+| `list_services` | 📋 | 列出所有已注册服务 | ❌ |
 
 ### 外部依赖（可选）
 

@@ -407,6 +407,8 @@ git checkout -b fix/my-feature
 | `/sessions` | 列出所有已保存的会话 |
 | `/yesall` | 关闭所有确认提示（本次会话） |
 | `/confirm` | 重新开启确认提示 |
+| `/mode` | 查看或设置执行模式：simple/plan/pipeline/auto |
+| `/mode <simple|plan|pipeline|auto>` | 设置执行模式 |
 | `/model` | 列出当前模型与所有已配置模型 |
 | `/model <alias>` | 热切换到指定模型 |
 | `/model add <alias>` | 交互式添加新模型配置 |
@@ -490,6 +492,62 @@ git checkout -b fix/my-feature
 # 或者传完整模型名 + provider
 ./target/release/agent --provider openai --model gpt-4o
 ```
+
+---
+
+## 🔀 执行模式切换
+
+Agent 支持多种执行模式，可通过 `/mode` 命令实时切换：
+
+### 查看当前模式
+
+```
+🤖 > /mode
+
+🔀  Current execution mode: auto (router decides)
+  Use /mode <option> to change:
+    simple      — single-model loop, fast & cheap
+    plan        — planner + executor, no checker
+    pipeline    — full planner → executor → checker
+    auto        — let the router decide (default)
+```
+
+### 切换执行模式
+
+```
+🤖 > /mode simple
+🔀  Mode locked to simple: single-model loop for all messages.
+
+🤖 > /mode plan
+🔀  Mode locked to plan: planner + executor for all messages.
+
+🤖 > /mode pipeline
+🔀  Mode locked to pipeline: full pipeline for all messages.
+
+🤖 > /mode auto
+🔀  Mode reset to auto: adaptive router will classify each task.
+```
+
+### 执行模式说明
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **simple** | 单模型循环模式，快速响应，成本低 | 简单问答、代码解释、单文件修改 |
+| **plan** | 规划+执行模式，无检查器 | 中等复杂度任务，多文件修改 |
+| **pipeline** | 完整流水线模式（规划→执行→检查） | 复杂任务，架构设计，需要验证的任务 |
+| **auto** | 自适应路由（默认） | 让 Agent 根据任务复杂度自动选择模式 |
+
+### 自适应路由
+
+当模式设为 `auto` 时，Agent 会根据任务复杂度自动选择执行模式：
+
+- **简单任务** → `simple` 模式（单模型循环）
+- **中等任务** → `plan` 模式（规划+执行）
+- **复杂任务** → `pipeline` 模式（完整流水线）
+
+路由决策基于：
+1. **规则启发式**：关键词匹配（如 "refactor" → 复杂，"explain" → 简单）
+2. **LLM 分类**：当启发式不确定时，使用轻量级 LLM 调用分类
 
 ---
 
@@ -893,7 +951,7 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ---
 
-## � 多 Agent 协作（多进程专家池）
+## 🤖 多 Agent 协作（多进程专家池）
 
 多 Agent 协作允许主 Agent 将复杂任务分解，并指派给专注于特定子目录或领域的“专家 Agent”实例。
 
@@ -903,9 +961,18 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 - **专注度提升**：子 Agent 只关注局部上下文，Token 消耗更低，响应更精准。
 - **并发处理**：主 Agent 可以根据需要同时维持多个独立运行的子任务环境。
 
-### 配置专家 Agent
+### 两种子 Agent 调用方式
 
-在 `~/.config/rust_agent/models.toml` 中配置 `sub_agents`。主 Agent 启动时会自动在后台拉起这些服务：
+Agent 提供两种子 Agent 调用机制，适用于不同场景：
+
+#### 1. `call_sub_agent` - 连接预启动的 WebSocket 服务器
+
+**适用场景**：长期运行的专家服务，如：
+- 预配置的代码审查专家
+- 持续运行的测试专家  
+- 需要保持状态的对话专家
+
+**配置方式**：在 `~/.config/rust_agent/models.toml` 中配置 `sub_agents`：
 
 ```toml
 # 定义子 Agent 专家池
@@ -918,17 +985,53 @@ port = 9002
 role = "checker"
 ```
 
-### 委派任务 (`call_sub_agent`)
+主 Agent 启动时会自动在后台拉起这些服务。
 
-主 Agent 会感知到配置好的专家。你可以直接要求它委派任务：
+**调用示例**：
+```json
+{
+  "prompt": "重构 frontend/src/components 目录下的所有 React 组件",
+  "server_url": "ws://localhost:9001",
+  "target_dir": "frontend/src/components",
+  "auto_approve": false
+}
+```
 
-> 🤖 > "帮我重构 frontend 目录，调用 localhost:9001 的专家专门负责编写样式文件。"
+#### 2. `spawn_sub_agent` - 动态创建 stdio 子进程
 
-**工具参数说明：**
-- `prompt`: 给专家的具体指令。
-- `server_url`: 专家 Agent 的 WebSocket 地址。
-- `target_dir`: (推荐) 隔离执行的相对路径。
-- `auto_approve`: 是否允许子 Agent 自动执行修改（默认为 false，由主 Agent 转发确认）。
+**适用场景**：临时性、一次性任务，如：
+- 快速代码片段生成
+- 单文件修改
+- 不需要长期运行的小任务
+
+**特点**：
+- 无需预启动服务器
+- 按需创建，用完即销毁
+- 默认自动批准所有工具调用（`auto_approve: true`）
+
+**调用示例**：
+```json
+{
+  "prompt": "为 utils/helpers.rs 添加错误处理",
+  "target_dir": "utils",
+  "auto_approve": true,
+  "timeout_secs": 300
+}
+```
+
+### 工具参数说明
+
+#### `call_sub_agent` 参数：
+- `prompt`: 给专家的具体指令
+- `server_url`: 专家 Agent 的 WebSocket 地址（默认：ws://localhost:9527）
+- `target_dir`: （推荐）隔离执行的相对路径
+- `auto_approve`: 是否允许子 Agent 自动执行修改（默认为 false，由主 Agent 转发确认）
+
+#### `spawn_sub_agent` 参数：
+- `prompt`: 给子 Agent 的任务描述
+- `target_dir`: 可选的工作目录，子 Agent 的文件工具将限定在此目录
+- `auto_approve`: 是否自动批准所有工具调用（默认：true）
+- `timeout_secs`: 子 Agent 最大运行时间（默认：300秒）
 
 ### 透明度与安全
 
@@ -938,7 +1041,7 @@ role = "checker"
 
 ---
 
-## �🧰 内置工具一览
+## 🧰 内置工具一览
 
 | 工具 | 图标 | 用途 | 需确认 |
 |------|------|------|--------|
@@ -955,6 +1058,10 @@ role = "checker"
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
 | `read_ebook` | 📕 | 电子书读取 (MOBI/EPUB/AZW3) | ❌ |
 | `fetch_url` | 🌐 | 网页抓取与正文提取 | ❌ |
+| `call_sub_agent` | 🤝 | 委派任务给预启动的 WebSocket 专家 Agent | ✅ |
+| `spawn_sub_agent` | 👶 | 动态创建 stdio 子进程处理临时任务 | ✅ |
+| `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
+| `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
 
 ### 外部依赖（可选）
 

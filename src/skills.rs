@@ -329,11 +329,7 @@ fn build_skill_index(path: &Path, source: &str) -> Option<SkillIndex> {
     });
 
     // Truncate very long descriptions
-    let description = if description.len() > 120 {
-        format!("{}…", &description[..117])
-    } else {
-        description
-    };
+    let description = crate::ui::truncate_str(&description, 120);
 
     Some(SkillIndex {
         name,

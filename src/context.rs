@@ -227,6 +227,18 @@ pub fn plan_truncation(conversation: &Conversation, model: &str) -> Option<Trunc
 /// It captures the high-level flow: what was discussed, what tools were
 /// used, what files were touched, and any key conclusions.
 pub fn build_truncation_context(messages: &[Message]) -> String {
+    /// Truncate `s` to at most `max_bytes` bytes, always landing on a valid
+    /// UTF-8 char boundary so we never panic on multi-byte characters.
+    fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+        if s.len() <= max_bytes {
+            return s;
+        }
+        let mut boundary = max_bytes;
+        while boundary > 0 && !s.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        &s[..boundary]
+    }
     let mut parts: Vec<String> = Vec::new();
 
     for (i, msg) in messages.iter().enumerate() {
@@ -241,7 +253,7 @@ pub fn build_truncation_context(messages: &[Message]) -> String {
                 ContentBlock::Text { text } => {
                     // Truncate long text blocks to keep the context prompt small
                     let truncated = if text.len() > 300 {
-                        format!("{}... [truncated, {} chars total]", &text[..300], text.len())
+                        format!("{}... [truncated, {} chars total]", safe_truncate(text, 300), text.len())
                     } else {
                         text.clone()
                     };
@@ -259,7 +271,7 @@ pub fn build_truncation_context(messages: &[Message]) -> String {
                 ContentBlock::ToolResult { content, is_error, .. } => {
                     let status = if is_error.unwrap_or(false) { "ERROR" } else { "OK" };
                     let preview = if content.len() > 150 {
-                        format!("{}...", &content[..150])
+                        format!("{}...", safe_truncate(content, 150))
                     } else {
                         content.clone()
                     };
@@ -275,7 +287,7 @@ pub fn build_truncation_context(messages: &[Message]) -> String {
     // Cap the total context to ~3000 chars to keep the LLM summarization prompt cheap
     let joined = parts.join("\n");
     if joined.len() > 3000 {
-        format!("{}...\n[{} more entries omitted]", &joined[..3000], parts.len())
+        format!("{}...\n[{} more entries omitted]", safe_truncate(&joined, 3000), parts.len())
     } else {
         joined
     }

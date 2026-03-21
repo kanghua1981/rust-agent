@@ -295,18 +295,14 @@ async fn extract_with_mutool(
 
 /// Build the final ToolResult with optional truncation
 fn make_result(path: &str, text: &str, max_chars: usize, method: &str) -> ToolResult {
-    let char_count = text.len();
+    let char_count = text.chars().count();
     let line_count = text.lines().count();
 
     let content = if char_count > max_chars {
-        // Truncate, keeping the beginning
-        let mut end = max_chars;
-        while end < char_count && !text.is_char_boundary(end) {
-            end += 1;
-        }
+        let truncated = crate::ui::truncate_str(text, max_chars);
         format!(
             "{}\n\n... (truncated: showing {}/{} chars, use start_page/end_page to read specific sections)",
-            &text[..end], max_chars, char_count
+            truncated, max_chars, char_count
         )
     } else {
         text.to_string()
