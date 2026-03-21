@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { useWebSocket } from '../hooks/useWebSocket';
 import { isDesktopApp, getEnvironmentInfo } from '../utils/environment';
 import type { ConfigPreset } from '../types/agent';
 
@@ -9,9 +10,12 @@ export const SettingsPanel: React.FC = () => {
     presets, addPreset, updatePreset, deletePreset, applyPreset 
   } = useAgentStore();
 
+  const { setSandbox, isConnected } = useWebSocket();
+  
   const [activeTab, setActiveTab] = useState<'current' | 'presets'>('current');
   const [showNewPreset, setShowNewPreset] = useState(false);
   const [editingPreset, setEditingPreset] = useState<string | null>(null);
+  const [sandboxEnabled, setSandboxEnabled] = useState(false);
 
   // Current config form state
   const [urlDraft, setUrlDraft] = useState(serverUrl);
@@ -35,6 +39,13 @@ export const SettingsPanel: React.FC = () => {
     autoApprove: false,
     agentMode: 'auto',
   });
+
+  const handleSandboxToggle = (enabled: boolean) => {
+    setSandboxEnabled(enabled);
+    if (isConnected) {
+      setSandbox(enabled);
+    }
+  };
 
   const saveCurrentConfig = () => {
     setServerUrl(urlDraft.trim() || 'ws://localhost:9527');
@@ -80,6 +91,12 @@ export const SettingsPanel: React.FC = () => {
     });
     setEditingPreset(preset.id);
     setShowNewPreset(true);
+  };
+
+  const handleApplyPreset = (presetId: string) => {
+    applyPreset(presetId);
+    // 应用预设后保持当前标签页为"预设"标签页
+    setActiveTab('presets');
   };
 
   const cancelEdit = () => {
@@ -199,6 +216,25 @@ export const SettingsPanel: React.FC = () => {
             </Field>
           </Section>
 
+          <Section title="沙盒模式">
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={sandboxEnabled}
+                onChange={(e) => handleSandboxToggle(e.target.checked)}
+                disabled={!isConnected}
+                style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
+              />
+              <div>
+                <p style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>启用沙盒模式</p>
+                <p style={{ fontSize: '12px', color: 'var(--text3)' }}>
+                  在隔离环境中执行文件操作，支持回滚和提交
+                  {!isConnected && <span style={{ color: 'var(--red)', marginLeft: '5px' }}>(需要连接服务器)</span>}
+                </p>
+              </div>
+            </label>
+          </Section>
+
           <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
             <button onClick={saveCurrentConfig} style={{
               flex: 2, padding: '10px',
@@ -275,7 +311,7 @@ export const SettingsPanel: React.FC = () => {
                   </div>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <button
-                      onClick={() => applyPreset(preset.id)}
+                      onClick={() => handleApplyPreset(preset.id)}
                       style={{
                         padding: '4px 8px', background: 'var(--accent)', color: '#fff',
                         borderRadius: '4px', fontSize: '11px', fontWeight: '600',

@@ -69,6 +69,10 @@ export const useWebSocket = () => {
     sendRaw({ type: 'review_plan_response', data: { approved, feedback } });
   }, [sendRaw]);
 
+  const setSandbox = useCallback((enabled: boolean) => {
+    sendRaw({ type: 'set_sandbox', data: { enabled } });
+  }, [sendRaw]);
+
   const setWorkdirRemote = useCallback((newWorkdir: string) => {
     sendRaw({ type: 'set_workdir', data: { workdir: newWorkdir } });
   }, [sendRaw]);
@@ -325,6 +329,7 @@ export const useWebSocket = () => {
     confirmToolCall,
     answerQuestion,
     reviewPlan,
+    setSandbox,
     setWorkdirRemote,
     setModelRemote,
     loadSession,

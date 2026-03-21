@@ -108,7 +108,7 @@ async fn handle_connection(
     let confirm_tx = ws_output.confirm_tx.clone();
     let ask_user_tx = ws_output.ask_user_tx.clone();
 
-    // Create the Agent (sandbox disabled for server mode)
+    // Create the Agent (sandbox initially disabled for server mode)
     let mut agent = Agent::new(
         config,
         project_dir.clone(),
@@ -133,6 +133,11 @@ async fn handle_connection(
     let shared_workdir: Arc<std::sync::Mutex<Option<PathBuf>>> = Arc::new(std::sync::Mutex::new(None));
     let shared_workdir_reader = shared_workdir.clone();
 
+    // Shared sandbox state: enabled or disabled
+    type SharedSandbox = Arc<std::sync::Mutex<bool>>;
+    let shared_sandbox: SharedSandbox = Arc::new(std::sync::Mutex::new(false));
+    let shared_sandbox_reader = shared_sandbox.clone();
+
     // Shared execution mode: None = auto (router decides), or forced mode.
     type SharedMode = Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>;
     let shared_mode: SharedMode = Arc::new(std::sync::Mutex::new(None));
@@ -141,17 +146,13 @@ async fn handle_connection(
     // Control channel: load_session and future control commands that bypass
     // the serialised user_message queue.
     let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ControlCmd>();
-    let ctrl_tx_reader = ctrl_tx;  // moves into reader task
+    let ctrl_tx_reader = ctrl_tx.clone();  // moves into reader task
 
     // Channel carrying (user_text, request_id, workdir) from reader → agent loop.
     // workdir is taken from user_message.data.workdir (overrides shared_workdir for that turn).
     // Capacity 1: the agent processes messages serially; a second message
     // while one is in-flight gets an "agent busy" error.
     let (user_tx, mut user_rx) = mpsc::channel::<(String, Option<serde_json::Value>, Option<String>)>(1);
-
-    // ── Reader task ──────────────────────────────────────────────────────────
-    // This task only dispatches — it never awaits the agent, so it can always
-    // receive confirm/ask_user/review_plan responses while the agent is blocked.
     let ws_output_reader = ws_output.clone();
     let reader_handle = tokio::spawn(async move {
         while let Some(msg) = ws_read.next().await {
@@ -172,6 +173,7 @@ async fn handle_connection(
                         &ws_output_reader,
                         &shared_workdir_reader,
                         &shared_mode_reader,
+                        &shared_sandbox_reader,
                         &ctrl_tx_reader,
                     );
                 }
@@ -278,6 +280,11 @@ async fn handle_connection(
                 // Apply execution mode override (auto if None).
                 let mode = shared_mode.lock().ok().and_then(|g| *g);
                 agent.set_force_mode(mode);
+                
+                // Apply sandbox mode
+                let sandbox_enabled = shared_sandbox.lock().ok().map(|g| *g).unwrap_or(false);
+                agent.set_sandbox_enabled(sandbox_enabled);
+                
                 let process_result = agent.process_message(&user_text).await;
                 agent.set_allowed_dir(None);
 
@@ -320,6 +327,7 @@ fn dispatch_ws_message(
     output: &Arc<WsOutput>,
     shared_workdir: &std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
     shared_mode: &std::sync::Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>,
+    shared_sandbox: &std::sync::Arc<std::sync::Mutex<bool>>,
     ctrl_tx: &mpsc::UnboundedSender<ControlCmd>,
 ) {
     let msg: serde_json::Value = match serde_json::from_str(text) {
@@ -409,9 +417,27 @@ fn dispatch_ws_message(
         }
 
         "review_plan_response" => {
-            // Forward raw JSON so WsOutput::review_plan can parse it
+            // Convert client format { approved, feedback } to server format { action, feedback }
             let data = msg.get("data").cloned().unwrap_or(serde_json::json!({}));
-            let _ = ask_user_tx.send(data.to_string());
+            let approved = data.get("approved").and_then(|v| v.as_bool()).unwrap_or(false);
+            let feedback = data.get("feedback").and_then(|v| v.as_str()).unwrap_or("");
+            
+            let action = if approved {
+                if !feedback.is_empty() {
+                    "refine"
+                } else {
+                    "approve"
+                }
+            } else {
+                "reject"
+            };
+            
+            let response_json = serde_json::json!({
+                "action": action,
+                "feedback": feedback
+            });
+            
+            let _ = ask_user_tx.send(response_json.to_string());
         }
 
         // set_model is informational — silently acknowledge.
@@ -440,6 +466,16 @@ fn dispatch_ws_message(
                 *guard = mode;
             }
             tracing::info!("Execution mode set to: {}", mode_str);
+        }
+
+        "set_sandbox" => {
+            let enabled = msg
+                .get("data").and_then(|d| d.get("enabled")).and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if let Ok(mut guard) = shared_sandbox.lock() {
+                *guard = enabled;
+            }
+            tracing::info!("Sandbox mode set to: {}", if enabled { "enabled" } else { "disabled" });
         }
 
         other => {

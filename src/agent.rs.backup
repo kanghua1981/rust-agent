@@ -89,47 +89,6 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Enable or disable sandbox mode dynamically
-    pub fn set_sandbox_enabled(&mut self, enabled: bool) {
-        if enabled && self.sandbox.working_dir() == &self.project_dir {
-            // 如果沙盒当前是禁用的，启用它
-            let sandbox_dir = self.project_dir.join(".agent/sandbox");
-            // 创建沙盒目录
-            let _ = std::fs::create_dir_all(&sandbox_dir);
-            let sandbox = crate::sandbox::Sandbox::new(&self.project_dir);
-            self.sandbox = sandbox;
-                // 更新工具执行器的工作目录
-                self.set_allowed_dir(Some(self.sandbox.working_dir().to_path_buf()));
-                
-                // 添加沙盒模式说明到系统提示词
-                let sandbox_note = "\n\n## Sandbox Mode\n\
-                - You are running in **sandbox mode** (overlay filesystem).\n\
-                - All file operations are isolated in the sandbox directory.\n\
-                - **IMPORTANT**: Always use **relative paths** (e.g., `src/main.rs`) not absolute paths.\n\
-                - Absolute paths to files outside the sandbox will be rejected with \"Access denied\".\n\
-                - Use `/changes` to see modified files, `/rollback` to undo, `/commit` to apply changes.";
-                
-                if !self.conversation.system_prompt.contains("## Sandbox Mode") {
-                    self.conversation.system_prompt.push_str(sandbox_note);
-            }
-        } else if !enabled && self.sandbox.working_dir() != &self.project_dir {
-            // 如果沙盒当前是启用的，禁用它
-            self.sandbox = crate::sandbox::Sandbox::disabled(&self.project_dir);
-            // 恢复工具执行器的工作目录
-            self.set_allowed_dir(Some(self.project_dir.clone()));
-            
-            // 移除沙盒模式说明
-            if let Some(start) = self.conversation.system_prompt.find("## Sandbox Mode") {
-                if let Some(end) = self.conversation.system_prompt[start..].find("\n\n## ") {
-                    self.conversation.system_prompt.replace_range(start..start+end, "");
-                } else {
-                    // 如果沙盒说明在末尾，直接截断
-                    self.conversation.system_prompt.truncate(start);
-                }
-            }
-        }
-    }
-
     /// Restrict write/edit tools to paths inside `dir` for this agent.
     /// Pass `None` to remove the restriction.
     pub fn set_allowed_dir(&mut self, dir: Option<std::path::PathBuf>) {
@@ -165,10 +124,10 @@ impl Agent {
         };
         
         // 在沙盒模式下，限制文件操作只能在沙盒工作目录内
-        agent.tool_executor.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
+        agent.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
         
         // 在沙盒模式下，添加路径使用说明到系统提示词
-        if agent.sandbox.working_dir() != &agent.project_dir {
+        if agent.sandbox.is_enabled() {
             let sandbox_note = "\n\n## Sandbox Mode\n\
             - You are running in **sandbox mode** (overlay filesystem).\n\
             - All file operations are isolated in the sandbox directory.\n\
@@ -211,10 +170,10 @@ impl Agent {
         };
         
         // 在沙盒模式下，限制文件操作只能在沙盒工作目录内
-        agent.tool_executor.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
+        agent.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
         
         // 在沙盒模式下，添加路径使用说明到系统提示词
-        if agent.sandbox.working_dir() != &agent.project_dir {
+        if agent.sandbox.is_enabled() {
             let sandbox_note = "\n\n## Sandbox Mode\n\
             - You are running in **sandbox mode** (overlay filesystem).\n\
             - All file operations are isolated in the sandbox directory.\n\

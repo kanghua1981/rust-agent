@@ -9,6 +9,7 @@ export type ClientMessage =
   | SetWorkdirMessage
   | SetModelMessage
   | SetModeMessage
+  | SetSandboxMessage
   | LoadSessionMessage
   | NewSessionMessage;
 
@@ -132,6 +133,13 @@ export interface SetModelMessage extends BaseMessage {
   type: 'set_model';
   data: {
     model: string;
+  };
+}
+
+export interface SetSandboxMessage extends BaseMessage {
+  type: 'set_sandbox';
+  data: {
+    enabled: boolean;
   };
 }
 
