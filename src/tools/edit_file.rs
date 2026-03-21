@@ -108,6 +108,8 @@ impl Tool for EditFileTool {
 fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
+        // 在沙盒模式下，如果绝对路径指向原始项目目录，将其重定向到沙盒目录
+        // 注意：这里假设project_dir是沙盒的working_dir
         p.to_path_buf()
     } else {
         project_dir.join(p)

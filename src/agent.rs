@@ -98,11 +98,11 @@ impl Agent {
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);
-        let conversation = Conversation::new(&project_dir);
+        let mut conversation = Conversation::new(&project_dir);
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
-        Agent {
+        let mut agent = Agent {
             config,
             client,
             tool_executor: ToolExecutor::new(effective_dir, output.clone()),
@@ -121,7 +121,24 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+        };
+        
+        // 在沙盒模式下，限制文件操作只能在沙盒工作目录内
+        agent.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
+        
+        // 在沙盒模式下，添加路径使用说明到系统提示词
+        if agent.sandbox.working_dir() != &agent.project_dir {
+            let sandbox_note = "\n\n## Sandbox Mode\n\
+            - You are running in **sandbox mode** (overlay filesystem).\n\
+            - All file operations are isolated in the sandbox directory.\n\
+            - **IMPORTANT**: Always use **relative paths** (e.g., `src/main.rs`) not absolute paths.\n\
+            - Absolute paths to files outside the sandbox will be rejected with \"Access denied\".\n\
+            - Use `/changes` to see modified files, `/rollback` to undo, `/commit` to apply changes.";
+            
+            agent.conversation.system_prompt.push_str(sandbox_note);
         }
+        
+        agent
     }
 
     /// Create agent with a restored conversation
@@ -131,7 +148,7 @@ impl Agent {
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
-        Agent {
+        let mut agent = Agent {
             config,
             client,
             tool_executor: ToolExecutor::new(effective_dir, output.clone()),
@@ -150,7 +167,24 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+        };
+        
+        // 在沙盒模式下，限制文件操作只能在沙盒工作目录内
+        agent.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
+        
+        // 在沙盒模式下，添加路径使用说明到系统提示词
+        if agent.sandbox.working_dir() != &agent.project_dir {
+            let sandbox_note = "\n\n## Sandbox Mode\n\
+            - You are running in **sandbox mode** (overlay filesystem).\n\
+            - All file operations are isolated in the sandbox directory.\n\
+            - **IMPORTANT**: Always use **relative paths** (e.g., `src/main.rs`) not absolute paths.\n\
+            - Absolute paths to files outside the sandbox will be rejected with \"Access denied\".\n\
+            - Use `/changes` to see modified files, `/rollback` to undo, `/commit` to apply changes.";
+            
+            agent.conversation.system_prompt.push_str(sandbox_note);
         }
+        
+        agent
     }
 
     /// Get or create a session ID for persistence

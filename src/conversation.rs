@@ -248,8 +248,6 @@ When writing or editing code:
 - Consider edge cases
 
 Skills management:
-- When you discover a reusable workflow, build process, or project-specific procedure
-  that would be valuable across sessions, save it as a skill using the `create_skill` tool.
 - ALWAYS use the `create_skill` tool to create or update skills. NEVER use `write_file`
   or `edit_file` to directly create/modify files in `.agent/skills/`. The `create_skill`
   tool automatically generates the required YAML frontmatter format.
