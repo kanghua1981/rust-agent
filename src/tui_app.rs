@@ -1113,23 +1113,247 @@ async fn handle_tui_slash(
         }
 
         _ if input == "/summary" || input.starts_with("/summary ") => {
-            crate::cli::handle_summary_command(input, agent).await;
+            let subcommand = input.strip_prefix("/summary").unwrap_or("").trim();
+            let cwd = agent.project_dir.clone();
+            match subcommand {
+                "generate" => {
+                    if crate::summary::exists(&cwd) {
+                        line!(vec![Span::styled("⚠️  Summary already exists. Regenerating...", s(Color::Yellow))]);
+                    }
+                    line!(vec![Span::styled("⏳ Generating project summary…", s(Color::Cyan))]);
+                    match agent.generate_project_summary().await {
+                        Ok(_) => line!(vec![Span::styled("✓ Project summary generated.", s(Color::Green))]),
+                        Err(e) => line!(vec![Span::styled(format!("✗ Failed: {}", e), s(Color::Red))]),
+                    }
+                }
+                "" => {
+                    if let Some(summary) = crate::summary::load(&cwd) {
+                        head!("── Project Summary ─────────────────────────────────────────────");
+                        // Render markdown as plain text lines inside the TUI output buffer.
+                        // (Cannot use termimad::print_text here — it writes directly to stdout
+                        //  and would corrupt the ratatui alternate-screen buffer.)
+                        for raw_line in summary.lines() {
+                            // Strip common markdown markers for a clean TUI view.
+                            let display = raw_line
+                                .trim_start_matches("### ")
+                                .trim_start_matches("## ")
+                                .trim_start_matches("# ")
+                                .trim_start_matches("**")
+                                .trim_end_matches("**")
+                                .trim_start_matches("- ")
+                                .trim_start_matches("* ");
+                            line!(vec![Span::raw(display.to_owned())]);
+                        }
+                        line!(vec![Span::styled(
+                            "💡 Run /summary generate to regenerate.",
+                            s(Color::DarkGray),
+                        )]);
+                    } else {
+                        line!(vec![Span::styled(
+                            "📋 No project summary found. Run /summary generate to create one.",
+                            s(Color::Yellow),
+                        )]);
+                    }
+                }
+                _ => {
+                    line!(vec![Span::styled("Usage: /summary  |  /summary generate", s(Color::Yellow))]);
+                }
+            }
         }
 
         _ if input == "/plan" || input.starts_with("/plan ") => {
-            crate::cli::handle_plan_command(input, agent).await;
+            let subcommand = input.strip_prefix("/plan").unwrap_or("").trim();
+            match subcommand {
+                "" => {
+                    head!("── Plan Mode ───────────────────────────────────────────────────");
+                    line!(vec![Span::raw("  /plan <task>   Generate a plan for a task")]);
+                    line!(vec![Span::raw("  /plan run      Execute the pending plan")]);
+                    line!(vec![Span::raw("  /plan show     Display the pending plan")]);
+                    line!(vec![Span::raw("  /plan clear    Discard the pending plan")]);
+                    if agent.pending_plan.is_some() {
+                        line!(vec![Span::styled(
+                            "💡 A pending plan exists. Use /plan show or /plan run.",
+                            s(Color::Green),
+                        )]);
+                    }
+                }
+                "run" => {
+                    if let Some(plan) = agent.pending_plan.clone() {
+                        line!(vec![Span::styled("🚀 Executing plan…", b(Color::Cyan))]);
+                        match agent.execute_plan(&plan).await {
+                            Ok(_) => crate::cli::auto_save_session(agent),
+                            Err(e) => line!(vec![Span::styled(
+                                format!("✗ Plan execution failed: {}", e), s(Color::Red)
+                            )]),
+                        }
+                    } else {
+                        line!(vec![Span::styled(
+                            "⚠️  No pending plan. Use /plan <task> to generate one first.",
+                            s(Color::Yellow),
+                        )]);
+                    }
+                }
+                "show" => {
+                    if let Some(ref plan) = agent.pending_plan {
+                        head!("── Pending Plan ────────────────────────────────────────────────");
+                        for raw_line in plan.lines() {
+                            let display = raw_line
+                                .trim_start_matches("### ")
+                                .trim_start_matches("## ")
+                                .trim_start_matches("# ")
+                                .trim_start_matches("**")
+                                .trim_end_matches("**")
+                                .trim_start_matches("- ")
+                                .trim_start_matches("* ");
+                            line!(vec![Span::raw(display.to_owned())]);
+                        }
+                        line!(vec![Span::styled(
+                            "💡 Use /plan run to execute or /plan clear to discard.",
+                            s(Color::DarkGray),
+                        )]);
+                    } else {
+                        info!("📋 No pending plan.");
+                    }
+                }
+                "clear" => {
+                    if agent.pending_plan.is_some() {
+                        agent.pending_plan = None;
+                        line!(vec![Span::styled("🗑️  Pending plan cleared.", s(Color::Cyan))]);
+                    } else {
+                        info!("📋 No pending plan to clear.");
+                    }
+                }
+                task => {
+                    line!(vec![Span::styled("📝 Generating plan…", s(Color::Cyan))]);
+                    match agent.generate_plan(task).await {
+                        Ok(_) => {
+                            line!(vec![Span::styled(
+                                "✅ Plan generated. Use /plan show to view, /plan run to execute.",
+                                s(Color::Green),
+                            )]);
+                            crate::cli::auto_save_session(agent);
+                        }
+                        Err(e) => line!(vec![Span::styled(
+                            format!("✗ Plan generation failed: {}", e), s(Color::Red)
+                        )]),
+                    }
+                }
+            }
         }
 
         "/rollback" => {
-            crate::cli::handle_rollback_command(agent).await;
+            if !agent.sandbox.is_enabled().await {
+                line!(vec![Span::styled(
+                    "⚠️  Sandbox is not enabled. Start the agent with --sandbox to use this feature.",
+                    s(Color::Yellow),
+                )]);
+            } else {
+                let changes = agent.sandbox.changed_files().await;
+                if changes.is_empty() {
+                    info!("📋 No changes to rollback.");
+                } else {
+                    head!("── Rolling Back ────────────────────────────────────────────────");
+                    for c in &changes {
+                        let icon = match c.kind {
+                            crate::sandbox::ChangeKind::Modified  => "✏️ ",
+                            crate::sandbox::ChangeKind::Created   => "📄",
+                            crate::sandbox::ChangeKind::Deleted   => "🗑️",
+                            crate::sandbox::ChangeKind::Unchanged => "⚪",
+                        };
+                        line!(vec![Span::raw(format!("  {} {} ({})", icon, c.path.display(), c.kind))]);
+                    }
+                    let result = agent.sandbox.rollback().await;
+                    if result.errors.is_empty() {
+                        line!(vec![Span::styled(
+                            format!("✅ Rolled back: {} restored, {} deleted.",
+                                result.restored, result.deleted),
+                            s(Color::Green),
+                        )]);
+                    } else {
+                        line!(vec![Span::styled(
+                            format!("⚠️  Rollback completed with {} error(s):", result.errors.len()),
+                            s(Color::Yellow),
+                        )]);
+                        for err in &result.errors {
+                            line!(vec![Span::styled(format!("  ✗ {}", err), s(Color::Red))]);
+                        }
+                    }
+                }
+            }
         }
 
         "/commit" => {
-            crate::cli::handle_commit_command(agent).await;
+            if !agent.sandbox.is_enabled().await {
+                line!(vec![Span::styled(
+                    "⚠️  Sandbox is not enabled. Start the agent with --sandbox to use this feature.",
+                    s(Color::Yellow),
+                )]);
+            } else {
+                let changes = agent.sandbox.changed_files().await;
+                if changes.is_empty() {
+                    info!("📋 No changes to commit.");
+                } else {
+                    head!("── Committing ──────────────────────────────────────────────────");
+                    for c in &changes {
+                        let icon = match c.kind {
+                            crate::sandbox::ChangeKind::Modified  => "✏️ ",
+                            crate::sandbox::ChangeKind::Created   => "📄",
+                            crate::sandbox::ChangeKind::Deleted   => "🗑️",
+                            crate::sandbox::ChangeKind::Unchanged => "⚪",
+                        };
+                        line!(vec![Span::raw(format!("  {} {} ({})", icon, c.path.display(), c.kind))]);
+                    }
+                    let result = agent.sandbox.commit().await;
+                    line!(vec![Span::styled(
+                        format!("✅ Committed: {} modified, {} created. Snapshots discarded.",
+                            result.modified, result.created),
+                        s(Color::Green),
+                    )]);
+                }
+            }
         }
 
         "/changes" => {
-            crate::cli::handle_changes_command(agent).await;
+            if !agent.sandbox.is_enabled().await {
+                line!(vec![Span::styled(
+                    "⚠️  Sandbox is not enabled. Start the agent with --sandbox to use this feature.",
+                    s(Color::Yellow),
+                )]);
+            } else {
+                let changes = agent.sandbox.changed_files().await;
+                if changes.is_empty() {
+                    info!("📋 No changes tracked yet.");
+                } else {
+                    head!("── Sandbox Changes ─────────────────────────────────────────────");
+                    let (mut modified, mut created, mut unchanged) = (0usize, 0usize, 0usize);
+                    for c in &changes {
+                        let (icon, color) = match c.kind {
+                            crate::sandbox::ChangeKind::Modified  => { modified  += 1; ("✏️ ", Color::Yellow) }
+                            crate::sandbox::ChangeKind::Created   => { created   += 1; ("📄", Color::Green)  }
+                            crate::sandbox::ChangeKind::Deleted   => { modified  += 1; ("🗑️", Color::Red)    }
+                            crate::sandbox::ChangeKind::Unchanged => { unchanged += 1; ("⚪", Color::DarkGray) }
+                        };
+                        let size_info = match (c.original_size, c.current_size) {
+                            (Some(orig), Some(curr)) if orig != curr =>
+                                format!(" ({} → {} bytes)", orig, curr),
+                            (None, Some(curr)) => format!(" ({} bytes)", curr),
+                            _ => String::new(),
+                        };
+                        line!(vec![Span::styled(
+                            format!("  {} {} [{}]{}", icon, c.path.display(), c.kind, size_info),
+                            s(color),
+                        )]);
+                    }
+                    line!(vec![Span::raw(format!(
+                        "  Summary: {} modified, {} created, {} unchanged",
+                        modified, created, unchanged
+                    ))]);
+                    line!(vec![Span::styled(
+                        "  Use /rollback to undo all, /commit to accept all.",
+                        s(Color::DarkGray),
+                    )]);
+                }
+            }
         }
 
         _ if input == "/export" || input.starts_with("/export ") => {
@@ -1242,7 +1466,73 @@ async fn handle_tui_slash(
         }
 
         _ if input == "/model" || input.starts_with("/model ") => {
-            crate::cli::handle_model_command(input, agent);
+            let subcommand = input.strip_prefix("/model").unwrap_or("").trim();
+            match subcommand {
+                "" => {
+                    head!("── Model ───────────────────────────────────────────────────────");
+                    line!(vec![
+                        Span::styled("  Current: ", s(Color::DarkGray)),
+                        Span::styled(agent.config.model.clone(), b(Color::White)),
+                        Span::styled(format!(" ({})", agent.config.provider), s(Color::Cyan)),
+                    ]);
+                    if let Some(ref alias) = agent.config.model_alias {
+                        line!(vec![
+                            Span::styled("  Alias: ", s(Color::DarkGray)),
+                            Span::styled(alias.clone(), s(Color::Yellow)),
+                        ]);
+                    }
+                    let models_cfg = crate::model_manager::load();
+                    if models_cfg.models.is_empty() {
+                        line!(vec![Span::styled(
+                            "  No models configured. Use CLI mode to add: /model add <alias>",
+                            s(Color::DarkGray),
+                        )]);
+                    } else {
+                        let default_alias = models_cfg.default.as_deref().unwrap_or("");
+                        for alias in models_cfg.aliases() {
+                            if let Some(entry) = models_cfg.models.get(alias) {
+                                let star   = if alias == default_alias { " ⭐" } else { "" };
+                                let active = agent.config.model_alias.as_deref() == Some(alias);
+                                let prefix = if active { "▶" } else { "•" };
+                                let color  = if active { Color::Green } else { Color::DarkGray };
+                                line!(vec![Span::styled(
+                                    format!("  {} {} → {}/{}{}",
+                                        prefix, alias, entry.provider, entry.model, star),
+                                    s(color),
+                                )]);
+                            }
+                        }
+                    }
+                    line!(vec![Span::styled(
+                        "  Switch: /model <alias>   (add/remove/default: use CLI mode)",
+                        s(Color::DarkGray),
+                    )]);
+                }
+                sub if sub.starts_with("add ") || sub.starts_with("remove ")
+                    || sub.starts_with("default ") =>
+                {
+                    line!(vec![Span::styled(
+                        "⚠️  Model add/remove/default require interactive prompts — use CLI mode.",
+                        s(Color::Yellow),
+                    )]);
+                }
+                alias => {
+                    let models_cfg = crate::model_manager::load();
+                    if let Some(resolved) = models_cfg.resolve(alias) {
+                        agent.switch_model(&resolved);
+                        line!(vec![Span::styled(
+                            format!("🔄 Switched to '{}' → {} ({})",
+                                alias, agent.config.model, agent.config.provider),
+                            s(Color::Green),
+                        )]);
+                    } else {
+                        line!(vec![Span::styled(
+                            format!("❓ Model '{}' not found. Use /model to list available aliases.", alias),
+                            s(Color::Yellow),
+                        )]);
+                    }
+                }
+            }
         }
 
         _ if input == "/mode" || input.starts_with("/mode ") => {
@@ -1401,6 +1691,32 @@ pub async fn run(
         }
     });
 
+    // ── Terminal compatibility check ──────────────────────────────────────
+    // gnome-terminal (VTE) has poor alternate-screen isolation: the main
+    // buffer "shows through" undrawn cells even after a full clear.
+    // Detect it via $TERM_PROGRAM or $VTE_VERSION and warn the user.
+    let term_program = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_lowercase();
+    let is_limited_terminal = term_program.contains("gnome")
+        || term_program.contains("vte")
+        || term_program == "vscode"
+        || std::env::var("VTE_VERSION").is_ok()
+        || std::env::var("VSCODE_INJECTION").is_ok();
+    if is_limited_terminal {
+        let name = if term_program == "vscode" || std::env::var("VSCODE_INJECTION").is_ok() {
+            "VS Code integrated terminal"
+        } else {
+            "gnome-terminal (VTE)"
+        };
+        eprintln!(
+            "\x1b[33mWarning: {} has known TUI rendering issues.\n\
+             Recommended alternatives: kitty, alacritty, wezterm, or any xterm-compatible terminal.\x1b[0m",
+            name
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
     // ── Terminal setup ────────────────────────────────────────────────────
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -1411,6 +1727,10 @@ pub async fn run(
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    // Force a full clear on entry — gnome-terminal (Ubuntu default) sometimes
+    // retains scroll-back content when entering the alternate screen, causing
+    // garbled rendering until the first resize event.
+    terminal.clear()?;
 
     let mut out_h: u16 = 20;
     // Guard flag: prevents re-polling the JoinHandle after it resolves.
