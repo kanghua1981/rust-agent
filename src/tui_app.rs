@@ -1715,7 +1715,7 @@ pub async fn run(
     // gnome-terminal (VTE) has poor alternate-screen isolation: the main
     // buffer "shows through" undrawn cells even after a full clear.
     // Detect it via $TERM_PROGRAM or $VTE_VERSION and warn the user.
-    let term_program = std::env::var("TERM_PROGRAM")
+    let _term_program = std::env::var("TERM_PROGRAM")
         .unwrap_or_default()
         .to_lowercase();
     // let is_limited_terminal = term_program.contains("gnome")

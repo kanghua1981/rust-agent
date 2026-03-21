@@ -1607,7 +1607,7 @@ fn resolve_tool_path(path: &str, project_dir: &std::path::Path) -> std::path::Pa
 }
 
 /// Check if a tool action needs user confirmation
-fn needs_confirmation(tool_name: &str, input: &serde_json::Value) -> bool {
+fn needs_confirmation(tool_name: &str, _input: &serde_json::Value) -> bool {
     match tool_name {
         "write_file" | "edit_file" | "multi_edit_file" => true,
         "run_command" => {

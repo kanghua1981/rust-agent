@@ -211,10 +211,17 @@ pub fn load_skill_by_name(workdir: &Path, skill_name: &str) -> Option<Skill> {
 
 /// Case-insensitive name matching against display name, stem, and hyphen/underscore variants.
 fn name_matches(display_name: &str, stem: &str, needle: &str) -> bool {
-    display_name.to_lowercase() == *needle
-        || stem.to_lowercase() == *needle
-        || stem.to_lowercase().replace('-', " ") == *needle
-        || stem.to_lowercase().replace('_', " ") == *needle
+    let dn = display_name.to_lowercase();
+    let st = stem.to_lowercase();
+    // Strip all whitespace for a whitespace-insensitive comparison.
+    let dn_nws: String = dn.chars().filter(|c| !c.is_whitespace()).collect();
+    let needle_nws: String = needle.chars().filter(|c| !c.is_whitespace()).collect();
+    dn == *needle
+        || st == *needle
+        || st.replace('-', " ") == *needle
+        || st.replace('_', " ") == *needle
+        // Whitespace-insensitive: "PTZ 模块重构" matches "PTZ模块重构"
+        || (!needle_nws.is_empty() && (dn_nws == needle_nws || st.replace(['-','_',' '], "") == needle_nws))
 }
 
 /// List all available on-demand skill names (for error messages / hints).

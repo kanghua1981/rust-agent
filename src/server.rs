@@ -32,6 +32,26 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::output::{WsCommand, WsOutput};
 
+/// Control commands sent to the agent loop outside of normal user messages.
+enum ControlCmd {
+    LoadSession,
+    NewSession,
+}
+
+/// Build a `session_info` JSON payload from the local `.agent/session.json`.
+fn session_info_json(workdir: &std::path::Path) -> serde_json::Value {
+    match crate::persistence::load_local_session(workdir) {
+        Ok(Some(session)) => serde_json::json!({
+            "exists": true,
+            "message_count": session.meta.message_count,
+            "updated_at": session.meta.updated_at,
+            "summary": session.meta.summary,
+            "working_dir": session.meta.working_dir,
+        }),
+        _ => serde_json::json!({ "exists": false }),
+    }
+}
+
 /// Start the WebSocket server and listen forever.
 pub async fn run(config: Config, project_dir: PathBuf, host: &str, port: u16) -> Result<()> {
     let addr = format!("{}:{}", host, port);
@@ -109,7 +129,22 @@ async fn handle_connection(
         }
     });
 
-    // Channel carrying (user_text, request_id, allowed_dir) from reader → agent loop.
+    // Shared working directory: updated by `set_workdir` messages between turns.
+    let shared_workdir: Arc<std::sync::Mutex<Option<PathBuf>>> = Arc::new(std::sync::Mutex::new(None));
+    let shared_workdir_reader = shared_workdir.clone();
+
+    // Shared execution mode: None = auto (router decides), or forced mode.
+    type SharedMode = Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>;
+    let shared_mode: SharedMode = Arc::new(std::sync::Mutex::new(None));
+    let shared_mode_reader = shared_mode.clone();
+
+    // Control channel: load_session and future control commands that bypass
+    // the serialised user_message queue.
+    let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ControlCmd>();
+    let ctrl_tx_reader = ctrl_tx;  // moves into reader task
+
+    // Channel carrying (user_text, request_id, workdir) from reader → agent loop.
+    // workdir is taken from user_message.data.workdir (overrides shared_workdir for that turn).
     // Capacity 1: the agent processes messages serially; a second message
     // while one is in-flight gets an "agent busy" error.
     let (user_tx, mut user_rx) = mpsc::channel::<(String, Option<serde_json::Value>, Option<String>)>(1);
@@ -135,6 +170,9 @@ async fn handle_connection(
                         &confirm_tx,
                         &ask_user_tx,
                         &ws_output_reader,
+                        &shared_workdir_reader,
+                        &shared_mode_reader,
+                        &ctrl_tx_reader,
                     );
                 }
                 Message::Close(_) => break,
@@ -147,31 +185,121 @@ async fn handle_connection(
         // Dropping user_tx signals the agent loop to exit cleanly.
     });
 
-    // Send a "ready" event so the client knows the connection is live
+    // Send a "ready" event so the client knows the connection is live, plus
+    // any existing local session info so the UI can show a "restore" option.
     ws_output.emit_public("ready", serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
     }));
+    ws_output.emit_public("session_info", session_info_json(&project_dir));
 
     // ── Agent loop ───────────────────────────────────────────────────────────
-    // Processes one user_message at a time.  Runs on the current task so
-    // `agent` (which is !Send) doesn't need to cross thread boundaries.
-    while let Some((user_text, req_id, allowed_dir)) = user_rx.recv().await {
-        // Apply directory restriction for this request, then clear it when done.
-        agent.set_allowed_dir(allowed_dir.map(std::path::PathBuf::from));
-        let process_result = agent.process_message(&user_text).await;
-        agent.set_allowed_dir(None);
-        match process_result {
-            Ok(final_text) => {
-                let mut done_data = serde_json::json!({ "text": final_text });
-                if let Some(id) = req_id {
-                    done_data["id"] = id;
+    // Uses tokio::select! so control commands (LoadSession) are handled even
+    // while the agent is idle between user messages.
+    loop {
+        tokio::select! {
+            // ── Control commands (load_session, etc.) ──────────────────────
+            Some(ctrl) = ctrl_rx.recv() => {
+                match ctrl {
+                    ControlCmd::LoadSession => {
+                        match crate::persistence::load_local_session(&agent.project_dir) {
+                            Ok(Some(session)) => {
+                                let history: Vec<serde_json::Value> = session.messages.iter()
+                                    .filter_map(|m| {
+                                        let text = m.text_content();
+                                        if text.is_empty() { return None; }
+                                        let role = match m.role {
+                                            crate::conversation::Role::User      => "user",
+                                            crate::conversation::Role::Assistant => "assistant",
+                                            crate::conversation::Role::System    => "system",
+                                        };
+                                        Some(serde_json::json!({
+                                            "id": m.id, "role": role, "content": text
+                                        }))
+                                    })
+                                    .collect();
+                                agent.conversation = crate::persistence::restore_conversation(&session);
+                                ws_output.emit_public("session_restored", serde_json::json!({
+                                    "message_count": history.len(),
+                                    "messages": history,
+                                }));
+                            }
+                            Ok(None) => {
+                                ws_output.emit_public("warning", serde_json::json!({
+                                    "message": "当前目录没有保存的会话",
+                                }));
+                            }
+                            Err(e) => {
+                                ws_output.emit_public("error", serde_json::json!({
+                                    "message": format!("加载会话失败: {:#}", e),
+                                }));
+                            }
+                        }
+                    }
+                    ControlCmd::NewSession => {
+                        // Clear the current conversation and start fresh.
+                        agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+                        ws_output.emit_public("session_cleared", serde_json::json!({
+                            "message": "New session started"
+                        }));
+                        // Also emit updated session_info (should show no saved session)
+                        let session_info = session_info_json(&agent.project_dir);
+                        ws_output.emit_public("session_info", session_info);
+                    }
                 }
-                ws_output.emit_public("done", done_data);
             }
-            Err(e) => {
-                ws_output.emit_public("error", serde_json::json!({
-                    "message": format!("{:#}", e),
-                }));
+
+            // ── User messages ──────────────────────────────────────────────
+            msg = user_rx.recv() => {
+                let (user_text, req_id, msg_workdir) = match msg {
+                    Some(m) => m,
+                    None => break, // channel closed → connection dropped
+                };
+
+                // If the message carries an explicit workdir, use it; otherwise fall back
+                // to the last value set via `set_workdir`.
+                let effective_workdir = msg_workdir.or_else(|| {
+                    shared_workdir.lock().ok().and_then(|g| g.clone().map(|p| p.to_string_lossy().into_owned()))
+                });
+                let workdir_changed = if let Some(ref dir) = effective_workdir {
+                    let p = PathBuf::from(dir);
+                    if p.is_dir() {
+                        let changed = agent.project_dir != p;
+                        agent.project_dir = p.clone();
+                        agent.set_allowed_dir(Some(p));
+                        changed
+                    } else { false }
+                } else { false };
+
+                // If workdir just changed, send fresh session_info for the new dir.
+                if workdir_changed {
+                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+                }
+
+                // Apply execution mode override (auto if None).
+                let mode = shared_mode.lock().ok().and_then(|g| *g);
+                agent.set_force_mode(mode);
+                let process_result = agent.process_message(&user_text).await;
+                agent.set_allowed_dir(None);
+
+                match process_result {
+                    Ok(final_text) => {
+                        let mut done_data = serde_json::json!({ "text": final_text });
+                        if let Some(id) = req_id { done_data["id"] = id; }
+                        ws_output.emit_public("done", done_data);
+                        // Save conversation and broadcast updated session info.
+                        if let Err(e) = crate::persistence::save_local_session(
+                            &agent.conversation, &agent.project_dir
+                        ) {
+                            tracing::warn!("Failed to save local session: {}", e);
+                        }
+                        ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+                    }
+                    Err(e) => {
+                        ws_output.emit_public("error", serde_json::json!({
+                            "message": format!("{:#}", e),
+                        }));
+                    }
+                }
             }
         }
     }
@@ -190,6 +318,9 @@ fn dispatch_ws_message(
     confirm_tx: &std::sync::mpsc::Sender<crate::confirm::ConfirmResult>,
     ask_user_tx: &std::sync::mpsc::Sender<String>,
     output: &Arc<WsOutput>,
+    shared_workdir: &std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+    shared_mode: &std::sync::Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>,
+    ctrl_tx: &mpsc::UnboundedSender<ControlCmd>,
 ) {
     let msg: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -220,17 +351,36 @@ fn dispatch_ws_message(
             }
 
             let req_id = msg.get("id").cloned();
-            let allowed_dir = msg
-                .get("allowed_dir")
-                .and_then(|v| v.as_str())
+            // Prefer workdir from data.workdir (sent by web client), fall back to
+            // legacy top-level allowed_dir field.
+            let workdir = msg
+                .get("data").and_then(|d| d.get("workdir")).and_then(|v| v.as_str())
+                .or_else(|| msg.get("allowed_dir").and_then(|v| v.as_str()))
                 .map(|s| s.to_string());
 
             // try_send: non-blocking; fails if agent is still processing the
             // previous message (channel capacity = 1).
-            if user_tx.try_send((user_text, req_id, allowed_dir)).is_err() {
+            if user_tx.try_send((user_text, req_id, workdir)).is_err() {
                 output.emit_public("error", serde_json::json!({
                     "message": "Agent is busy processing a previous request",
                 }));
+            }
+        }
+
+        "set_workdir" => {
+            // Update the shared working directory for subsequent turns.
+            if let Some(dir) = msg.get("data").and_then(|d| d.get("workdir")).and_then(|v| v.as_str()) {
+                let p = PathBuf::from(dir);
+                if p.is_dir() {
+                    if let Ok(mut guard) = shared_workdir.lock() {
+                        *guard = Some(p);
+                    }
+                    tracing::info!("Working directory updated to: {}", dir);
+                } else {
+                    output.emit_public("warning", serde_json::json!({
+                        "message": format!("set_workdir: '{}' is not a valid directory", dir),
+                    }));
+                }
             }
         }
 
@@ -264,10 +414,36 @@ fn dispatch_ws_message(
             let _ = ask_user_tx.send(data.to_string());
         }
 
+        // set_model is informational — silently acknowledge.
+        "set_model" => {}
+
+        "load_session" => {
+            let _ = ctrl_tx.send(ControlCmd::LoadSession);
+        }
+
+        "new_session" => {
+            let _ = ctrl_tx.send(ControlCmd::NewSession);
+        }
+
+        "set_mode" => {
+            use crate::router::ExecutionMode;
+            let mode_str = msg
+                .get("data").and_then(|d| d.get("mode")).and_then(|v| v.as_str())
+                .unwrap_or("auto");
+            let mode = match mode_str {
+                "simple"   => Some(ExecutionMode::BasicLoop),
+                "plan"     => Some(ExecutionMode::PlanAndExecute),
+                "pipeline" => Some(ExecutionMode::FullPipeline),
+                _          => None, // "auto"
+            };
+            if let Ok(mut guard) = shared_mode.lock() {
+                *guard = mode;
+            }
+            tracing::info!("Execution mode set to: {}", mode_str);
+        }
+
         other => {
-            output.emit_public("error", serde_json::json!({
-                "message": format!("Unknown message type: '{}'", other),
-            }));
+            tracing::debug!("Ignoring unknown WebSocket message type: '{}'", other);
         }
     }
 }

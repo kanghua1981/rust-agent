@@ -259,6 +259,21 @@ role = "代码审查专家"
 ./target/release/agent --mode server --workdir /path/to/project
 ```
 
+**Web UI 客户端**：我们提供了一个基于 React 的 Web 界面，支持：
+- 🗨️ 实时聊天对话
+- 📁 文件浏览器
+- 🛠️ 工具调用监控
+- ⚙️ 工作目录设置
+- 🔧 模型配置管理
+
+启动 Web UI：
+```bash
+cd web-ui
+./start-simple.sh  # 或 npm run dev
+```
+
+访问 http://localhost:3000 即可使用 Web 界面。
+
 **客户端通信协议**：
 - 发送用户消息：`{"type": "user_message", "content": "你的问题"}`
 - 响应确认请求：`{"type": "confirm_response", "approved": true}`
