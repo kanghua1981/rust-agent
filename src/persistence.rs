@@ -67,6 +67,25 @@ fn generate_session_id() -> String {
     uuid[..8].to_string()
 }
 
+/// Derive a stable, per-workdir session ID so global sessions are
+/// overwritten in place rather than accumulating indefinitely.
+/// The ID is a 12-hex-char hash of the canonical workdir path.
+pub fn workdir_to_session_id(workdir: &Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    workdir.hash(&mut hasher);
+    format!("{:012x}", hasher.finish())
+}
+
+/// Save conversation to the global sessions directory, keyed by workdir.
+/// This is a stable upsert — calling again for the same workdir overwrites.
+pub fn save_session_for_workdir(conversation: &Conversation, workdir: &Path) -> Result<()> {
+    let id = workdir_to_session_id(workdir);
+    save_session(conversation, Some(&id), workdir)?;
+    Ok(())
+}
+
 /// Save a conversation to disk
 pub fn save_session(conversation: &Conversation, session_id: Option<&str>, project_dir: &std::path::Path) -> Result<String> {
     let dir = sessions_dir().context("Cannot determine data directory")?;
@@ -175,7 +194,6 @@ pub fn list_sessions() -> Result<Vec<SessionMeta>> {
 }
 
 /// Delete a session
-#[allow(dead_code)]
 pub fn delete_session(session_id: &str) -> Result<()> {
     let dir = sessions_dir().context("Cannot determine data directory")?;
     let path = dir.join(format!("{}.json", session_id));

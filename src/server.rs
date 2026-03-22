@@ -36,6 +36,7 @@ use crate::output::{WsCommand, WsOutput};
 enum ControlCmd {
     LoadSession,
     NewSession,
+    LoadSessionById(String),
 }
 
 /// Build a `session_info` JSON payload from the local `.agent/session.json`.
@@ -247,6 +248,42 @@ async fn handle_connection(
                         let session_info = session_info_json(&agent.project_dir);
                         ws_output.emit_public("session_info", session_info);
                     }
+
+                    ControlCmd::LoadSessionById(id) => {
+                        match crate::persistence::load_session(&id) {
+                            Ok(session) => {
+                                // Switch workdir to the session's working_dir.
+                                let new_dir = std::path::PathBuf::from(&session.meta.working_dir);
+                                if new_dir.is_dir() {
+                                    agent.set_project_dir(new_dir.clone());
+                                    agent.set_allowed_dir(Some(new_dir));
+                                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+                                }
+                                let history: Vec<serde_json::Value> = session.messages.iter()
+                                    .filter_map(|m| {
+                                        let text = m.text_content();
+                                        if text.is_empty() { return None; }
+                                        let role = match m.role {
+                                            crate::conversation::Role::User      => "user",
+                                            crate::conversation::Role::Assistant => "assistant",
+                                            crate::conversation::Role::System    => "system",
+                                        };
+                                        Some(serde_json::json!({ "id": m.id, "role": role, "content": text }))
+                                    })
+                                    .collect();
+                                agent.conversation = crate::persistence::restore_conversation(&session);
+                                ws_output.emit_public("session_restored", serde_json::json!({
+                                    "message_count": history.len(),
+                                    "messages": history,
+                                }));
+                            }
+                            Err(e) => {
+                                ws_output.emit_public("error", serde_json::json!({
+                                    "message": format!("加载会话失败: {:#}", e),
+                                }));
+                            }
+                        }
+                    }
                 }
             }
 
@@ -266,7 +303,7 @@ async fn handle_connection(
                     let p = PathBuf::from(dir);
                     if p.is_dir() {
                         let changed = agent.project_dir != p;
-                        agent.project_dir = p.clone();
+                        agent.set_project_dir(p.clone());
                         agent.set_allowed_dir(Some(p));
                         changed
                     } else { false }
@@ -298,6 +335,12 @@ async fn handle_connection(
                             &agent.conversation, &agent.project_dir
                         ) {
                             tracing::warn!("Failed to save local session: {}", e);
+                        }
+                        // Also write to global sessions directory (stable per-workdir upsert).
+                        if let Err(e) = crate::persistence::save_session_for_workdir(
+                            &agent.conversation, &agent.project_dir
+                        ) {
+                            tracing::warn!("Failed to save global session: {}", e);
                         }
                         ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
                     }
@@ -449,6 +492,47 @@ fn dispatch_ws_message(
 
         "new_session" => {
             let _ = ctrl_tx.send(ControlCmd::NewSession);
+        }
+
+        "load_session_by_id" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::LoadSessionById(id.to_string()));
+            }
+        }
+
+        "list_sessions" => {
+            match crate::persistence::list_sessions() {
+                Ok(sessions) => {
+                    let list: Vec<serde_json::Value> = sessions.iter().map(|s| serde_json::json!({
+                        "id": s.id,
+                        "summary": s.summary,
+                        "updated_at": s.updated_at,
+                        "message_count": s.message_count,
+                        "working_dir": s.working_dir,
+                    })).collect();
+                    output.emit_public("sessions_list", serde_json::json!({ "sessions": list }));
+                }
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("list_sessions failed: {:#}", e),
+                    }));
+                }
+            }
+        }
+
+        "delete_session" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                match crate::persistence::delete_session(id) {
+                    Ok(()) => {
+                        output.emit_public("session_deleted", serde_json::json!({ "id": id }));
+                    }
+                    Err(e) => {
+                        output.emit_public("error", serde_json::json!({
+                            "message": format!("delete_session failed: {:#}", e),
+                        }));
+                    }
+                }
+            }
         }
 
         "set_mode" => {

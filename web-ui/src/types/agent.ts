@@ -11,7 +11,10 @@ export type ClientMessage =
   | SetModeMessage
   | SetSandboxMessage
   | LoadSessionMessage
-  | NewSessionMessage;
+  | NewSessionMessage
+  | ListSessionsMessage
+  | DeleteSessionMessage
+  | LoadSessionByIdMessage;
 
 export interface LoadSessionMessage extends BaseMessage {
   type: 'load_session';
@@ -21,6 +24,21 @@ export interface LoadSessionMessage extends BaseMessage {
 export interface NewSessionMessage extends BaseMessage {
   type: 'new_session';
   data: {};
+}
+
+export interface ListSessionsMessage extends BaseMessage {
+  type: 'list_sessions';
+  data: {};
+}
+
+export interface DeleteSessionMessage extends BaseMessage {
+  type: 'delete_session';
+  data: { id: string };
+}
+
+export interface LoadSessionByIdMessage extends BaseMessage {
+  type: 'load_session_by_id';
+  data: { id: string };
 }
 
 // 服务器发送给客户端的事件
@@ -46,7 +64,17 @@ export type ServerEvent =
   | StageEndEvent
   | SessionInfoEvent
   | SessionRestoredEvent
-  | SessionClearedEvent;
+  | SessionClearedEvent
+  | SessionsListEvent
+  | SessionDeletedEvent;
+
+export interface SessionMeta {
+  id: string;
+  summary: string;
+  updated_at: string;
+  message_count: number;
+  working_dir: string;
+}
 
 export interface SessionInfo {
   exists: boolean;
@@ -54,6 +82,16 @@ export interface SessionInfo {
   updated_at?: string;
   summary?: string;
   working_dir?: string;
+}
+
+export interface SessionsListEvent extends BaseMessage {
+  type: 'sessions_list';
+  data: { sessions: SessionMeta[] };
+}
+
+export interface SessionDeletedEvent extends BaseMessage {
+  type: 'session_deleted';
+  data: { id: string };
 }
 
 export interface SessionInfoEvent extends BaseMessage {

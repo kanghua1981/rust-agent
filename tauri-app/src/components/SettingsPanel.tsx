@@ -10,7 +10,7 @@ export const SettingsPanel: React.FC = () => {
     presets, addPreset, updatePreset, deletePreset, applyPreset 
   } = useAgentStore();
 
-  const { setSandbox, isConnected } = useWebSocket();
+  const { setSandbox, isConnected, setWorkdirRemote } = useWebSocket();
   
   const [activeTab, setActiveTab] = useState<'current' | 'presets'>('current');
   const [showNewPreset, setShowNewPreset] = useState(false);
@@ -49,7 +49,12 @@ export const SettingsPanel: React.FC = () => {
 
   const saveCurrentConfig = () => {
     setServerUrl(urlDraft.trim() || 'ws://localhost:9527');
-    if (dirDraft.trim()) setWorkdir(dirDraft.trim());
+    if (dirDraft.trim()) {
+      setWorkdir(dirDraft.trim());
+      if (isConnected) {
+        setWorkdirRemote(dirDraft.trim());
+      }
+    }
     if (modelDraft.trim()) setConfig({ model: modelDraft.trim() });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -94,7 +99,21 @@ export const SettingsPanel: React.FC = () => {
   };
 
   const handleApplyPreset = (presetId: string) => {
-    applyPreset(presetId);
+    const preset = presets.find(p => p.id === presetId);
+    if (preset) {
+      setServerUrl(preset.serverUrl);
+      if (preset.workdir) {
+        setWorkdir(preset.workdir);
+        if (isConnected) {
+          setWorkdirRemote(preset.workdir);
+        }
+      }
+      setConfig({
+        model: preset.model,
+        autoApprove: preset.autoApprove,
+        agentMode: preset.agentMode,
+      });
+    }
     // 应用预设后保持当前标签页为"预设"标签页
     setActiveTab('presets');
   };

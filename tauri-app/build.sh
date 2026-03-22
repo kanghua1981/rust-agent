@@ -5,7 +5,8 @@ echo "🚀 开始构建 e_agent_gui 应用..."
 
 ## 从web-ui目录复制构建好的前端文件
 echo "📂 复制前端文件..."
-cp -fr ../web-ui/src/* src/
+rm -rf src/
+cp -fr ../web-ui/src/ ./
 ## 构建 Tauri 应用
 echo "🔨 构建 Tauri 应用..."
 # 检查是否安装了 Tauri CLI

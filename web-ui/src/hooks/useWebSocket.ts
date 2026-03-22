@@ -25,6 +25,8 @@ export const useWebSocket = () => {
     removePendingConfirmation,
     addDiff,
     setSessionInfo,
+    setSessionList,
+    removeSessionFromList,
     clearSession,
   } = useAgentStore();
 
@@ -88,6 +90,19 @@ export const useWebSocket = () => {
   const newSession = useCallback(() => {
     sendRaw({ type: 'new_session', data: {} });
   }, [sendRaw]);
+
+  const listSessions = useCallback(() => {
+    sendRaw({ type: 'list_sessions', data: {} });
+  }, [sendRaw]);
+
+  const deleteSession = useCallback((id: string) => {
+    sendRaw({ type: 'delete_session', data: { id } });
+  }, [sendRaw]);
+
+  const loadSessionById = useCallback((id: string) => {
+    clearSession();
+    sendRaw({ type: 'load_session_by_id', data: { id } });
+  }, [sendRaw, clearSession]);
 
   const handleServerEvent = useCallback((event: ServerEvent) => {
     switch (event.type) {
@@ -258,6 +273,14 @@ export const useWebSocket = () => {
         setSessionInfo(event.data);
         break;
 
+      case 'sessions_list':
+        setSessionList(event.data.sessions);
+        break;
+
+      case 'session_deleted':
+        removeSessionFromList(event.data.id);
+        break;
+
       case 'session_cleared':
         // Clear local frontend state when server starts new session
         clearSession();
@@ -282,7 +305,7 @@ export const useWebSocket = () => {
   }, [
     config.autoApprove, sendRaw, appendToMessage, updateMessage, addMessage,
     addToolCall, updateToolCall, addPendingConfirmation, addDiff,
-    setIsProcessing, setStreamingMessageId, setSessionInfo, clearSession,
+    setIsProcessing, setStreamingMessageId, setSessionInfo, setSessionList, removeSessionFromList, clearSession,
   ]);
 
   // Sync execution mode to server whenever it changes or connection is established.
@@ -290,8 +313,12 @@ export const useWebSocket = () => {
   useEffect(() => {
     if (connectionStatus === 'connected') {
       sendRaw({ type: 'set_mode', data: { mode: agentMode as 'auto' | 'simple' | 'plan' | 'pipeline' } });
+      // 连接建立时发送工作目录
+      if (workdir) {
+        sendRaw({ type: 'set_workdir', data: { workdir } });
+      }
     }
-  }, [agentMode, connectionStatus, sendRaw]);
+  }, [agentMode, connectionStatus, sendRaw, workdir]);
 
   const connect = useCallback(() => {
     wsRef.current?.close();
@@ -313,7 +340,14 @@ export const useWebSocket = () => {
   }, [serverUrl, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
 
   const disconnect = useCallback(() => {
-    wsRef.current?.close();
+    // Guard: only update global state if this hook instance actually owns a WebSocket.
+    // Multiple components (SettingsPanel, SessionsPanel, etc.) each call useWebSocket()
+    // and get their own wsRef (initially null). Without this guard, when those components
+    // unmount their cleanup calls disconnect() which would unconditionally set the global
+    // connectionStatus to 'disconnected' even though the real WS (owned by App.tsx) is
+    // still open.
+    if (!wsRef.current) return;
+    wsRef.current.close();
     wsRef.current = null;
     setConnectionStatus('disconnected');
     setSessionInfo(null);
@@ -334,6 +368,9 @@ export const useWebSocket = () => {
     setModelRemote,
     loadSession,
     newSession,
+    listSessions,
+    deleteSession,
+    loadSessionById,
     isConnected: connectionStatus === 'connected',
   };
 };

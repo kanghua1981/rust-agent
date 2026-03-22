@@ -124,6 +124,11 @@ impl ToolExecutor {
         self.tools.insert(def.name.clone(), tool);
     }
 
+    /// Update the working directory used by all tools.
+    pub fn set_project_dir(&mut self, dir: PathBuf) {
+        self.project_dir = dir;
+    }
+
     /// Restrict write/edit tools to paths inside `dir`.
     /// Pass `None` to remove the restriction.
     pub fn set_allowed_dir(&mut self, dir: Option<PathBuf>) {

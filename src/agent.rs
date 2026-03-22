@@ -130,6 +130,12 @@ impl Agent {
         }
     }
 
+    /// Update both `project_dir` and the tool executor's working directory.
+    pub fn set_project_dir(&mut self, dir: PathBuf) {
+        self.project_dir = dir.clone();
+        self.tool_executor.set_project_dir(dir);
+    }
+
     /// Restrict write/edit tools to paths inside `dir` for this agent.
     /// Pass `None` to remove the restriction.
     pub fn set_allowed_dir(&mut self, dir: Option<std::path::PathBuf>) {

@@ -5,11 +5,12 @@ import { ChatArea } from './components/ChatArea';
 import { InputArea } from './components/InputArea';
 import { ToolsPanel } from './components/ToolsPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { SessionsPanel } from './components/SessionsPanel';
 import { ConnectModal } from './components/ConnectModal';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
 
-type Tab = 'chat' | 'tools' | 'settings';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -62,6 +63,7 @@ function App() {
             </>
           )}
           {activeTab === 'tools' && <ToolsPanel />}
+          {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} />}
           {activeTab === 'settings' && <SettingsPanel />}
         </main>
       </div>

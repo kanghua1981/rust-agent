@@ -1,7 +1,7 @@
 import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
 
-type Tab = 'chat' | 'tools' | 'settings';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions';
 
 interface SidebarProps {
   activeTab: Tab;
@@ -77,6 +77,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
           <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingConfirmations.length || undefined} onClick={() => onTabChange('chat')} />
           <NavItem icon="🔨" label="工具调用" active={activeTab === 'tools'} badge={runningTools || undefined} onClick={() => onTabChange('tools')} />
+          <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} onClick={() => onTabChange('sessions')} />
           <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} onClick={() => onTabChange('settings')} />
         </div>
 

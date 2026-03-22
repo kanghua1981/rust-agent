@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, ConfigPreset } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface DiffEntry {
@@ -38,6 +38,7 @@ interface AgentState {
 
   // Session info (saved on server)
   sessionInfo: SessionInfo | null;
+  sessionList: SessionMeta[];
   
   // 文件浏览
   currentPath: string;
@@ -67,6 +68,8 @@ interface AgentState {
   setCurrentPath: (path: string) => void;
   setFileList: (files: FileInfo[]) => void;
   setSessionInfo: (info: SessionInfo | null) => void;
+  setSessionList: (list: SessionMeta[]) => void;
+  removeSessionFromList: (id: string) => void;
   setConfig: (config: Partial<AgentConfig>) => void;
   addPreset: (preset: Omit<ConfigPreset, 'id' | 'createdAt'>) => void;
   updatePreset: (id: string, preset: Partial<ConfigPreset>) => void;
@@ -77,18 +80,21 @@ interface AgentState {
 }
 
 // Load persisted config from localStorage
-const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; presets: ConfigPreset[] }> => {
+const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; workdir?: string; presets: ConfigPreset[] }> => {
   const defaultServerUrl = getDefaultServerUrl();
   
   try {
     const stored = localStorage.getItem('rust-agent-config');
     if (stored) {
+      // Zustand persist saves as { state: { ... }, version: N }
       const parsed = JSON.parse(stored);
+      const data = parsed.state ?? parsed; // support both wrapped and legacy flat format
       return {
-        serverUrl: parsed.serverUrl || defaultServerUrl,
-        autoApprove: parsed.autoApprove ?? false,
-        agentMode: parsed.agentMode || 'auto',
-        presets: parsed.presets || [],
+        serverUrl: data.serverUrl || defaultServerUrl,
+        autoApprove: data.config?.autoApprove ?? false,
+        agentMode: data.config?.agentMode || 'auto',
+        workdir: data.workdir,
+        presets: data.presets || [],
       };
     }
   } catch (e) {
@@ -105,7 +111,7 @@ const persistedConfig = loadPersistedConfig();
 const initialState = {
   connectionStatus: 'disconnected' as ConnectionStatus,
   serverUrl: persistedConfig.serverUrl || getDefaultServerUrl(),
-  workdir: undefined,
+  workdir: persistedConfig.workdir,
   messages: [],
   currentMessage: '',
   isProcessing: false,
@@ -116,6 +122,7 @@ const initialState = {
   currentPath: '.',
   fileList: [],
   sessionInfo: null,
+  sessionList: [],
   presets: persistedConfig.presets || [],
   config: {
     serverUrl: persistedConfig.serverUrl || getDefaultServerUrl(),
@@ -182,6 +189,10 @@ export const useAgentStore = create<AgentState>()(
   setCurrentPath: (path) => set({ currentPath: path }),
   setFileList: (files) => set({ fileList: files }),
   setSessionInfo: (info) => set({ sessionInfo: info }),
+  setSessionList: (list) => set({ sessionList: list }),
+  removeSessionFromList: (id) => set((state) => ({
+    sessionList: state.sessionList.filter(s => s.id !== id),
+  })),
 
   setConfig: (config) =>
     set((state) => ({ config: { ...state.config, ...config } })),
@@ -232,12 +243,25 @@ export const useAgentStore = create<AgentState>()(
     currentMessage: '',
   }),
     
-  reset: () => set(initialState),
+  // reset only clears session/conversation state, preserving connection settings and presets
+  reset: () => set((state) => ({
+    connectionStatus: 'disconnected',
+    messages: [],
+    toolCalls: [],
+    pendingConfirmations: [],
+    diffs: [],
+    isProcessing: false,
+    streamingMessageId: null,
+    currentMessage: '',
+    sessionInfo: null,
+    // preserve: serverUrl, workdir, config, presets
+  })),
 }),
     {
       name: 'rust-agent-config',
       partialize: (state) => ({
         serverUrl: state.serverUrl,
+        workdir: state.workdir,
         config: state.config,
         presets: state.presets,
       }),
