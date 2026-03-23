@@ -1,569 +1,241 @@
-//! WebSocket server mode.
+//! WebSocket server mode — process-per-connection design.
 //!
-//! Starts a WebSocket server on `host:port`. Each connection gets its
-//! own `Agent` with a `WsOutput` backend. The client sends JSON
-//! messages (user prompts, confirm responses) and receives a stream
-//! of JSON event frames.
+//! Listens for TCP connections and spawns a **worker** subprocess for each
+//! one, passing the accepted socket fd directly to the child.  The child
+//! handles all agent logic, sandbox setup, and WebSocket protocol; this
+//! process does nothing but accept and spawn.
 //!
-//! ## Client → Server messages
-//!
-//! ```json
-//! {"type": "user_message", "data": {"text": "帮我重构 main.rs"}}
-//! {"type": "confirm_response", "data": {"approved": true}}
-//! ```
-//!
-//! ## Server → Client messages
-//!
-//! Same event types as `--mode stdio`: `thinking`, `stream_start`,
-//! `streaming_token`, `stream_end`, `tool_use`, `tool_result`,
-//! `diff`, `confirm_request`, `warning`, `error`, `context_warning`,
-//! plus `done` when a user_message has been fully processed.
+//! See `docs/SANDBOX_ARCH.md` for the full design rationale.
 
+use std::os::unix::io::IntoRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use anyhow::Result;
-use futures::{SinkExt, StreamExt};
+use anyhow::{Context, Result};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 
-use crate::agent::Agent;
 use crate::config::Config;
-use crate::output::{WsCommand, WsOutput};
-
-/// Control commands sent to the agent loop outside of normal user messages.
-enum ControlCmd {
-    LoadSession,
-    NewSession,
-    LoadSessionById(String),
-}
-
-/// Build a `session_info` JSON payload from the local `.agent/session.json`.
-fn session_info_json(workdir: &std::path::Path) -> serde_json::Value {
-    match crate::persistence::load_local_session(workdir) {
-        Ok(Some(session)) => serde_json::json!({
-            "exists": true,
-            "message_count": session.meta.message_count,
-            "updated_at": session.meta.updated_at,
-            "summary": session.meta.summary,
-            "working_dir": session.meta.working_dir,
-        }),
-        _ => serde_json::json!({ "exists": false }),
-    }
-}
+use crate::container::{ContainerConfig, CONTAINER_EXE, setup_rootfs};
 
 /// Start the WebSocket server and listen forever.
-pub async fn run(config: Config, project_dir: PathBuf, host: &str, port: u16) -> Result<()> {
+///
+/// Each accepted TCP connection is handed off to a freshly-spawned worker
+/// process.  The raw fd is passed via `--worker-fd N`.  The parent stays
+/// in its accept loop and never touches the WebSocket protocol at all.
+pub async fn run(
+    config: Config,
+    project_dir: PathBuf,
+    host: &str,
+    port: u16,
+    sandbox: bool,
+) -> Result<()> {
+    // Reap zombie worker processes asynchronously via a real SIGCHLD handler.
+    //
+    // We cannot use signal(SIGCHLD, SIG_IGN) or SA_NOCLDWAIT: both cause the
+    // kernel to auto-reap children, which also makes waitpid(child) return
+    // ECHILD inside std::process::Command::spawn()'s error-recovery path,
+    // triggering "wait() should either return Ok or panic".
+    //
+    // A real handler (not SIG_IGN) is reset to SIG_DFL across exec(2), so
+    // worker processes inherit SIG_DFL and their own waitpid() calls work fine.
+    unsafe extern "C" fn sigchld_handler(_: libc::c_int) {
+        // Reap all available children without blocking.
+        loop {
+            let r = libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG);
+            if r <= 0 {
+                break;
+            }
+        }
+    }
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = sigchld_handler as libc::sighandler_t;
+        libc::sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = libc::SA_RESTART | libc::SA_NOCLDSTOP;
+        libc::sigaction(libc::SIGCHLD, &sa, std::ptr::null_mut());
+    }
+
+    cleanup_stale_worker_dirs();
+
     let addr = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&addr).await?;
 
     println!("🤖 Agent WebSocket server listening on ws://{}", addr);
     println!("   Provider: {:?}  Model: {}", config.provider, config.model);
+    if sandbox {
+        println!("   Sandbox: ENABLED by default (override per-connection via URL sandbox=1/0)");
+    } else {
+        println!("   Sandbox: disabled by default (enable per-connection via URL sandbox=1)");
+    }
     println!("   Press Ctrl+C to stop.\n");
+
+    // Get the path to the current executable so we can re-exec ourselves.
+    let exe = std::env::current_exe().context("could not determine executable path")?;
 
     loop {
         let (stream, peer) = listener.accept().await?;
-        let config = config.clone();
-        let project_dir = project_dir.clone();
 
-        tokio::spawn(async move {
-            tracing::info!("New connection from {}", peer);
-            if let Err(e) = handle_connection(stream, config, project_dir).await {
-                tracing::warn!("Connection {} ended with error: {}", peer, e);
-            } else {
-                tracing::info!("Connection {} closed", peer);
-            }
-        });
-    }
-}
+        // Peek at the opening HTTP request (without consuming bytes) to extract
+        // the ?workdir= query parameter sent by the frontend in the WebSocket URL.
+        // e.g. ws://127.0.0.1:9527/?workdir=%2Fhome%2Fuser%2Fmyproject
+        // We MUST determine the project_dir here, before fork(), because
+        // pre_exec() runs between fork and exec — too late to receive WS messages.
+        let mut peek_buf = [0u8; 2048];
+        let peek_n = stream.peek(&mut peek_buf).await.unwrap_or(0);
+        let conn_project_dir = parse_workdir_from_http(&peek_buf[..peek_n])
+            .unwrap_or_else(|| project_dir.clone());
+        // Per-connection sandbox flag: URL param `sandbox=1` overrides the
+        // server-level default (set at startup with --sandbox).
+        let conn_sandbox = parse_sandbox_from_http(&peek_buf[..peek_n]).unwrap_or(sandbox);
+        tracing::info!("Accepted connection from {} -> project_dir={:?} sandbox={}", peer, conn_project_dir, conn_sandbox);
 
-/// Handle a single WebSocket connection.
-///
-/// Architecture: three concurrent tasks to avoid deadlocks when the agent
-/// blocks waiting for confirm/ask_user/review_plan responses:
-///
-/// 1. **Reader task** — permanently reads `ws_read`, dispatches every frame
-///    to the right channel immediately (never blocks on agent work).
-/// 2. **Writer task** — forwards WsOutput frames to `ws_write`.
-/// 3. **Agent loop** (current task) — awaits `user_rx`, runs
-///    `agent.process_message()`, repeats.
-///
-/// Because the reader task is always running, `confirm_response` /
-/// `ask_user_response` / `review_plan_response` frames arrive at
-/// `confirm_tx` / `ask_user_tx` even while the agent loop is blocked
-/// inside `WsOutput::confirm()` / `ask_user()` / `review_plan()`.
-async fn handle_connection(
-    stream: tokio::net::TcpStream,
-    config: Config,
-    project_dir: PathBuf,
-) -> Result<()> {
-    let ws_stream = tokio_tungstenite::accept_async(stream).await?;
-    let (mut ws_write, mut ws_read) = ws_stream.split();
+        // Convert to raw fd AFTER peeking (peek is non-consuming).
+        let raw_fd = stream.into_std()?.into_raw_fd();
 
-    // Channel for the Agent (WsOutput) to send frames to the writer task
-    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<WsCommand>();
+        // Clear FD_CLOEXEC so the child inherits it across exec.
+        unsafe { libc::fcntl(raw_fd, libc::F_SETFD, 0) };
 
-    // Build WsOutput — confirm_tx / ask_user_tx are wired to the reader task
-    let ws_output = Arc::new(WsOutput::new(cmd_tx));
-    let confirm_tx = ws_output.confirm_tx.clone();
-    let ask_user_tx = ws_output.ask_user_tx.clone();
+        let worker_id = uuid::Uuid::new_v4().to_string();
+        let exe_clone = exe.clone();
 
-    // Create the Agent (sandbox initially disabled for server mode)
-    let mut agent = Agent::new(
-        config,
-        project_dir.clone(),
-        ws_output.clone(),
-        crate::sandbox::Sandbox::disabled(&project_dir),
-    );
+        // Serialize the fully-resolved config so the worker does not need to
+        // read models.toml or .env files at all — safe inside a filesystem
+        // sandbox where those paths may not be accessible.
+        let config_json = serde_json::to_string(&config)
+            .unwrap_or_else(|_| "{}".to_string());
 
-    // ── Writer task ──────────────────────────────────────────────────────────
-    let writer_handle = tokio::spawn(async move {
-        while let Some(cmd) = cmd_rx.recv().await {
-            match cmd {
-                WsCommand::Send(text) => {
-                    if ws_write.send(Message::Text(text.into())).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
+        // Gather info needed by the container setup closure.
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        let extra_binds = config.extra_binds.clone();
+        let project_dir_for_container = conn_project_dir.clone();
 
-    // Shared working directory: updated by `set_workdir` messages between turns.
-    let shared_workdir: Arc<std::sync::Mutex<Option<PathBuf>>> = Arc::new(std::sync::Mutex::new(None));
-    let shared_workdir_reader = shared_workdir.clone();
-
-    // Shared sandbox state: enabled or disabled
-    type SharedSandbox = Arc<std::sync::Mutex<bool>>;
-    let shared_sandbox: SharedSandbox = Arc::new(std::sync::Mutex::new(false));
-    let shared_sandbox_reader = shared_sandbox.clone();
-
-    // Shared execution mode: None = auto (router decides), or forced mode.
-    type SharedMode = Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>;
-    let shared_mode: SharedMode = Arc::new(std::sync::Mutex::new(None));
-    let shared_mode_reader = shared_mode.clone();
-
-    // Control channel: load_session and future control commands that bypass
-    // the serialised user_message queue.
-    let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ControlCmd>();
-    let ctrl_tx_reader = ctrl_tx.clone();  // moves into reader task
-
-    // Channel carrying (user_text, request_id, workdir) from reader → agent loop.
-    // workdir is taken from user_message.data.workdir (overrides shared_workdir for that turn).
-    // Capacity 1: the agent processes messages serially; a second message
-    // while one is in-flight gets an "agent busy" error.
-    let (user_tx, mut user_rx) = mpsc::channel::<(String, Option<serde_json::Value>, Option<String>)>(1);
-    let ws_output_reader = ws_output.clone();
-    let reader_handle = tokio::spawn(async move {
-        while let Some(msg) = ws_read.next().await {
-            let msg = match msg {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::debug!("WebSocket read error: {}", e);
-                    break;
-                }
-            };
-            match msg {
-                Message::Text(text) => {
-                    dispatch_ws_message(
-                        text.as_ref(),
-                        &user_tx,
-                        &confirm_tx,
-                        &ask_user_tx,
-                        &ws_output_reader,
-                        &shared_workdir_reader,
-                        &shared_mode_reader,
-                        &shared_sandbox_reader,
-                        &ctrl_tx_reader,
-                    );
-                }
-                Message::Close(_) => break,
-                Message::Ping(_) => {
-                    ws_output_reader.emit_public("pong", serde_json::json!({}));
-                }
-                _ => {}
-            }
-        }
-        // Dropping user_tx signals the agent loop to exit cleanly.
-    });
-
-    // Send a "ready" event so the client knows the connection is live, plus
-    // any existing local session info so the UI can show a "restore" option.
-    ws_output.emit_public("ready", serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-    }));
-    ws_output.emit_public("session_info", session_info_json(&project_dir));
-
-    // ── Agent loop ───────────────────────────────────────────────────────────
-    // Uses tokio::select! so control commands (LoadSession) are handled even
-    // while the agent is idle between user messages.
-    loop {
-        tokio::select! {
-            // ── Control commands (load_session, etc.) ──────────────────────
-            Some(ctrl) = ctrl_rx.recv() => {
-                match ctrl {
-                    ControlCmd::LoadSession => {
-                        match crate::persistence::load_local_session(&agent.project_dir) {
-                            Ok(Some(session)) => {
-                                let history: Vec<serde_json::Value> = session.messages.iter()
-                                    .filter_map(|m| {
-                                        let text = m.text_content();
-                                        if text.is_empty() { return None; }
-                                        let role = match m.role {
-                                            crate::conversation::Role::User      => "user",
-                                            crate::conversation::Role::Assistant => "assistant",
-                                            crate::conversation::Role::System    => "system",
-                                        };
-                                        Some(serde_json::json!({
-                                            "id": m.id, "role": role, "content": text
-                                        }))
-                                    })
-                                    .collect();
-                                agent.conversation = crate::persistence::restore_conversation(&session);
-                                ws_output.emit_public("session_restored", serde_json::json!({
-                                    "message_count": history.len(),
-                                    "messages": history,
-                                }));
-                            }
-                            Ok(None) => {
-                                ws_output.emit_public("warning", serde_json::json!({
-                                    "message": "当前目录没有保存的会话",
-                                }));
-                            }
-                            Err(e) => {
-                                ws_output.emit_public("error", serde_json::json!({
-                                    "message": format!("加载会话失败: {:#}", e),
-                                }));
-                            }
-                        }
-                    }
-                    ControlCmd::NewSession => {
-                        // Clear the current conversation and start fresh.
-                        agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
-                        ws_output.emit_public("session_cleared", serde_json::json!({
-                            "message": "New session started"
-                        }));
-                        // Also emit updated session_info (should show no saved session)
-                        let session_info = session_info_json(&agent.project_dir);
-                        ws_output.emit_public("session_info", session_info);
-                    }
-
-                    ControlCmd::LoadSessionById(id) => {
-                        match crate::persistence::load_session(&id) {
-                            Ok(session) => {
-                                // Switch workdir to the session's working_dir.
-                                let new_dir = std::path::PathBuf::from(&session.meta.working_dir);
-                                if new_dir.is_dir() {
-                                    agent.set_project_dir(new_dir.clone());
-                                    agent.set_allowed_dir(Some(new_dir));
-                                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
-                                }
-                                let history: Vec<serde_json::Value> = session.messages.iter()
-                                    .filter_map(|m| {
-                                        let text = m.text_content();
-                                        if text.is_empty() { return None; }
-                                        let role = match m.role {
-                                            crate::conversation::Role::User      => "user",
-                                            crate::conversation::Role::Assistant => "assistant",
-                                            crate::conversation::Role::System    => "system",
-                                        };
-                                        Some(serde_json::json!({ "id": m.id, "role": role, "content": text }))
-                                    })
-                                    .collect();
-                                agent.conversation = crate::persistence::restore_conversation(&session);
-                                ws_output.emit_public("session_restored", serde_json::json!({
-                                    "message_count": history.len(),
-                                    "messages": history,
-                                }));
-                            }
-                            Err(e) => {
-                                ws_output.emit_public("error", serde_json::json!({
-                                    "message": format!("加载会话失败: {:#}", e),
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── User messages ──────────────────────────────────────────────
-            msg = user_rx.recv() => {
-                let (user_text, req_id, msg_workdir) = match msg {
-                    Some(m) => m,
-                    None => break, // channel closed → connection dropped
-                };
-
-                // If the message carries an explicit workdir, use it; otherwise fall back
-                // to the last value set via `set_workdir`.
-                let effective_workdir = msg_workdir.or_else(|| {
-                    shared_workdir.lock().ok().and_then(|g| g.clone().map(|p| p.to_string_lossy().into_owned()))
-                });
-                let workdir_changed = if let Some(ref dir) = effective_workdir {
-                    let p = PathBuf::from(dir);
-                    if p.is_dir() {
-                        let changed = agent.project_dir != p;
-                        agent.set_project_dir(p.clone());
-                        agent.set_allowed_dir(Some(p));
-                        changed
-                    } else { false }
-                } else { false };
-
-                // If workdir just changed, send fresh session_info for the new dir.
-                if workdir_changed {
-                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
-                }
-
-                // Apply execution mode override (auto if None).
-                let mode = shared_mode.lock().ok().and_then(|g| *g);
-                agent.set_force_mode(mode);
-                
-                // Apply sandbox mode
-                let sandbox_enabled = shared_sandbox.lock().ok().map(|g| *g).unwrap_or(false);
-                agent.set_sandbox_enabled(sandbox_enabled);
-                
-                let process_result = agent.process_message(&user_text).await;
-                agent.set_allowed_dir(None);
-
-                match process_result {
-                    Ok(final_text) => {
-                        let mut done_data = serde_json::json!({ "text": final_text });
-                        if let Some(id) = req_id { done_data["id"] = id; }
-                        ws_output.emit_public("done", done_data);
-                        // Save conversation and broadcast updated session info.
-                        if let Err(e) = crate::persistence::save_local_session(
-                            &agent.conversation, &agent.project_dir
-                        ) {
-                            tracing::warn!("Failed to save local session: {}", e);
-                        }
-                        // Also write to global sessions directory (stable per-workdir upsert).
-                        if let Err(e) = crate::persistence::save_session_for_workdir(
-                            &agent.conversation, &agent.project_dir
-                        ) {
-                            tracing::warn!("Failed to save global session: {}", e);
-                        }
-                        ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
-                    }
-                    Err(e) => {
-                        ws_output.emit_public("error", serde_json::json!({
-                            "message": format!("{:#}", e),
-                        }));
-                    }
-                }
-            }
-        }
-    }
-
-    reader_handle.abort();
-    writer_handle.abort();
-    Ok(())
-}
-
-/// Synchronously dispatch one WebSocket text frame to the correct channel.
-///
-/// Called from the reader task — must never block or await.
-fn dispatch_ws_message(
-    text: &str,
-    user_tx: &mpsc::Sender<(String, Option<serde_json::Value>, Option<String>)>,
-    confirm_tx: &std::sync::mpsc::Sender<crate::confirm::ConfirmResult>,
-    ask_user_tx: &std::sync::mpsc::Sender<String>,
-    output: &Arc<WsOutput>,
-    shared_workdir: &std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
-    shared_mode: &std::sync::Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>,
-    shared_sandbox: &std::sync::Arc<std::sync::Mutex<bool>>,
-    ctrl_tx: &mpsc::UnboundedSender<ControlCmd>,
-) {
-    let msg: serde_json::Value = match serde_json::from_str(text) {
-        Ok(v) => v,
-        Err(e) => {
-            output.emit_public("error", serde_json::json!({
-                "message": format!("Invalid JSON: {}", e),
-            }));
-            return;
-        }
-    };
-
-    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match msg_type {
-        "user_message" => {
-            let user_text = msg
-                .get("data")
-                .and_then(|d| d.get("text"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            if user_text.is_empty() {
-                output.emit_public("error", serde_json::json!({
-                    "message": "Empty user_message text",
-                }));
-                return;
-            }
-
-            let req_id = msg.get("id").cloned();
-            // Prefer workdir from data.workdir (sent by web client), fall back to
-            // legacy top-level allowed_dir field.
-            let workdir = msg
-                .get("data").and_then(|d| d.get("workdir")).and_then(|v| v.as_str())
-                .or_else(|| msg.get("allowed_dir").and_then(|v| v.as_str()))
-                .map(|s| s.to_string());
-
-            // try_send: non-blocking; fails if agent is still processing the
-            // previous message (channel capacity = 1).
-            if user_tx.try_send((user_text, req_id, workdir)).is_err() {
-                output.emit_public("error", serde_json::json!({
-                    "message": "Agent is busy processing a previous request",
-                }));
-            }
+        // Inside the container the agent binary is always at CONTAINER_EXE (/agent).
+        let mut cmd = std::process::Command::new(CONTAINER_EXE);
+        cmd.arg("--mode").arg("worker")
+            .arg("--worker-fd").arg(raw_fd.to_string())
+            .arg("--worker-id").arg(&worker_id)
+            // Inside the container, project_dir is always /workspace.
+            .arg("-d").arg("/workspace")
+            .arg("--config-json").arg(&config_json);
+        if conn_sandbox {
+            cmd.arg("--sandbox");
         }
 
-        "set_workdir" => {
-            // Update the shared working directory for subsequent turns.
-            if let Some(dir) = msg.get("data").and_then(|d| d.get("workdir")).and_then(|v| v.as_str()) {
-                let p = PathBuf::from(dir);
-                if p.is_dir() {
-                    if let Ok(mut guard) = shared_workdir.lock() {
-                        *guard = Some(p);
-                    }
-                    tracing::info!("Working directory updated to: {}", dir);
-                } else {
-                    output.emit_public("warning", serde_json::json!({
-                        "message": format!("set_workdir: '{}' is not a valid directory", dir),
-                    }));
-                }
-            }
-        }
-
-        "confirm_response" => {
-            use crate::confirm::ConfirmResult;
-            let data = msg.get("data");
-            if let Some(clarify) = data.and_then(|d| d.get("clarify")).and_then(|v| v.as_str()) {
-                let _ = confirm_tx.send(ConfirmResult::Clarify(clarify.to_string()));
-            } else {
-                let approved = data
-                    .and_then(|d| d.get("approved"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let _ = confirm_tx.send(if approved { ConfirmResult::Yes } else { ConfirmResult::No });
-            }
-        }
-
-        "ask_user_response" => {
-            let answer = msg
-                .get("data")
-                .and_then(|d| d.get("answer"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let _ = ask_user_tx.send(answer);
-        }
-
-        "review_plan_response" => {
-            // Convert client format { approved, feedback } to server format { action, feedback }
-            let data = msg.get("data").cloned().unwrap_or(serde_json::json!({}));
-            let approved = data.get("approved").and_then(|v| v.as_bool()).unwrap_or(false);
-            let feedback = data.get("feedback").and_then(|v| v.as_str()).unwrap_or("");
-            
-            let action = if approved {
-                if !feedback.is_empty() {
-                    "refine"
-                } else {
-                    "approve"
-                }
-            } else {
-                "reject"
-            };
-            
-            let response_json = serde_json::json!({
-                "action": action,
-                "feedback": feedback
+        // Set up the container rootfs in the child between fork() and exec().
+        // SAFETY: pre_exec runs single-threaded in the forked child; we only
+        // do pure Linux syscalls and file I/O, no tokio or async.
+        unsafe {
+            cmd.pre_exec(move || {
+                setup_rootfs(&ContainerConfig {
+                    project_dir: project_dir_for_container.clone(),
+                    exe_path: exe_clone.clone(),
+                    extra_binds: extra_binds.clone(),
+                    uid,
+                    gid,
+                    sandbox: conn_sandbox,
+                })
             });
-            
-            let _ = ask_user_tx.send(response_json.to_string());
         }
 
-        // set_model is informational — silently acknowledge.
-        "set_model" => {}
-
-        "load_session" => {
-            let _ = ctrl_tx.send(ControlCmd::LoadSession);
-        }
-
-        "new_session" => {
-            let _ = ctrl_tx.send(ControlCmd::NewSession);
-        }
-
-        "load_session_by_id" => {
-            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
-                let _ = ctrl_tx.send(ControlCmd::LoadSessionById(id.to_string()));
+        match cmd.spawn() {
+            Ok(child) => {
+                tracing::info!(
+                    "Spawned worker pid={} id={} for {}",
+                    child.id(),
+                    worker_id,
+                    peer
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Failed to spawn worker for {}: {}", peer, e);
             }
         }
 
-        "list_sessions" => {
-            match crate::persistence::list_sessions() {
-                Ok(sessions) => {
-                    let list: Vec<serde_json::Value> = sessions.iter().map(|s| serde_json::json!({
-                        "id": s.id,
-                        "summary": s.summary,
-                        "updated_at": s.updated_at,
-                        "message_count": s.message_count,
-                        "working_dir": s.working_dir,
-                    })).collect();
-                    output.emit_public("sessions_list", serde_json::json!({ "sessions": list }));
+        // Close our copy of the fd — the child has its own.
+        unsafe { libc::close(raw_fd) };
+    }
+}
+
+/// Extract the `workdir` query parameter from the raw bytes of an HTTP Upgrade
+/// request.  Uses `peek()` so the bytes are not consumed from the socket.
+fn parse_workdir_from_http(bytes: &[u8]) -> Option<std::path::PathBuf> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let line = text.lines().next()?;
+    let path = line.split_whitespace().nth(1)?;
+    let query = path.split_once('?')?.1;
+    for param in query.split('&') {
+        if let Some(val) = param.strip_prefix("workdir=") {
+            let decoded = url_decode(val);
+            let p = std::path::PathBuf::from(decoded);
+            if p.is_absolute() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the `sandbox` query parameter (`sandbox=1` / `sandbox=0`) from the
+/// raw HTTP Upgrade request bytes.  Returns `None` if the param is absent.
+fn parse_sandbox_from_http(bytes: &[u8]) -> Option<bool> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let line = text.lines().next()?;
+    let path = line.split_whitespace().nth(1)?;
+    let query = path.split_once('?')?.1;
+    for param in query.split('&') {
+        if param == "sandbox=1" || param == "sandbox=true" {
+            return Some(true);
+        }
+        if param == "sandbox=0" || param == "sandbox=false" {
+            return Some(false);
+        }
+    }
+    None
+}
+
+/// Minimal percent-decoding (`%XX` → byte, `+` → space).
+fn url_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i+1..i+3]) {
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    out.push(b as char);
+                    i += 3;
+                    continue;
                 }
-                Err(e) => {
-                    output.emit_public("error", serde_json::json!({
-                        "message": format!("list_sessions failed: {:#}", e),
-                    }));
-                }
             }
+        } else if bytes[i] == b'+' {
+            out.push(' ');
+            i += 1;
+            continue;
         }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
 
-        "delete_session" => {
-            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
-                match crate::persistence::delete_session(id) {
-                    Ok(()) => {
-                        output.emit_public("session_deleted", serde_json::json!({ "id": id }));
-                    }
-                    Err(e) => {
-                        output.emit_public("error", serde_json::json!({
-                            "message": format!("delete_session failed: {:#}", e),
-                        }));
-                    }
-                }
-            }
-        }
-
-        "set_mode" => {
-            use crate::router::ExecutionMode;
-            let mode_str = msg
-                .get("data").and_then(|d| d.get("mode")).and_then(|v| v.as_str())
-                .unwrap_or("auto");
-            let mode = match mode_str {
-                "simple"   => Some(ExecutionMode::BasicLoop),
-                "plan"     => Some(ExecutionMode::PlanAndExecute),
-                "pipeline" => Some(ExecutionMode::FullPipeline),
-                _          => None, // "auto"
-            };
-            if let Ok(mut guard) = shared_mode.lock() {
-                *guard = mode;
-            }
-            tracing::info!("Execution mode set to: {}", mode_str);
-        }
-
-        "set_sandbox" => {
-            let enabled = msg
-                .get("data").and_then(|d| d.get("enabled")).and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if let Ok(mut guard) = shared_sandbox.lock() {
-                *guard = enabled;
-            }
-            tracing::info!("Sandbox mode set to: {}", if enabled { "enabled" } else { "disabled" });
-        }
-
-        other => {
-            tracing::debug!("Ignoring unknown WebSocket message type: '{}'", other);
+fn cleanup_stale_worker_dirs() {
+    let tmp = std::path::Path::new("/tmp");
+    let entries = match std::fs::read_dir(tmp) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // fuse-overlayfs work dirs
+        let is_overlay = name_str.starts_with("agent-worker-");
+        // container rootfs dirs (format: .agent-nr-{pid})
+        let is_newroot = name_str.starts_with(".agent-nr-");
+        if is_overlay || is_newroot {
+            let path = entry.path();
+            tracing::debug!("Cleaning up stale dir: {:?}", path);
+            let _ = std::fs::remove_dir_all(&path);
         }
     }
 }

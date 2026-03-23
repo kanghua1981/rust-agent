@@ -1,21 +1,16 @@
 //! Sandbox: file-system isolation with rollback/commit.
 //!
-//! Two backends:
-//! - **Overlay** (Linux, requires `fuse-overlayfs`): mounts an overlayfs
-//!   over the project directory.  All writes (including command side-effects
-//!   like build artifacts) land in an upper layer.  The original project is
-//!   completely untouched — even if the agent crashes.
-//! - **Snapshot** (cross-platform fallback): backs up each file before the
-//!   agent modifies it.  Covers agent tool writes but NOT command
-//!   side-effects (e.g. `cargo build` output).
+//! One backend: **Overlay** (Linux kernel overlayfs or `fuse-overlayfs`).
+//! All writes land in an upper layer; the original project is untouched
+//! even if the agent crashes.  If neither overlay option is available,
+//! the sandbox is silently disabled.
 //!
 //! User commands:
 //! - `/changes`  — list modified / created / deleted files
 //! - `/rollback` — discard all changes, restore original state
-//! - `/commit`   — apply changes to the real project (overlay) or discard
-//!   snapshots (snapshot mode, files already on disk)
+//! - `/commit`   — apply overlay changes to the real project
 
-use std::collections::HashMap;
+use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -32,6 +27,20 @@ pub struct ChangeSummary {
     pub kind: ChangeKind,
     pub original_size: Option<usize>,
     pub current_size: Option<usize>,
+    /// Unified diff text for text files; None for binary / new / deleted.
+    pub diff: Option<String>,
+}
+
+impl ChangeSummary {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "path": self.path.display().to_string(),
+            "kind": self.kind.to_string(),
+            "original_size": self.original_size,
+            "current_size": self.current_size,
+            "diff": self.diff,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -39,8 +48,6 @@ pub enum ChangeKind {
     Modified,
     Created,
     Deleted,
-    /// File was snapshotted but current content matches the original.
-    Unchanged,
 }
 
 impl std::fmt::Display for ChangeKind {
@@ -49,7 +56,6 @@ impl std::fmt::Display for ChangeKind {
             ChangeKind::Modified => write!(f, "modified"),
             ChangeKind::Created => write!(f, "created"),
             ChangeKind::Deleted => write!(f, "deleted"),
-            ChangeKind::Unchanged => write!(f, "unchanged"),
         }
     }
 }
@@ -80,6 +86,9 @@ pub struct Sandbox {
     working_dir: PathBuf,
     /// The real, original project directory (never changes).
     project_dir: PathBuf,
+    /// Synchronous flag: true only when backend is Disabled.
+    /// Allows callers to check sandbox state without async.
+    pub is_disabled: bool,
     inner: Arc<Mutex<SandboxInner>>,
 }
 
@@ -93,22 +102,13 @@ struct SandboxInner {
 #[derive(Debug)]
 enum Backend {
     Disabled,
-    Snapshot {
-        changes: HashMap<PathBuf, FileChange>,
-        ops_count: usize,
-    },
     Overlay {
         upper_dir: PathBuf,
         work_dir: PathBuf,
         merged_dir: PathBuf,
+        /// true = kernel overlayfs (mount syscall); false = fuse-overlayfs userspace
+        kernel: bool,
     },
-}
-
-/// A file-level change tracked by the snapshot backend.
-#[derive(Debug, Clone)]
-enum FileChange {
-    Modified { path: PathBuf, snapshot: Vec<u8> },
-    Created { path: PathBuf },
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -118,35 +118,25 @@ enum FileChange {
 impl Sandbox {
     /// Create an **enabled** sandbox for `project_dir`.
     ///
-    /// Tries OverlayFS first (Linux + `fuse-overlayfs` installed).
-    /// Falls back to the snapshot backend otherwise.
+    /// Tries fuse-overlayfs (Linux, userspace).  If unavailable or the
+    /// mount fails, the sandbox is silently disabled.
     pub fn new(project_dir: &Path) -> Self {
         let canonical = project_dir
             .canonicalize()
             .unwrap_or_else(|_| project_dir.to_path_buf());
 
-        // Try overlay
         if let Some((backend, merged)) = try_setup_overlay(&canonical) {
             tracing::info!("Sandbox: overlay backend active, merged={}", merged.display());
             return Self {
                 working_dir: merged,
                 project_dir: canonical,
+                is_disabled: false,
                 inner: Arc::new(Mutex::new(SandboxInner { backend })),
             };
         }
 
-        // Fallback: snapshot
-        tracing::info!("Sandbox: snapshot backend active (fuse-overlayfs not available)");
-        Self {
-            working_dir: canonical.clone(),
-            project_dir: canonical,
-            inner: Arc::new(Mutex::new(SandboxInner {
-                backend: Backend::Snapshot {
-                    changes: HashMap::new(),
-                    ops_count: 0,
-                },
-            })),
-        }
+        tracing::info!("Sandbox: fuse-overlayfs unavailable, sandbox disabled");
+        Self::disabled(project_dir)
     }
 
     /// Create a **disabled** (no-op) sandbox.
@@ -157,8 +147,35 @@ impl Sandbox {
         Self {
             working_dir: canonical.clone(),
             project_dir: canonical,
+            is_disabled: true,
             inner: Arc::new(Mutex::new(SandboxInner {
                 backend: Backend::Disabled,
+            })),
+        }
+    }
+
+    /// Create an **overlay** sandbox from pre-mounted directories.
+    /// Used by the worker process which sets up the mount before starting tokio.
+    pub fn from_overlay_dirs(
+        project_dir: &Path,
+        upper_dir: &Path,
+        work_dir: &Path,
+        merged_dir: &Path,
+    ) -> Self {
+        let canonical = project_dir
+            .canonicalize()
+            .unwrap_or_else(|_| project_dir.to_path_buf());
+        Self {
+            working_dir: merged_dir.to_path_buf(),
+            project_dir: canonical,
+            is_disabled: false,
+            inner: Arc::new(Mutex::new(SandboxInner {
+                backend: Backend::Overlay {
+                    upper_dir: upper_dir.to_path_buf(),
+                    work_dir: work_dir.to_path_buf(),
+                    merged_dir: merged_dir.to_path_buf(),
+                    kernel: true,
+                },
             })),
         }
     }
@@ -179,6 +196,16 @@ impl Sandbox {
         &self.project_dir
     }
 
+    /// Synchronous backend label — does NOT lock the async mutex.
+    /// Returns: "disabled" | "overlay"
+    pub fn backend_label_sync(&self) -> &'static str {
+        if self.is_disabled {
+            "disabled"
+        } else {
+            "overlay"
+        }
+    }
+
     // ── Async queries ───────────────────────────────────────────
 
     pub async fn is_enabled(&self) -> bool {
@@ -193,64 +220,16 @@ impl Sandbox {
     pub async fn backend_name(&self) -> &'static str {
         match self.inner.lock().await.backend {
             Backend::Disabled => "disabled",
-            Backend::Snapshot { .. } => "snapshot",
             Backend::Overlay { .. } => "overlay",
         }
     }
 
-    /// Number of tracked operations.
+    /// Number of tracked operations (files in overlay upper layer).
     pub async fn ops_count(&self) -> usize {
         match &self.inner.lock().await.backend {
             Backend::Disabled => 0,
-            Backend::Snapshot { ops_count, .. } => *ops_count,
             Backend::Overlay { upper_dir, .. } => count_files_recursive(upper_dir),
         }
-    }
-
-    // ── Pre-write hook ──────────────────────────────────────────
-
-    /// Snapshot a file before it is modified (snapshot backend only).
-    /// For overlay, this is a no-op — the filesystem handles it.
-    pub async fn before_write(&self, path: &Path) {
-        let mut inner = self.inner.lock().await;
-        let (changes, ops_count) = match &mut inner.backend {
-            Backend::Snapshot {
-                ref mut changes,
-                ref mut ops_count,
-            } => (changes, ops_count),
-            _ => return, // overlay / disabled: no-op
-        };
-
-        let canonical = normalize_path(path).unwrap_or_else(|| path.to_path_buf());
-
-        if changes.contains_key(&canonical) {
-            *ops_count += 1;
-            return;
-        }
-
-        if canonical.exists() {
-            match std::fs::read(&canonical) {
-                Ok(data) => {
-                    changes.insert(
-                        canonical.clone(),
-                        FileChange::Modified {
-                            path: canonical,
-                            snapshot: data,
-                        },
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("Sandbox: failed to snapshot {}: {}", canonical.display(), e);
-                }
-            }
-        } else {
-            changes.insert(
-                canonical.clone(),
-                FileChange::Created { path: canonical },
-            );
-        }
-
-        *ops_count += 1;
     }
 
     // ── Changed files ───────────────────────────────────────────
@@ -259,7 +238,6 @@ impl Sandbox {
         let inner = self.inner.lock().await;
         match &inner.backend {
             Backend::Disabled => vec![],
-            Backend::Snapshot { changes, .. } => snapshot_changed_files(changes),
             Backend::Overlay { upper_dir, .. } => {
                 overlay_changed_files(upper_dir, &self.project_dir)
             }
@@ -272,21 +250,17 @@ impl Sandbox {
         let mut inner = self.inner.lock().await;
         match &mut inner.backend {
             Backend::Disabled => RollbackResult::default(),
-            Backend::Snapshot { changes, ops_count } => {
-                let result = snapshot_rollback(changes);
-                changes.clear();
-                *ops_count = 0;
-                result
-            }
             Backend::Overlay {
                 upper_dir,
                 work_dir,
                 merged_dir,
+                kernel,
             } => overlay_rollback(
                 &self.project_dir,
                 upper_dir,
                 work_dir,
                 merged_dir,
+                *kernel,
             ),
         }
     }
@@ -297,120 +271,76 @@ impl Sandbox {
         let mut inner = self.inner.lock().await;
         match &mut inner.backend {
             Backend::Disabled => CommitResult::default(),
-            Backend::Snapshot { changes, ops_count } => {
-                let result = snapshot_commit(changes);
-                changes.clear();
-                *ops_count = 0;
-                result
-            }
             Backend::Overlay {
                 upper_dir,
                 work_dir,
                 merged_dir,
+                kernel,
             } => overlay_commit(
                 &self.project_dir,
                 upper_dir,
                 work_dir,
                 merged_dir,
+                *kernel,
             ),
         }
     }
-
+    pub async fn commit_file(&self, file_path: &str) -> CommitResult {
+        let mut inner = self.inner.lock().await;
+        match &mut inner.backend {
+            Backend::Disabled => CommitResult::default(),
+            Backend::Overlay {
+                upper_dir,
+                work_dir,
+                merged_dir,
+                kernel,
+            } => overlay_commit_file(
+                &self.project_dir,
+                upper_dir,
+                work_dir,
+                merged_dir,
+                *kernel,
+                file_path,
+            ),
+        }
+    }
     // ── Cleanup (call on graceful shutdown) ─────────────────────
 
+    /// Called before a tool writes to a file.
+    ///
+    /// With the Overlay backend this is a no-op: the kernel/fuse overlay
+    /// performs copy-on-write automatically, so the original lower layer is
+    /// never touched.  The method exists so call sites don't need to
+    /// special-case the backend.
+    pub async fn before_write(&self, _path: &Path) {
+        // No-op for Overlay backend.
+        // (A future Snapshot backend would copy the file here.)
+    }
+
     /// Unmount overlay (if active) and delete temp dirs.
-    /// For snapshot backend this is a no-op.
     pub async fn cleanup(&self) {
         let inner = self.inner.lock().await;
-        if let Backend::Overlay { merged_dir, .. } = &inner.backend {
-            overlay_unmount(merged_dir);
-            // Delete the sandbox base dir (parent of upper/work/merged)
+        if let Backend::Overlay { merged_dir, kernel, .. } = &inner.backend {
+            overlay_unmount(merged_dir, *kernel);
+            // Delete the sandbox base dir (parent of upper/work/merged).
+            // Safety guard: only remove directories that live under /tmp/agent-sandbox-*
+            // to prevent accidental removal of the real project or system directories
+            // (e.g. if merged_dir was set to /workspace, its parent would be "/").
             if let Some(base) = merged_dir.parent() {
-                std::fs::remove_dir_all(base).ok();
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Snapshot backend implementation
-// ═══════════════════════════════════════════════════════════════════
-
-fn snapshot_changed_files(changes: &HashMap<PathBuf, FileChange>) -> Vec<ChangeSummary> {
-    let mut result: Vec<ChangeSummary> = changes
-        .values()
-        .map(|change| match change {
-            FileChange::Modified { path, snapshot } => {
-                let current = std::fs::read(path).ok();
-                let changed = current.as_deref() != Some(snapshot.as_slice());
-                ChangeSummary {
-                    path: path.clone(),
-                    kind: if changed {
-                        ChangeKind::Modified
-                    } else {
-                        ChangeKind::Unchanged
-                    },
-                    original_size: Some(snapshot.len()),
-                    current_size: current.as_ref().map(|c| c.len()),
-                }
-            }
-            FileChange::Created { path } => {
-                let current = std::fs::metadata(path).ok();
-                ChangeSummary {
-                    path: path.clone(),
-                    kind: ChangeKind::Created,
-                    original_size: None,
-                    current_size: current.map(|m| m.len() as usize),
-                }
-            }
-        })
-        .collect();
-    result.sort_by(|a, b| a.path.cmp(&b.path));
-    result
-}
-
-fn snapshot_rollback(changes: &HashMap<PathBuf, FileChange>) -> RollbackResult {
-    let mut restored = 0usize;
-    let mut deleted = 0usize;
-    let mut errors = Vec::new();
-
-    for change in changes.values() {
-        match change {
-            FileChange::Modified { path, snapshot } => match std::fs::write(path, snapshot) {
-                Ok(()) => restored += 1,
-                Err(e) => errors.push(format!("{}: {}", path.display(), e)),
-            },
-            FileChange::Created { path } => {
-                if path.exists() {
-                    match std::fs::remove_file(path) {
-                        Ok(()) => deleted += 1,
-                        Err(e) => errors.push(format!("{}: {}", path.display(), e)),
-                    }
-                }
-                if let Some(parent) = path.parent() {
-                    remove_empty_ancestors(parent);
+                let base_str = base.to_string_lossy();
+                let is_safe = base_str.starts_with("/tmp/agent-sandbox-")
+                    || base_str.starts_with("/tmp/agent-worker-");
+                if is_safe {
+                    std::fs::remove_dir_all(base).ok();
+                } else {
+                    tracing::warn!(
+                        "Sandbox cleanup: skipping remove_dir_all for non-tmp path: {}",
+                        base.display()
+                    );
                 }
             }
         }
     }
-
-    RollbackResult {
-        restored,
-        deleted,
-        errors,
-    }
-}
-
-fn snapshot_commit(changes: &HashMap<PathBuf, FileChange>) -> CommitResult {
-    let mut modified = 0usize;
-    let mut created = 0usize;
-    for change in changes.values() {
-        match change {
-            FileChange::Modified { .. } => modified += 1,
-            FileChange::Created { .. } => created += 1,
-        }
-    }
-    CommitResult { modified, created }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -439,7 +369,7 @@ fn try_setup_overlay(project_dir: &Path) -> Option<(Backend, PathBuf)> {
 
     // Clean up any stale previous run
     if merged.exists() {
-        overlay_unmount(&merged);
+        overlay_unmount(&merged, false);
     }
     if base.exists() {
         std::fs::remove_dir_all(&base).ok();
@@ -467,8 +397,7 @@ fn try_setup_overlay(project_dir: &Path) -> Option<(Backend, PathBuf)> {
             let backend = Backend::Overlay {
                 upper_dir: upper,
                 work_dir: work,
-                merged_dir: merged.clone(),
-            };
+                merged_dir: merged.clone(),                kernel: false,            };
             Some((backend, merged))
         }
         Ok(s) => {
@@ -533,22 +462,37 @@ fn collect_overlay_changes(
                     kind: ChangeKind::Deleted,
                     original_size: None,
                     current_size: None,
+                    diff: None,
                 });
             } else {
                 let current_size = entry.metadata().ok().map(|m| m.len() as usize);
-                let (kind, original_size) = if original_path.exists() {
+                let (kind, original_size, diff) = if original_path.exists() {
                     let orig_size = std::fs::metadata(&original_path)
                         .ok()
                         .map(|m| m.len() as usize);
-                    (ChangeKind::Modified, orig_size)
+                    let diff = std::fs::read(&full_path).ok().and_then(|new_bytes| {
+                        std::fs::read(&original_path).ok().and_then(|old_bytes| {
+                            make_text_diff(&old_bytes, &new_bytes, &original_path)
+                        })
+                    });
+                    (ChangeKind::Modified, orig_size, diff)
                 } else {
-                    (ChangeKind::Created, None)
+                    // For new files, show full content as "diff"
+                    let diff = std::fs::read_to_string(&full_path)
+                        .ok()
+                        .filter(|s| is_likely_text(s))
+                        .map(|content| format!("--- /dev/null\n+++ {}\n@@ -0,0 +1,{} @@\n{}\n", 
+                            rel.display(), 
+                            content.lines().count(),
+                            content.lines().map(|line| format!("+{}", line)).collect::<Vec<_>>().join("\n")));
+                    (ChangeKind::Created, None, diff)
                 };
                 out.push(ChangeSummary {
                     path: original_path,
                     kind,
                     original_size,
                     current_size,
+                    diff,
                 });
             }
         }
@@ -561,6 +505,7 @@ fn overlay_rollback(
     upper_dir: &Path,
     work_dir: &Path,
     merged_dir: &Path,
+    kernel: bool,
 ) -> RollbackResult {
     let changes = overlay_changed_files(upper_dir, project_dir);
     let restored = changes
@@ -574,7 +519,7 @@ fn overlay_rollback(
 
     let mut errors = Vec::new();
 
-    if !overlay_unmount(merged_dir) {
+    if !overlay_unmount(merged_dir, kernel) {
         errors.push("Failed to unmount overlay".to_string());
         return RollbackResult {
             restored: 0,
@@ -591,20 +536,7 @@ fn overlay_rollback(
     }
 
     // Remount fresh overlay
-    let status = std::process::Command::new("fuse-overlayfs")
-        .arg("-o")
-        .arg(format!(
-            "lowerdir={},upperdir={},workdir={}",
-            project_dir.display(),
-            upper_dir.display(),
-            work_dir.display()
-        ))
-        .arg(merged_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    if !matches!(status, Ok(s) if s.success()) {
+    if !overlay_remount(project_dir, upper_dir, work_dir, merged_dir, kernel) {
         errors.push("Failed to remount overlay after rollback".to_string());
     }
 
@@ -621,6 +553,7 @@ fn overlay_commit(
     upper_dir: &Path,
     work_dir: &Path,
     merged_dir: &Path,
+    kernel: bool,
 ) -> CommitResult {
     let changes = overlay_changed_files(upper_dir, project_dir);
     let modified = changes
@@ -633,31 +566,88 @@ fn overlay_commit(
         .count();
 
     // Unmount so we can safely copy
-    overlay_unmount(merged_dir);
+    overlay_unmount(merged_dir, kernel);
 
-    // Copy upper → original
+    // In container mode project_dir is mounted bind_ro for safety.
+    // Temporarily remount rw just for the copy, then lock it back to ro.
+    // In CLI (non-container) mode MS_REMOUNT fails with EINVAL (no bind
+    // mount) — that is harmless because the directory is already writable.
+    remount_rw(project_dir);
     if let Err(e) = copy_upper_to_original(upper_dir, upper_dir, project_dir) {
         tracing::error!("Overlay commit copy failed: {}", e);
     }
+    remount_ro(project_dir);
 
     // Wipe and remount for continued use
     clear_dir(upper_dir).ok();
     clear_dir(work_dir).ok();
 
-    let _ = std::process::Command::new("fuse-overlayfs")
-        .arg("-o")
-        .arg(format!(
-            "lowerdir={},upperdir={},workdir={}",
-            project_dir.display(),
-            upper_dir.display(),
-            work_dir.display()
-        ))
-        .arg(merged_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    overlay_remount(project_dir, upper_dir, work_dir, merged_dir, kernel);
 
     CommitResult { modified, created }
+}
+
+fn overlay_commit_file(
+    project_dir: &Path,
+    upper_dir: &Path,
+    work_dir: &Path,
+    merged_dir: &Path,
+    kernel: bool,
+    file_path: &str,
+) -> CommitResult {
+    let target_path = PathBuf::from(file_path);
+
+    // file_path may be an absolute container path like /workspace-ro/src/foo.rs.
+    // strip project_dir prefix to get the relative path (e.g. src/foo.rs) that
+    // mirrors the upper layer layout.  If already relative, use as-is.
+    let rel_path = if target_path.is_absolute() {
+        match target_path.strip_prefix(project_dir) {
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => return CommitResult::default(), // not under project_dir
+        }
+    } else {
+        target_path.clone()
+    };
+
+    let upper_file = upper_dir.join(&rel_path);
+    
+    // Check if file exists in upper layer
+    if !upper_file.exists() {
+        return CommitResult::default();
+    }
+    
+    let project_file = project_dir.join(&rel_path);
+    
+    // Determine if this is creation or modification
+    let is_creation = !project_file.exists();
+    
+    // Create parent directories
+    if let Some(parent) = project_file.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    
+    // Temporarily make project_dir writable (bind_ro in container mode).
+    remount_rw(project_dir);
+    // Copy the file
+    let copy_ok = std::fs::copy(&upper_file, &project_file).is_ok();
+    remount_ro(project_dir);
+
+    if copy_ok {
+        // Remove from upper layer
+        std::fs::remove_file(&upper_file).ok();
+        // Remove empty directories
+        if let Some(parent) = upper_file.parent() {
+            remove_empty_dirs(parent, upper_dir).ok();
+        }
+        
+        if is_creation {
+            CommitResult { modified: 0, created: 1 }
+        } else {
+            CommitResult { modified: 1, created: 0 }
+        }
+    } else {
+        CommitResult::default()
+    }
 }
 
 /// Recursively copy changed files from the overlay upper layer to the
@@ -675,9 +665,12 @@ fn copy_upper_to_original(
         let ft = entry.file_type()?;
 
         if ft.is_dir() {
-            let rel = src_path
-                .strip_prefix(upper_root)
-                .unwrap_or(&src_path);
+            let rel = src_path.strip_prefix(upper_root).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("copy_upper_to_original: path {:?} is not under upper_root {:?}", src_path, upper_root),
+                )
+            })?;
             let dst = project_dir.join(rel);
             std::fs::create_dir_all(&dst)?;
             copy_upper_to_original(&src_path, upper_root, project_dir)?;
@@ -685,18 +678,38 @@ fn copy_upper_to_original(
             if name_str.starts_with(".wh.") {
                 // Whiteout: delete corresponding file/dir from project
                 let real_name = name_str.strip_prefix(".wh.").unwrap_or(&name_str);
-                let rel_parent = dir.strip_prefix(upper_root).unwrap_or(dir);
+                let rel_parent = dir.strip_prefix(upper_root).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("copy_upper_to_original: dir {:?} is not under upper_root {:?}", dir, upper_root),
+                    )
+                })?;
                 let target = project_dir.join(rel_parent).join(real_name);
-                if target.is_dir() {
-                    std::fs::remove_dir_all(&target).ok();
+                // Safety: only delete within project_dir
+                if target.starts_with(project_dir) {
+                    if target.is_dir() {
+                        std::fs::remove_dir_all(&target).ok();
+                    } else {
+                        std::fs::remove_file(&target).ok();
+                    }
                 } else {
-                    std::fs::remove_file(&target).ok();
+                    tracing::warn!("Sandbox commit: whiteout target {:?} is outside project_dir, skipping", target);
                 }
             } else {
-                let rel = src_path
-                    .strip_prefix(upper_root)
-                    .unwrap_or(&src_path);
+                let rel = src_path.strip_prefix(upper_root).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("copy_upper_to_original: path {:?} is not under upper_root {:?}", src_path, upper_root),
+                    )
+                })?;
                 let dst = project_dir.join(rel);
+                // Safety: only write within project_dir
+                if !dst.starts_with(project_dir) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("Sandbox commit: destination {:?} is outside project_dir {:?}", dst, project_dir),
+                    ));
+                }
                 if let Some(parent) = dst.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -707,8 +720,63 @@ fn copy_upper_to_original(
     Ok(())
 }
 
+/// Temporarily remount a bind-mount read-write.
+///
+/// Used during commit to allow writing back to `/workspace-ro` (which is
+/// kept `bind_ro` the rest of the time for safety).  In CLI / non-container
+/// mode the path is not a bind mount, so the syscall returns `EINVAL` which
+/// is silently ignored — the directory is already writable in that case.
+fn remount_rw(path: &Path) {
+    #[cfg(target_os = "linux")]
+    if let Ok(cpath) = CString::new(path.to_string_lossy().as_ref()) {
+        unsafe {
+            libc::mount(
+                std::ptr::null(),
+                cpath.as_ptr(),
+                std::ptr::null(),
+                (libc::MS_BIND | libc::MS_REMOUNT) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        };
+        // Intentionally ignore return value: EINVAL == not a bind mount → already rw.
+    }
+}
+
+/// Re-lock a bind-mount read-only after commit is done.
+fn remount_ro(path: &Path) {
+    #[cfg(target_os = "linux")]
+    if let Ok(cpath) = CString::new(path.to_string_lossy().as_ref()) {
+        unsafe {
+            libc::mount(
+                std::ptr::null(),
+                cpath.as_ptr(),
+                std::ptr::null(),
+                (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        };
+    }
+}
+
 /// Unmount a fuse-overlayfs mount.  Returns true on success.
-fn overlay_unmount(merged_dir: &Path) -> bool {
+/// Public wrapper used by the worker process during initialisation cleanup.
+pub fn unmount_fuse(merged_dir: &Path) {
+    overlay_unmount(merged_dir, false);
+}
+
+fn overlay_unmount(merged_dir: &Path, kernel: bool) -> bool {
+    if kernel {
+        // Kernel overlayfs: use umount2 syscall with MNT_DETACH
+        if let Ok(cpath) = CString::new(merged_dir.to_string_lossy().as_ref()) {
+            let r = unsafe { libc::umount2(cpath.as_ptr(), libc::MNT_DETACH) };
+            if r == 0 {
+                return true;
+            }
+            tracing::warn!("umount2 failed for {}: errno={}", merged_dir.display(), std::io::Error::last_os_error());
+        }
+        return false;
+    }
+    // fuse-overlayfs: use fusermount
     for cmd in &["fusermount", "fusermount3"] {
         let result = std::process::Command::new(cmd)
             .arg("-u")
@@ -729,9 +797,114 @@ fn overlay_unmount(merged_dir: &Path) -> bool {
     matches!(result, Ok(s) if s.success())
 }
 
+/// Remount an overlayfs after wipe.  Returns true on success.
+fn overlay_remount(
+    project_dir: &Path,
+    upper_dir: &Path,
+    work_dir: &Path,
+    merged_dir: &Path,
+    kernel: bool,
+) -> bool {
+    if kernel {
+        // Kernel overlayfs via mount(2) syscall — no external binary needed.
+        let opts = format!(
+            "lowerdir={},upperdir={},workdir={},userxattr",
+            project_dir.display(),
+            upper_dir.display(),
+            work_dir.display()
+        );
+        let src = CString::new("overlay").unwrap();
+        let tgt = match CString::new(merged_dir.to_string_lossy().as_ref()) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let fst = CString::new("overlay").unwrap();
+        let dat = match CString::new(opts.as_str()) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let r = unsafe {
+            libc::mount(
+                src.as_ptr(),
+                tgt.as_ptr(),
+                fst.as_ptr(),
+                0,
+                dat.as_ptr() as *const libc::c_void,
+            )
+        };
+        if r != 0 {
+            tracing::warn!(
+                "kernel overlay remount failed for {}: {}",
+                merged_dir.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+        return r == 0;
+    }
+    // fuse-overlayfs subprocess
+    let status = std::process::Command::new("fuse-overlayfs")
+        .arg("-o")
+        .arg(format!(
+            "lowerdir={},upperdir={},workdir={}",
+            project_dir.display(),
+            upper_dir.display(),
+            work_dir.display()
+        ))
+        .arg(merged_dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    matches!(status, Ok(s) if s.success())
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Shared helpers
 // ═══════════════════════════════════════════════════════════════════
+
+fn is_likely_text(content: &str) -> bool {
+    // Quick heuristic: if we can read it as valid UTF-8 and it doesn't have
+    // too many null bytes, consider it text
+    content.len() < 100_000 && content.chars().filter(|&c| c == '\0').count() < 10
+}
+
+fn remove_empty_dirs(mut dir: &Path, stop_at: &Path) -> std::io::Result<()> {
+    loop {
+        if dir == stop_at || dir.parent().is_none() {
+            break;
+        }
+        if std::fs::read_dir(dir)?.next().is_none() {
+            std::fs::remove_dir(dir)?;
+            if let Some(parent) = dir.parent() {
+                dir = parent;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Generate a unified diff between old and new file bytes.
+/// Returns None for binary files or if there are no differences.
+fn make_text_diff(old_bytes: &[u8], new_bytes: &[u8], path: &Path) -> Option<String> {
+    if old_bytes.contains(&0) || new_bytes.contains(&0) {
+        return None; // binary
+    }
+    let old_str = std::str::from_utf8(old_bytes).ok()?;
+    let new_str = std::str::from_utf8(new_bytes).ok()?;
+    if old_str == new_str {
+        return None;
+    }
+    let path_str = path.display().to_string();
+    let diff = similar::TextDiff::from_lines(old_str, new_str);
+    let result = diff
+        .unified_diff()
+        .header(&format!("a/{}", path_str), &format!("b/{}", path_str))
+        .to_string();
+    if result.is_empty() { None } else { Some(result) }
+}
 
 fn is_command_available(cmd: &str) -> bool {
     std::process::Command::new("which")
@@ -750,26 +923,6 @@ fn short_hash(path: &Path) -> String {
         hash = hash.wrapping_mul(33).wrapping_add(b as u64);
     }
     format!("{:x}", hash)
-}
-
-fn normalize_path(path: &Path) -> Option<PathBuf> {
-    if path.exists() {
-        path.canonicalize().ok()
-    } else if let Some(parent) = path.parent() {
-        if parent.exists() {
-            if let (Some(canon_parent), Some(file_name)) =
-                (parent.canonicalize().ok(), path.file_name())
-            {
-                Some(canon_parent.join(file_name))
-            } else {
-                Some(path.to_path_buf())
-            }
-        } else {
-            Some(path.to_path_buf())
-        }
-    } else {
-        Some(path.to_path_buf())
-    }
 }
 
 fn clear_dir(dir: &Path) -> std::io::Result<()> {
@@ -801,23 +954,3 @@ fn count_files_recursive(dir: &Path) -> usize {
     count
 }
 
-fn remove_empty_ancestors(dir: &Path) {
-    let mut current = dir.to_path_buf();
-    loop {
-        match std::fs::read_dir(&current) {
-            Ok(mut entries) => {
-                if entries.next().is_some() {
-                    break;
-                }
-                if std::fs::remove_dir(&current).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-        match current.parent() {
-            Some(p) => current = p.to_path_buf(),
-            None => break,
-        }
-    }
-}

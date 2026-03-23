@@ -95,6 +95,21 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
             />
             <span style={{ fontSize: '13px', color: 'var(--text2)' }}>自动确认工具调用（跳过每次确认弹窗）</span>
           </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={!!config.sandbox}
+              onChange={(e) => setConfig({ sandbox: e.target.checked })}
+              style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
+            />
+            <div>
+              <span style={{ fontSize: '13px', color: 'var(--text2)' }}>启用沙盒模式</span>
+              <p style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>
+                在隔离环境中执行文件操作，支持回滚和提交（需服务器支持 overlay）
+              </p>
+            </div>
+          </label>
         </div>
 
         <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>

@@ -14,7 +14,7 @@ const statusConfig = {
 };
 
 export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) => {
-  const { connectionStatus, serverUrl, workdir, isProcessing } = useAgentStore();
+  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges } = useAgentStore();
   const cfg = statusConfig[connectionStatus];
 
   return (
@@ -75,6 +75,20 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
           {workdir && (
             <span className="truncate" style={{ fontSize: '12px', color: 'var(--text2)', fontFamily: 'monospace' }}>
               📂 {workdir}
+            </span>
+          )}
+          {sandboxBackend !== 'disabled' && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              padding: '2px 8px',
+              background: pendingChanges > 0 ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.12)',
+              border: `1px solid ${pendingChanges > 0 ? 'rgba(245,158,11,0.4)' : 'rgba(16,185,129,0.3)'}`,
+              borderRadius: '10px',
+              fontSize: '11px', fontWeight: '500',
+              color: pendingChanges > 0 ? '#f59e0b' : '#10b981',
+              flexShrink: 0,
+            }}>
+              🔒 沙盒{pendingChanges > 0 ? ` · ${pendingChanges} 待提交` : ''}
             </span>
           )}
         </div>

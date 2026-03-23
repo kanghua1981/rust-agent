@@ -10,11 +10,21 @@ export type ClientMessage =
   | SetModelMessage
   | SetModeMessage
   | SetSandboxMessage
+  | SandboxListChangesMessage
+  | SandboxCommitMessage
+  | SandboxCommitFileMessage
+  | SandboxRollbackMessage
   | LoadSessionMessage
   | NewSessionMessage
   | ListSessionsMessage
   | DeleteSessionMessage
-  | LoadSessionByIdMessage;
+  | LoadSessionByIdMessage
+  | CancelMessage;
+
+export interface CancelMessage extends BaseMessage {
+  type: 'cancel';
+  data: {};
+}
 
 export interface LoadSessionMessage extends BaseMessage {
   type: 'load_session';
@@ -66,7 +76,13 @@ export type ServerEvent =
   | SessionRestoredEvent
   | SessionClearedEvent
   | SessionsListEvent
-  | SessionDeletedEvent;
+  | SessionDeletedEvent
+  | SandboxStatusEvent
+  | SandboxChangesResultEvent
+  | SandboxCommitResultEvent
+  | SandboxCommitFileResultEvent
+  | SandboxRollbackResultEvent
+  | CancelledEvent;
 
 export interface SessionMeta {
   id: string;
@@ -92,6 +108,67 @@ export interface SessionsListEvent extends BaseMessage {
 export interface SessionDeletedEvent extends BaseMessage {
   type: 'session_deleted';
   data: { id: string };
+}
+
+export interface SandboxStatusEvent extends BaseMessage {
+  type: 'sandbox_status';
+  data: {
+    enabled: boolean;
+    backend: 'overlay' | 'snapshot' | 'disabled';
+    pending_changes?: number;
+  };
+}
+
+export interface SandboxChangesResultEvent extends BaseMessage {
+  type: 'sandbox_changes_result';
+  data: {
+    files: Array<{
+      path: string;
+      kind: 'modified' | 'created' | 'deleted' | 'unchanged';
+      diff: string | null;
+      original_size: number | null;
+      current_size: number | null;
+    }>;
+    backend: string;
+    pending_changes: number;
+  };
+}
+
+export interface SandboxCommitResultEvent extends BaseMessage {
+  type: 'sandbox_commit_result';
+  data: { modified: number; created: number };
+}
+
+export interface SandboxCommitFileResultEvent extends BaseMessage {
+  type: 'sandbox_commit_file_result';
+  data: { file_path: string; modified: number; created: number };
+}
+
+export interface SandboxRollbackResultEvent extends BaseMessage {
+  type: 'sandbox_rollback_result';
+  data: { restored: number; deleted: number; errors: string[] };
+}
+
+export interface SandboxListChangesMessage extends BaseMessage {
+  type: 'sandbox_list_changes';
+  data: {};
+}
+
+export interface SandboxCommitMessage extends BaseMessage {
+  type: 'sandbox_commit';
+  data: {};
+}
+
+export interface SandboxCommitFileMessage extends BaseMessage {
+  type: 'sandbox_commit_file';
+  data: {
+    file_path: string;
+  };
+}
+
+export interface SandboxRollbackMessage extends BaseMessage {
+  type: 'sandbox_rollback';
+  data: {};
 }
 
 export interface SessionInfoEvent extends BaseMessage {
@@ -303,6 +380,7 @@ export interface DoneEvent extends BaseMessage {
   data: {
     text: string;
     id?: string;
+    pending_changes?: number;
   };
 }
 
@@ -310,12 +388,18 @@ export interface ReadyEvent extends BaseMessage {
   type: 'ready';
   data: {
     version: string;
+    sandbox_backend?: 'overlay' | 'snapshot' | 'disabled';
   };
 }
 
 export interface PongEvent extends BaseMessage {
   type: 'pong';
   data: {};
+}
+
+export interface CancelledEvent extends BaseMessage {
+  type: 'cancelled';
+  data: { message: string };
 }
 
 // 工具类型定义
@@ -354,6 +438,7 @@ export interface AgentConfig {
   model?: string;
   autoApprove?: boolean;
   agentMode?: 'auto' | 'simple' | 'plan' | 'pipeline';
+  sandbox?: boolean;
 }
 
 // 文件信息

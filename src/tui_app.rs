@@ -1278,7 +1278,6 @@ async fn handle_tui_slash(
                             crate::sandbox::ChangeKind::Modified  => "✏️ ",
                             crate::sandbox::ChangeKind::Created   => "📄",
                             crate::sandbox::ChangeKind::Deleted   => "🗑️",
-                            crate::sandbox::ChangeKind::Unchanged => "⚪",
                         };
                         line!(vec![Span::raw(format!("  {} {} ({})", icon, c.path.display(), c.kind))]);
                     }
@@ -1319,13 +1318,12 @@ async fn handle_tui_slash(
                             crate::sandbox::ChangeKind::Modified  => "✏️ ",
                             crate::sandbox::ChangeKind::Created   => "📄",
                             crate::sandbox::ChangeKind::Deleted   => "🗑️",
-                            crate::sandbox::ChangeKind::Unchanged => "⚪",
                         };
                         line!(vec![Span::raw(format!("  {} {} ({})", icon, c.path.display(), c.kind))]);
                     }
                     let result = agent.sandbox.commit().await;
                     line!(vec![Span::styled(
-                        format!("✅ Committed: {} modified, {} created. Snapshots discarded.",
+                        format!("✅ Committed: {} modified, {} created.",
                             result.modified, result.created),
                         s(Color::Green),
                     )]);
@@ -1345,13 +1343,12 @@ async fn handle_tui_slash(
                     info!("📋 No changes tracked yet.");
                 } else {
                     head!("── Sandbox Changes ─────────────────────────────────────────────");
-                    let (mut modified, mut created, mut unchanged) = (0usize, 0usize, 0usize);
+                    let (mut modified, mut created) = (0usize, 0usize);
                     for c in &changes {
                         let (icon, color) = match c.kind {
                             crate::sandbox::ChangeKind::Modified  => { modified  += 1; ("✏️ ", Color::Yellow) }
                             crate::sandbox::ChangeKind::Created   => { created   += 1; ("📄", Color::Green)  }
                             crate::sandbox::ChangeKind::Deleted   => { modified  += 1; ("🗑️", Color::Red)    }
-                            crate::sandbox::ChangeKind::Unchanged => { unchanged += 1; ("⚪", Color::DarkGray) }
                         };
                         let size_info = match (c.original_size, c.current_size) {
                             (Some(orig), Some(curr)) if orig != curr =>
@@ -1365,8 +1362,8 @@ async fn handle_tui_slash(
                         )]);
                     }
                     line!(vec![Span::raw(format!(
-                        "  Summary: {} modified, {} created, {} unchanged",
-                        modified, created, unchanged
+                        "  Summary: {} modified, {} created",
+                        modified, created
                     ))]);
                     line!(vec![Span::styled(
                         "  Use /rollback to undo all, /commit to accept all.",

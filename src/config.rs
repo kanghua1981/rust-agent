@@ -18,6 +18,9 @@ pub struct Config {
     pub model_alias: Option<String>,
     /// Configured sub-agents to start (name -> config).
     pub sub_agents: std::collections::BTreeMap<String, SubAgentConfig>,
+    /// Extra bind-mounts injected into every worker container (from models.toml).
+    #[serde(default)]
+    pub extra_binds: Vec<crate::container::ExtraBindMount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +131,7 @@ impl Config {
             max_tool_iterations: args.max_iterations,
             model_alias,
             sub_agents,
+            extra_binds: vec![],
         })
     }
 
@@ -162,6 +166,7 @@ impl Config {
             max_tool_iterations: self.max_tool_iterations,
             model_alias: Some(resolved.alias.clone()),
             sub_agents: self.sub_agents.clone(),
+            extra_binds: self.extra_binds.clone(),
         }
     }
 

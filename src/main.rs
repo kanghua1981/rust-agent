@@ -19,8 +19,10 @@ mod conversation;
 mod pipeline;
 mod router;
 mod sandbox;
+mod container;
 mod server;
 mod ui;
+mod worker;
 
 use std::sync::Arc;
 
@@ -39,6 +41,8 @@ pub enum RunMode {
     Server,
     /// Split-screen ratatui TUI: output pane + always-active input bar.
     Tui,
+    /// Spawned by the server for each connection; handles the agent loop.
+    Worker,
 }
 
 impl std::str::FromStr for RunMode {
@@ -49,7 +53,8 @@ impl std::str::FromStr for RunMode {
             "stdio" => Ok(RunMode::Stdio),
             "server" | "ws" | "websocket" => Ok(RunMode::Server),
             "tui" => Ok(RunMode::Tui),
-            other => Err(format!("unknown mode '{}', expected: cli, stdio, server, tui", other)),
+            "worker" => Ok(RunMode::Worker),
+            other => Err(format!("unknown mode '{}', expected: cli, stdio, server, tui, worker", other)),
         }
     }
 }
@@ -61,6 +66,7 @@ impl std::fmt::Display for RunMode {
             RunMode::Stdio => write!(f, "stdio"),
             RunMode::Server => write!(f, "server"),
             RunMode::Tui => write!(f, "tui"),
+            RunMode::Worker => write!(f, "worker"),
         }
     }
 }
@@ -119,6 +125,20 @@ struct Args {
     /// allowing /rollback to restore all changes.
     #[arg(long)]
     sandbox: bool,
+
+    /// (Worker mode) Raw socket file descriptor passed from the server process.
+    #[arg(long, hide = true)]
+    worker_fd: Option<i32>,
+
+    /// (Worker mode) Unique worker instance ID for overlay directory naming.
+    #[arg(long, hide = true)]
+    worker_id: Option<String>,
+
+    /// (Worker mode) Fully-resolved Config serialized as JSON by the server.
+    /// When present, skips Config::load() entirely so the worker does not need
+    /// to read models.toml or .env files (safe inside a filesystem sandbox).
+    #[arg(long, hide = true)]
+    config_json: Option<String>,
 
     /// Use the global session store (~/.local/share/rust_agent/sessions/) instead of
     /// the project-local `.agent/session.json`. Useful when you want to manage
@@ -202,16 +222,30 @@ async fn main() -> Result<()> {
         spawned_children = spawn_sub_agents(&config, &project_dir);
     }
 
+    // Worker mode: spawned by server, handles one connection.
+    if args.mode == RunMode::Worker {
+        let fd = args.worker_fd.expect("--worker-fd required in worker mode");
+        let id = args.worker_id.clone().unwrap_or_else(|| "default".to_string());
+        // Prefer the pre-resolved config passed by the server so we never need
+        // to read models.toml or .env from inside a (potentially isolated) sandbox.
+        let worker_config = if let Some(ref json) = args.config_json {
+            serde_json::from_str(json).unwrap_or(config)
+        } else {
+            config
+        };
+        return worker::run(worker_config, project_dir, fd, args.sandbox, &id, vec![]).await;
+    }
+
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
-        return server::run(config, project_dir, &args.host, args.port).await;
+        return server::run(config, project_dir, &args.host, args.port, args.sandbox).await;
     }
 
     // Build the output backend based on --mode
     let output: Arc<dyn output::AgentOutput> = match args.mode {
         RunMode::Cli => Arc::new(output::CliOutput::new()),
         RunMode::Stdio => Arc::new(output::StdioOutput::new()),
-        RunMode::Server | RunMode::Tui => unreachable!(), // handled above
+        RunMode::Server | RunMode::Tui | RunMode::Worker => unreachable!(), // handled above
     };
 
     // Run the agent

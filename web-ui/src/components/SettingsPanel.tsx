@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { isDesktopApp, getEnvironmentInfo } from '../utils/environment';
@@ -10,17 +10,22 @@ export const SettingsPanel: React.FC = () => {
     presets, addPreset, updatePreset, deletePreset, applyPreset 
   } = useAgentStore();
 
-  const { setSandbox, isConnected, setWorkdirRemote } = useWebSocket();
+  const { isConnected, setWorkdirRemote } = useWebSocket();
   
   const [activeTab, setActiveTab] = useState<'current' | 'presets'>('current');
   const [showNewPreset, setShowNewPreset] = useState(false);
   const [editingPreset, setEditingPreset] = useState<string | null>(null);
-  const [sandboxEnabled, setSandboxEnabled] = useState(false);
 
   // Current config form state
   const [urlDraft, setUrlDraft] = useState(serverUrl);
   const [dirDraft, setDirDraft] = useState(workdir ?? '');
   const [modelDraft, setModelDraft] = useState(config.model ?? '');
+
+  // Keep draft in sync with store when workdir changes externally
+  // (e.g. applyPreset, or Zustand persist async rehydration on first load)
+  useEffect(() => {
+    setDirDraft(workdir ?? '');
+  }, [workdir]);
   const [saved, setSaved] = useState(false);
 
   // New preset form state
@@ -41,19 +46,16 @@ export const SettingsPanel: React.FC = () => {
   });
 
   const handleSandboxToggle = (enabled: boolean) => {
-    setSandboxEnabled(enabled);
-    if (isConnected) {
-      setSandbox(enabled);
-    }
+    setConfig({ sandbox: enabled });
   };
 
   const saveCurrentConfig = () => {
     setServerUrl(urlDraft.trim() || 'ws://localhost:9527');
-    if (dirDraft.trim()) {
-      setWorkdir(dirDraft.trim());
-      if (isConnected) {
-        setWorkdirRemote(dirDraft.trim());
-      }
+    // Allow saving empty string to clear workdir
+    const newWorkdir = dirDraft.trim();
+    setWorkdir(newWorkdir);
+    if (isConnected && newWorkdir) {
+      setWorkdirRemote(newWorkdir);
     }
     if (modelDraft.trim()) setConfig({ model: modelDraft.trim() });
     setSaved(true);
@@ -239,16 +241,14 @@ export const SettingsPanel: React.FC = () => {
             <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
               <input
                 type="checkbox"
-                checked={sandboxEnabled}
+                checked={config.sandbox ?? false}
                 onChange={(e) => handleSandboxToggle(e.target.checked)}
-                disabled={!isConnected}
                 style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
               />
               <div>
                 <p style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>启用沙盒模式</p>
                 <p style={{ fontSize: '12px', color: 'var(--text3)' }}>
                   在隔离环境中执行文件操作，支持回滚和提交
-                  {!isConnected && <span style={{ color: 'var(--red)', marginLeft: '5px' }}>(需要连接服务器)</span>}
                 </p>
               </div>
             </label>

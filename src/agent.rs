@@ -92,25 +92,28 @@ impl Agent {
     /// Enable or disable sandbox mode dynamically
     pub fn set_sandbox_enabled(&mut self, enabled: bool) {
         if enabled && self.sandbox.working_dir() == &self.project_dir {
-            // 如果沙盒当前是禁用的，启用它
-            let sandbox_dir = self.project_dir.join(".agent/sandbox");
-            // 创建沙盒目录
-            let _ = std::fs::create_dir_all(&sandbox_dir);
+            // 如果沙盒当前是禁用的，尝试启用它
             let sandbox = crate::sandbox::Sandbox::new(&self.project_dir);
             self.sandbox = sandbox;
-                // 更新工具执行器的工作目录
-                self.set_allowed_dir(Some(self.sandbox.working_dir().to_path_buf()));
-                
-                // 添加沙盒模式说明到系统提示词
+            // 更新工具执行器的工作目录
+            self.set_allowed_dir(Some(self.sandbox.working_dir().to_path_buf()));
+
+            // 仅当 overlay 实际挂载成功（sandbox 不再是 disabled）时才注入系统提示词。
+            // 如果 fuse-overlayfs 不可用，sandbox 静默回退为 disabled，此时绝对不能
+            // 向 LLM 声称"处于沙盒隔离中"，否则 LLM 会误以为 rm -rf 等操作无害。
+            if !self.sandbox.is_disabled {
                 let sandbox_note = "\n\n## Sandbox Mode\n\
                 - You are running in **sandbox mode** (overlay filesystem).\n\
                 - All file operations are isolated in the sandbox directory.\n\
                 - **IMPORTANT**: Always use **relative paths** (e.g., `src/main.rs`) not absolute paths.\n\
                 - Absolute paths to files outside the sandbox will be rejected with \"Access denied\".\n\
                 - Use `/changes` to see modified files, `/rollback` to undo, `/commit` to apply changes.";
-                
                 if !self.conversation.system_prompt.contains("## Sandbox Mode") {
                     self.conversation.system_prompt.push_str(sandbox_note);
+                }
+            } else {
+                // Overlay 不可用，记录警告（CLI 侧会通过 backend_label_sync 展示给用户）
+                tracing::warn!("sandbox: fuse-overlayfs unavailable — sandbox disabled, NOT injecting sandbox system prompt");
             }
         } else if !enabled && self.sandbox.working_dir() != &self.project_dir {
             // 如果沙盒当前是启用的，禁用它

@@ -3,6 +3,14 @@ import { persist } from 'zustand/middleware';
 import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
+export interface SandboxFileChange {
+  path: string;
+  kind: 'modified' | 'created' | 'deleted' | 'unchanged';
+  original_size: number | null;
+  current_size: number | null;
+  diff: string | null;
+}
+
 export interface DiffEntry {
   id: string;
   path: string;
@@ -36,6 +44,11 @@ interface AgentState {
   // Diff
   diffs: DiffEntry[];
 
+  // Sandbox
+  sandboxBackend: string;
+  pendingChanges: number;
+  sandboxChangesData: SandboxFileChange[] | null;
+
   // Session info (saved on server)
   sessionInfo: SessionInfo | null;
   sessionList: SessionMeta[];
@@ -65,6 +78,9 @@ interface AgentState {
   addPendingConfirmation: (confirmation: PendingConfirmation) => void;
   removePendingConfirmation: (id: string) => void;
   addDiff: (diff: DiffEntry) => void;
+  setSandboxBackend: (backend: string) => void;
+  setPendingChanges: (count: number) => void;
+  setSandboxChangesData: (data: SandboxFileChange[] | null) => void;
   setCurrentPath: (path: string) => void;
   setFileList: (files: FileInfo[]) => void;
   setSessionInfo: (info: SessionInfo | null) => void;
@@ -119,6 +135,9 @@ const initialState = {
   toolCalls: [],
   pendingConfirmations: [],
   diffs: [],
+  sandboxBackend: 'disabled',
+  pendingChanges: 0,
+  sandboxChangesData: null,
   currentPath: '.',
   fileList: [],
   sessionInfo: null,
@@ -140,7 +159,8 @@ export const useAgentStore = create<AgentState>()(
       setServerUrl: (url) => {
         set({ serverUrl: url, config: { ...get().config, serverUrl: url } });
       },
-      setWorkdir: (workdir) => set({ workdir }),
+      // Normalize empty string to undefined so "no workdir" is stored cleanly
+      setWorkdir: (workdir) => set({ workdir: workdir || undefined }),
   
   addMessage: (message) => 
     set((state) => ({ messages: [...state.messages, message] })),
@@ -185,6 +205,10 @@ export const useAgentStore = create<AgentState>()(
 
   addDiff: (diff) =>
     set((state) => ({ diffs: [...state.diffs, diff] })),
+
+  setSandboxBackend: (backend) => set({ sandboxBackend: backend }),
+  setPendingChanges: (count) => set({ pendingChanges: count }),
+  setSandboxChangesData: (data) => set({ sandboxChangesData: data }),
     
   setCurrentPath: (path) => set({ currentPath: path }),
   setFileList: (files) => set({ fileList: files }),

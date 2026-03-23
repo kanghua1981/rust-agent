@@ -78,5 +78,8 @@ url = "2"
 # WebSocket server (for --mode server)
 tokio-tungstenite = "0.24"
 
+# Text diffing (used by sandbox to show overlay changes)
+similar = "2"
+
 # Browser automation with CDP
 chromiumoxide = "0.9.1"

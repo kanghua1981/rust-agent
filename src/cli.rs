@@ -116,26 +116,39 @@ pub async fn run(
 
     // Print sandbox status
     if sandbox_enabled {
-        let backend = agent.sandbox.is_overlay().await;
-        let backend_label = if backend { "overlay" } else { "snapshot" };
-        println!(
-            "{}  {}",
-            "🔒",
-            format!("Sandbox enabled ({}) — {}",
-                backend_label,
-                if backend {
+        let is_overlay = agent.sandbox.is_overlay().await;
+        let is_disabled = agent.sandbox.is_disabled;
+        if is_disabled {
+            // fuse-overlayfs 不可用，sandbox 静默回退了——必须明确警告用户
+            println!(
+                "{}  {}",
+                "⚠️ ",
+                "Sandbox requested but fuse-overlayfs is NOT available — sandbox is DISABLED.".bright_red().bold()
+            );
+            println!(
+                "   {}",
+                "All file operations will affect the REAL project directory directly!".bright_red()
+            );
+            println!(
+                "   Install fuse-overlayfs and restart to enable sandbox isolation.\n"
+            );
+        } else {
+            let backend_label = if is_overlay { "overlay" } else { "snapshot" };
+            println!(
+                "{}  {}",
+                "🔒",
+                format!("Sandbox enabled ({}) — {}",
+                    backend_label,
                     "original project untouched, all changes in overlay layer"
-                } else {
-                    "files snapshotted before modification (fuse-overlayfs not found)"
-                }
-            ).bright_green()
-        );
-        println!(
-            "   Use {} to view changes, {} to undo, {} to accept.\n",
-            "/changes".bright_white(),
-            "/rollback".bright_white(),
-            "/commit".bright_white()
-        );
+                ).bright_green()
+            );
+            println!(
+                "   Use {} to view changes, {} to undo, {} to accept.\n",
+                "/changes".bright_white(),
+                "/rollback".bright_white(),
+                "/commit".bright_white()
+            );
+        }
     }
 
     // Check for project summary at startup
@@ -1128,7 +1141,6 @@ pub async fn handle_rollback_command(agent: &mut Agent) {
             crate::sandbox::ChangeKind::Modified => "✏️ ",
             crate::sandbox::ChangeKind::Created => "📄",
             crate::sandbox::ChangeKind::Deleted => "🗑️",
-            crate::sandbox::ChangeKind::Unchanged => "⚪",
         };
         println!("    {} {} ({})", icon, c.path.display().to_string().bright_white(), c.kind);
     }
@@ -1193,7 +1205,7 @@ pub async fn handle_commit_command(agent: &mut Agent) {
     // Show what will be committed
     let changes = agent.sandbox.changed_files().await;
     println!(
-        "\n{}  {} change(s) will be committed (snapshots discarded):",
+        "\n{}  {} change(s) will be committed to the project:",
         "📦",
         changes.len().to_string().bright_white()
     );
@@ -1202,7 +1214,6 @@ pub async fn handle_commit_command(agent: &mut Agent) {
             crate::sandbox::ChangeKind::Modified => "✏️ ",
             crate::sandbox::ChangeKind::Created => "📄",
             crate::sandbox::ChangeKind::Deleted => "🗑️",
-            crate::sandbox::ChangeKind::Unchanged => "⚪",
         };
         println!("    {} {} ({})", icon, c.path.display().to_string().bright_white(), c.kind);
     }
@@ -1210,7 +1221,7 @@ pub async fn handle_commit_command(agent: &mut Agent) {
 
     let result = agent.sandbox.commit().await;
     println!(
-        "{}  Committed: {} modified, {} created. Snapshots discarded.",
+        "{}  Committed: {} modified, {} created.",
         "✅",
         result.modified.to_string().bright_green(),
         result.created.to_string().bright_green()
@@ -1241,7 +1252,6 @@ pub async fn handle_changes_command(agent: &Agent) {
 
     let mut modified = 0usize;
     let mut created = 0usize;
-    let mut unchanged = 0usize;
 
     println!(
         "\n{}  {} tracked change(s):\n",
@@ -1263,10 +1273,6 @@ pub async fn handle_changes_command(agent: &Agent) {
                 modified += 1; // count as a modification
                 ("🗑️", "deleted".bright_red().to_string())
             }
-            crate::sandbox::ChangeKind::Unchanged => {
-                unchanged += 1;
-                ("⚪", "unchanged".dimmed().to_string())
-            }
         };
         let size_info = match (c.original_size, c.current_size) {
             (Some(orig), Some(curr)) if orig != curr => {
@@ -1286,10 +1292,9 @@ pub async fn handle_changes_command(agent: &Agent) {
 
     println!();
     println!(
-        "  Summary: {} modified, {} created, {} unchanged",
+        "  Summary: {} modified, {} created",
         modified.to_string().bright_yellow(),
         created.to_string().bright_green(),
-        unchanged.to_string().dimmed()
     );
     println!(
         "  Use {} to undo all, {} to accept all.\n",

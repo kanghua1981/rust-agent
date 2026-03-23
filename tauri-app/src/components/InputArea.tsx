@@ -3,9 +3,10 @@ import { useAgentStore } from '../stores/agentStore';
 
 interface Props {
   onSend: (text: string) => void;
+  onCancel?: () => void;
 }
 
-export const InputArea: React.FC<Props> = ({ onSend }) => {
+export const InputArea: React.FC<Props> = ({ onSend, onCancel }) => {
   const { connectionStatus, isProcessing, currentMessage, setCurrentMessage } = useAgentStore();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const disabled = connectionStatus !== 'connected' || isProcessing;
@@ -87,23 +88,44 @@ export const InputArea: React.FC<Props> = ({ onSend }) => {
           />
         </div>
 
-        <button
-          onClick={handleSend}
-          disabled={disabled || !currentMessage.trim()}
-          style={{
-            width: '44px', height: '44px',
-            background: disabled || !currentMessage.trim() ? 'var(--bg3)' : 'var(--accent)',
-            color: disabled || !currentMessage.trim() ? 'var(--text3)' : '#fff',
-            borderRadius: '11px',
-            fontSize: '18px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0,
-            transition: 'background 0.15s, color 0.15s',
-            lineHeight: 1,
-          }}
-        >
-          {isProcessing ? <span className="spin" style={{ fontSize: '16px' }}>⟳</span> : '↑'}
-        </button>
+        {isProcessing ? (
+          <button
+            onClick={onCancel}
+            disabled={!onCancel}
+            title="停止"
+            style={{
+              width: '44px', height: '44px',
+              background: 'var(--error, #e53e3e)',
+              color: '#fff',
+              borderRadius: '11px',
+              fontSize: '16px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0,
+              transition: 'background 0.15s',
+              lineHeight: 1,
+            }}
+          >
+            ■
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={connectionStatus !== 'connected' || !currentMessage.trim()}
+            style={{
+              width: '44px', height: '44px',
+              background: connectionStatus !== 'connected' || !currentMessage.trim() ? 'var(--bg3)' : 'var(--accent)',
+              color: connectionStatus !== 'connected' || !currentMessage.trim() ? 'var(--text3)' : '#fff',
+              borderRadius: '11px',
+              fontSize: '18px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0,
+              transition: 'background 0.15s, color 0.15s',
+              lineHeight: 1,
+            }}
+          >
+            ↑
+          </button>
+        )}
       </div>
 
       <p style={{

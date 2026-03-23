@@ -28,6 +28,9 @@ export const useWebSocket = () => {
     setSessionList,
     removeSessionFromList,
     clearSession,
+    setSandboxBackend,
+    setPendingChanges,
+    setSandboxChangesData,
   } = useAgentStore();
 
   const sendRaw = useCallback((message: ClientMessage) => {
@@ -58,6 +61,10 @@ export const useWebSocket = () => {
     return null;
   }, [sendRaw, workdir, config.model, addMessage, setIsProcessing]);
 
+  const sendCancel = useCallback(() => {
+    sendRaw({ type: 'cancel', data: {} });
+  }, [sendRaw]);
+
   const confirmToolCall = useCallback((toolId: string, approved: boolean) => {
     sendRaw({ type: 'confirm_response', data: { approved, tool_id: toolId } });
     removePendingConfirmation(toolId);
@@ -73,6 +80,22 @@ export const useWebSocket = () => {
 
   const setSandbox = useCallback((enabled: boolean) => {
     sendRaw({ type: 'set_sandbox', data: { enabled } });
+  }, [sendRaw]);
+
+  const sandboxListChanges = useCallback(() => {
+    sendRaw({ type: 'sandbox_list_changes', data: {} });
+  }, [sendRaw]);
+
+  const sandboxCommit = useCallback(() => {
+    sendRaw({ type: 'sandbox_commit', data: {} });
+  }, [sendRaw]);
+
+  const sandboxCommitFile = useCallback((filePath: string) => {
+    sendRaw({ type: 'sandbox_commit_file', data: { file_path: filePath } });
+  }, [sendRaw]);
+
+  const sandboxRollback = useCallback(() => {
+    sendRaw({ type: 'sandbox_rollback', data: {} });
   }, [sendRaw]);
 
   const setWorkdirRemote = useCallback((newWorkdir: string) => {
@@ -108,6 +131,48 @@ export const useWebSocket = () => {
     switch (event.type) {
       case 'ready':
         console.log('[ws] agent ready, version:', event.data.version);
+        // Use the backend label reported by the server (overlay / disabled)
+        setSandboxBackend((event.data.sandbox_backend as 'overlay' | 'snapshot' | 'disabled') ?? 'disabled');
+        setPendingChanges(0);
+        break;
+
+      case 'sandbox_status':
+        setSandboxBackend(event.data.backend);
+        if (event.data.pending_changes !== undefined) {
+          setPendingChanges(event.data.pending_changes);
+        }
+        break;
+
+      case 'sandbox_changes_result':
+        // 存到全局 store 供 SandboxPanel 读取
+        setPendingChanges(event.data.pending_changes);
+        setSandboxChangesData(event.data.files);
+        break;
+
+      case 'sandbox_commit_result':
+        addMessage({
+          id: uuidv4(), role: 'system',
+          content: `✅ 沙盒提交完成：${event.data.modified} 文件修改，${event.data.created} 文件新建`,
+          timestamp: Date.now(),
+        });
+        break;
+
+      case 'sandbox_commit_file_result':
+        addMessage({
+          id: uuidv4(), role: 'system',
+          content: `✅ 已提交文件：${event.data.file_path} ${event.data.created ? '（新建）' : '（修改）'}`,
+          timestamp: Date.now(),
+        });
+        break;
+
+      case 'sandbox_rollback_result':
+        addMessage({
+          id: uuidv4(), role: 'system',
+          content: `↩️ 沙盒回滚完成：${event.data.restored} 文件恢复，${event.data.deleted} 文件删除${
+            event.data.errors.length ? `（错误: ${event.data.errors.join(', ')}）` : ''
+          }`,
+          timestamp: Date.now(),
+        });
         break;
 
       case 'thinking':
@@ -214,6 +279,9 @@ export const useWebSocket = () => {
         setIsProcessing(false);
         streamingMsgIdRef.current = null;
         setStreamingMessageId(null);
+        if (event.data?.pending_changes !== undefined) {
+          setPendingChanges(event.data.pending_changes);
+        }
         if (event.data?.text && lastAssistantMsgIdRef.current) {
           const state = useAgentStore.getState();
           const msg = state.messages.find(m => m.id === lastAssistantMsgIdRef.current);
@@ -226,6 +294,14 @@ export const useWebSocket = () => {
         console.error('[ws] error:', event.data.message);
         setIsProcessing(false);
         addMessage({ id: uuidv4(), role: 'system', content: `错误: ${event.data.message}`, timestamp: Date.now() });
+        break;
+
+      case 'cancelled':
+        setIsProcessing(false);
+        streamingMsgIdRef.current = null;
+        setStreamingMessageId(null);
+        lastAssistantMsgIdRef.current = null;
+        addMessage({ id: uuidv4(), role: 'system', content: '⏹ 已中断', timestamp: Date.now() });
         break;
 
       case 'warning':
@@ -305,26 +381,38 @@ export const useWebSocket = () => {
   }, [
     config.autoApprove, sendRaw, appendToMessage, updateMessage, addMessage,
     addToolCall, updateToolCall, addPendingConfirmation, addDiff,
-    setIsProcessing, setStreamingMessageId, setSessionInfo, setSessionList, removeSessionFromList, clearSession,
+    setIsProcessing, setStreamingMessageId, setSessionInfo, setSessionList,
+    removeSessionFromList, clearSession, setSandboxBackend, setPendingChanges,
   ]);
 
-  // Sync execution mode to server whenever it changes or connection is established.
+  // Sync execution mode and sandbox to server whenever they change or connection is established.
   const agentMode = config.agentMode ?? 'auto';
+  const sandbox = config.sandbox ?? false;
   useEffect(() => {
     if (connectionStatus === 'connected') {
       sendRaw({ type: 'set_mode', data: { mode: agentMode as 'auto' | 'simple' | 'plan' | 'pipeline' } });
+      sendRaw({ type: 'set_sandbox', data: { enabled: sandbox } });
       // 连接建立时发送工作目录
       if (workdir) {
         sendRaw({ type: 'set_workdir', data: { workdir } });
       }
     }
-  }, [agentMode, connectionStatus, sendRaw, workdir]);
+  }, [agentMode, sandbox, connectionStatus, sendRaw, workdir]);
 
   const connect = useCallback(() => {
     wsRef.current?.close();
     setConnectionStatus('connecting');
     try {
-      const ws = new WebSocket(serverUrl);
+      // Pass workdir and sandbox as query parameters so the server can set up
+      // the correct container (mount project dir + optional overlay) before
+      // spawning the worker process.
+      const params: string[] = [];
+      if (workdir) params.push(`workdir=${encodeURIComponent(workdir)}`);
+      if (sandbox) params.push('sandbox=1');
+      const wsUrl = params.length > 0
+        ? `${serverUrl}${serverUrl.includes('?') ? '&' : '/?'}${params.join('&')}`
+        : serverUrl;
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.onopen = () => { setConnectionStatus('connected'); };
       ws.onclose = () => { setConnectionStatus('disconnected'); streamingMsgIdRef.current = null; setStreamingMessageId(null); setIsProcessing(false); };
@@ -337,7 +425,7 @@ export const useWebSocket = () => {
       setConnectionStatus('error');
       console.error('[ws] connect failed:', err);
     }
-  }, [serverUrl, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
+  }, [serverUrl, workdir, sandbox, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
 
   const disconnect = useCallback(() => {
     // Guard: only update global state if this hook instance actually owns a WebSocket.
@@ -360,10 +448,15 @@ export const useWebSocket = () => {
     connect,
     disconnect,
     sendUserMessage,
+    sendCancel,
     confirmToolCall,
     answerQuestion,
     reviewPlan,
     setSandbox,
+    sandboxListChanges,
+    sandboxCommit,
+    sandboxCommitFile,
+    sandboxRollback,
     setWorkdirRemote,
     setModelRemote,
     loadSession,

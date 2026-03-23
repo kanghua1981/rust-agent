@@ -6,17 +6,18 @@ import { InputArea } from './components/InputArea';
 import { ToolsPanel } from './components/ToolsPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SessionsPanel } from './components/SessionsPanel';
+import { SandboxPanel } from './components/SandboxPanel';
 import { ConnectModal } from './components/ConnectModal';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [showConnect, setShowConnect] = useState(false);
 
-  const { connect, disconnect, sendUserMessage, confirmToolCall, answerQuestion, reviewPlan, loadSession, newSession } = useWebSocket();
+  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, loadSession, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback } = useWebSocket();
   const { reset } = useAgentStore();
 
   const handleConnect = () => {
@@ -59,12 +60,20 @@ function App() {
                 onAnswer={(id, answer) => { answerQuestion(answer); useAgentStore.getState().removePendingConfirmation(id); }}
                 onReviewPlan={(id, approved, feedback) => { reviewPlan(approved, feedback); useAgentStore.getState().removePendingConfirmation(id); }}
               />
-              <InputArea onSend={sendUserMessage} />
+              <InputArea onSend={sendUserMessage} onCancel={sendCancel} />
             </>
           )}
           {activeTab === 'tools' && <ToolsPanel />}
           {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} />}
           {activeTab === 'settings' && <SettingsPanel />}
+          {activeTab === 'sandbox' && (
+            <SandboxPanel
+              onSandboxListChanges={sandboxListChanges}
+              onCommit={sandboxCommit}
+              onCommitFile={sandboxCommitFile}
+              onRollback={sandboxRollback}
+            />
+          )}
         </main>
       </div>
 
