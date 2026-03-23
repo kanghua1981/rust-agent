@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { MessageItem } from './MessageItem';
 import { ConfirmCard } from './ConfirmCard';
@@ -12,13 +12,25 @@ interface Props {
 export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan }) => {
   const { messages, pendingConfirmations, streamingMessageId, connectionStatus, isProcessing } = useAgentStore();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Track whether the user is near the bottom. Start true so initial messages auto-scroll.
+  const isNearBottomRef = useRef(true);
 
-  // Only scroll when the number of messages or confirmations changes,
-  // NOT on every streaming token (which would flood scrolls and land on tool cards).
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    // "Near bottom" = within 200px of the bottom edge
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+  }, []);
+
+  // Auto-scroll only when user is already near the bottom.
+  // This way reading history is never interrupted by new messages.
   const msgCount = messages.length;
   const confirmCount = pendingConfirmations.length;
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [msgCount, confirmCount]);
 
   if (connectionStatus === 'disconnected' || connectionStatus === 'error') {
@@ -63,10 +75,14 @@ export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan })
   }
 
   return (
-    <div style={{
-      flex: 1, overflowY: 'auto', padding: '20px 24px',
-      display: 'flex', flexDirection: 'column',
-    }}>
+    <div
+      ref={scrollContainerRef}
+      onScroll={handleScroll}
+      style={{
+        flex: 1, overflowY: 'auto', padding: '20px 24px',
+        display: 'flex', flexDirection: 'column',
+      }}
+    >
       {messages.length === 0 ? (
         <div style={{
           flex: 1, display: 'flex', flexDirection: 'column',

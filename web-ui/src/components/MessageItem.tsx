@@ -31,8 +31,11 @@ const AgentAvatar = () => (
 const formatTime = (ts: number) =>
   new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
-export const MessageItem: React.FC<Props> = ({ message, isStreaming }) => {
-  const { toolCalls, diffs } = useAgentStore();
+export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
+  // Use precise selectors so this component only re-renders when toolCalls/diffs
+  // actually change, NOT on every streaming token.
+  const toolCalls = useAgentStore(state => state.toolCalls);
+  const diffs = useAgentStore(state => state.diffs);
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
@@ -141,12 +144,14 @@ export const MessageItem: React.FC<Props> = ({ message, isStreaming }) => {
             {isUser ? (
               <span style={{ whiteSpace: 'pre-wrap', fontSize: '14px' }}>{message.content}</span>
             ) : (
-              <div className={`md-content ${isStreaming && !message.content ? '' : ''}`} style={{ fontSize: '14px' }}>
-                {message.content ? (
-                  <ReactMarkdown>
-                    {message.content}
-                  </ReactMarkdown>
-                ) : null}
+              <div className="md-content" style={{ fontSize: '14px' }}>
+                {isStreaming ? (
+                  // Plain text during streaming — avoids re-parsing full Markdown
+                  // on every token which would saturate the JS thread.
+                  <span style={{ whiteSpace: 'pre-wrap' }}>{message.content}</span>
+                ) : (
+                  message.content ? <ReactMarkdown>{message.content}</ReactMarkdown> : null
+                )}
                 {isStreaming && <span className="cursor" />}
               </div>
             )}
@@ -173,4 +178,6 @@ export const MessageItem: React.FC<Props> = ({ message, isStreaming }) => {
       </div>
     </div>
   );
-};
+});
+
+MessageItem.displayName = 'MessageItem';

@@ -9,6 +9,16 @@ interface Props {
 
 // ── Export helpers ────────────────────────────────────────────────────────────
 
+// Detect Tauri runtime (window.__TAURI__ is injected by Tauri WebView)
+const isTauri = () => typeof window !== 'undefined' && '__TAURI__' in window;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tauriInvoke = (): ((cmd: string, args?: Record<string, unknown>) => Promise<any>) | null => {
+  if (!isTauri()) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (window as any).__TAURI__.core?.invoke ?? (window as any).__TAURI__.tauri?.invoke ?? null;
+};
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -18,26 +28,64 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function exportAsMarkdown(messages: ReturnType<typeof useAgentStore.getState>['messages']) {
+async function saveViaTauri(content: string, filename: string): Promise<string> {
+  const invoke = tauriInvoke()!;
+  const homeDir = await invoke('get_home_dir');
+  const filePath = `${homeDir}/Downloads/${filename}`;
+  await invoke('write_file', { path: filePath, content });
+  return filePath;
+}
+
+async function exportAsMarkdown(
+  messages: ReturnType<typeof useAgentStore.getState>['messages'],
+  onSaved: (path: string) => void,
+  onError: (err: string) => void,
+) {
   const lines: string[] = [`# Agent 对话导出\n\n> 导出时间: ${new Date().toLocaleString()}\n`];
   for (const msg of messages) {
     if (msg.role === 'system') continue;
     const label = msg.role === 'user' ? '**用户**' : '**助手**';
     lines.push(`---\n\n${label}\n\n${msg.content}\n`);
   }
-  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
-  downloadBlob(blob, `agent-chat-${Date.now()}.md`);
+  const filename = `agent-chat-${Date.now()}.md`;
+  const text = lines.join('\n');
+  if (isTauri()) {
+    try {
+      const path = await saveViaTauri(text, filename);
+      onSaved(path);
+    } catch (e) {
+      onError(String(e));
+    }
+  } else {
+    downloadBlob(new Blob([text], { type: 'text/markdown;charset=utf-8' }), filename);
+    onSaved(filename);
+  }
 }
 
-function exportAsJson(messages: ReturnType<typeof useAgentStore.getState>['messages']) {
+async function exportAsJson(
+  messages: ReturnType<typeof useAgentStore.getState>['messages'],
+  onSaved: (path: string) => void,
+  onError: (err: string) => void,
+) {
   const data = {
     exported_at: new Date().toISOString(),
     messages: messages
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role, content: m.content, timestamp: m.timestamp })),
   };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
-  downloadBlob(blob, `agent-chat-${Date.now()}.json`);
+  const filename = `agent-chat-${Date.now()}.json`;
+  const text = JSON.stringify(data, null, 2);
+  if (isTauri()) {
+    try {
+      const path = await saveViaTauri(text, filename);
+      onSaved(path);
+    } catch (e) {
+      onError(String(e));
+    }
+  } else {
+    downloadBlob(new Blob([text], { type: 'application/json;charset=utf-8' }), filename);
+    onSaved(filename);
+  }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -46,6 +94,16 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
   const { messages, sessionList } = useAgentStore();
   const { listSessions, deleteSession, loadSessionById, isConnected } = useWebSocket();
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<{ ok?: string; err?: string } | null>(null);
+
+  const handleSaved = (path: string) => {
+    setSaveStatus({ ok: isTauri() ? `已保存到: ${path}` : '已下载' });
+    setTimeout(() => setSaveStatus(null), 4000);
+  };
+  const handleSaveError = (err: string) => {
+    setSaveStatus({ err });
+    setTimeout(() => setSaveStatus(null), 5000);
+  };
 
   // Auto-load list when panel becomes active and connected
   useEffect(() => {
@@ -95,12 +153,16 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
               当前对话 · {messages.filter(m => m.role !== 'system').length} 条消息
             </p>
             <p style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '2px' }}>
-              将聊天记录导出到本地文件
+              {saveStatus?.ok
+                ? <span style={{ color: '#4caf50' }}>{saveStatus.ok}</span>
+                : saveStatus?.err
+                  ? <span style={{ color: '#f44336' }}>保存失败: {saveStatus.err}</span>
+                  : '将聊天记录导出到本地文件'}
             </p>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
-              onClick={() => exportAsMarkdown(messages)}
+              onClick={() => exportAsMarkdown(messages, handleSaved, handleSaveError)}
               disabled={messages.length === 0}
               style={{
                 ...btnBase,
@@ -112,7 +174,7 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
               ↓ Markdown
             </button>
             <button
-              onClick={() => exportAsJson(messages)}
+              onClick={() => exportAsJson(messages, handleSaved, handleSaveError)}
               disabled={messages.length === 0}
               style={{
                 ...btnBase,
