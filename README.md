@@ -20,7 +20,7 @@
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
 - **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示
-- **�️ 沙盒模式**: `--sandbox` 启动，两种后端（OverlayFS / 快照），`/changes` 查看 · `/rollback` 回滚 · `/commit` 提交
+- **🛡️ 沙盒模式**: `--sandbox` 全局启用，或 Web UI 逐连接开启；基于 Linux 内核 overlayfs 容器隔离（`fuse-overlayfs` 驱动），`/changes` 查看 · `/rollback` 回滚 · `/commit` 提交（支持 Web UI 逐文件提交）；`extra_binds` 配置将 rustup/cargo/node 等工具链挂载进容器
 - **🤖 多 Agent 协作**: 通过 `call_sub_agent` 工具实现任务委派，支持子目录隔离、实时事件代理及授权转发。可在 `models.toml` 中预设专家 Agent
 - **🛡️ 上下文安全截断**: 智能保持 tool_use/tool_result 配对完整性，避免 API 错误
 - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低
@@ -602,22 +602,110 @@ Agent 在执行以下操作前会要求确认：
 
 ## 🛡️ 沙盒模式
 
-通过 `--sandbox` 启动，所有文件修改都在隔离环境中进行，原始项目受到保护：
+沙盒模式让 Agent 在完全隔离的环境中工作，对原始项目**零写入**。满意后一键提交；不满意则全部回滚，源码原封不动。
+
+### 启用方式
+
+**服务器启动时全局开启（推荐）：**
 
 ```bash
-./target/release/agent --sandbox
+./target/release/agent --mode server --sandbox
 ```
 
-| 后端 | 条件 | 保护范围 |
-|------|------|----------|
-| **Overlay**（叠加层） | Linux + `fuse-overlayfs` | 全部写入 + 命令副作用 |
-| **Snapshot**（快照） | 跨平台回退 | 仅工具直接写入的文件 |
+**Web UI / WebSocket 客户端逐连接开启：**
+
+ConnectModal 中勾选「启用沙盒模式」，或在 WebSocket URL 中附加参数：
+
+```
+ws://localhost:9527?sandbox=1&workdir=/your/project
+```
+
+### 隔离后端
+
+沙盒只有一种后端：**Overlay**（overlayfs 叠加层）。依赖 `fuse-overlayfs`，若不可用则沙盒直接禁用（不会降级保护）。
+
+| 状态 | 条件 | 效果 |
+|------|------|------|
+| **Overlay 激活** | Linux + 已安装 `fuse-overlayfs` | 全部文件写入 + 命令副作用均被隔离，原始项目零写入 |
+| **沙盒禁用** | `fuse-overlayfs` 不可用 | 沙盒请求失败，前端收到警告，操作直接作用于真实项目 |
+
+**Overlay 架构示意：**
+
+```
+原始项目目录（只读 lower layer）
+        +
+tmpfs 上层（upper layer，所有写入落这里）
+        =
+Agent 看到的完整视图（merged，读写透明）
+```
+
+### 容器隔离（Linux Overlay 模式）
+
+开启 Overlay 后端时，每个 WebSocket 连接都在独立的 **Linux 用户命名空间 + 挂载命名空间**中运行：
+
+- 原始项目以 overlayfs lower layer 挂载，Agent 所有写操作由内核重定向到 tmpfs
+- `run_command` 执行的 Shell 命令也在此隔离环境中运行，构建产物不污染源码树
+- 连接断开或回滚时，tmpfs 上层自动清理
+
+### 扩展工具链（`extra_binds`）
+
+容器默认只挂载系统标准路径。若项目需要 `rustup`、`cargo`、`node` 等非标准工具链，可在 `~/.config/rust_agent/models.toml` 中配置额外挂载：
+
+```toml
+# 挂载 rustup 工具链（需写权限以支持缓存）
+[[extra_binds]]
+src = "/home/user/.rustup"
+dst = "/root/.rustup"
+readonly = false
+
+[[extra_binds]]
+src = "/home/user/.cargo"
+dst = "/root/.cargo"
+readonly = false
+
+# 挂载只读数据目录
+[[extra_binds]]
+src = "/opt/datasets"
+dst = "/datasets"
+readonly = true
+```
+
+### 沙盒命令
 
 | 命令 | 说明 |
 |------|------|
-| `/changes` | 列出所有已修改 / 新增 / 删除的文件 |
-| `/rollback` | 撤销全部改动，恢复到改动前 |
-| `/commit` | 将改动落入真实项目（overlay 合并 / 清除快照） |
+| `/changes` | 列出所有已修改 / 新增 / 删除的文件（含大小变化） |
+| `/rollback` | 撤销**全部**改动，恢复到沙盒建立时的状态 |
+| `/commit` | 将 overlay 上层的所有变更合并写入原始项目目录 |
+
+Web UI 的「沙盒」面板还支持**逐文件提交**：点击单个文件右侧的 ✓ 按钮，只将该文件合并到原始目录，其余改动继续保留在沙盒中。
+
+### 状态标识（Web UI）
+
+Header 会实时显示沙盒状态徽标：
+
+- 🔒 **沙盒**（绿色）：沙盒激活，无待提交改动
+- 🔒 **沙盒 · N 待提交**（黄色）：有 N 个文件已修改，尚未提交
+
+### 典型工作流
+
+```bash
+# 1. 以沙盒模式启动（--sandbox 对所有连接生效）
+./target/release/agent --mode server --sandbox
+
+# 2. 在 Web UI 连接并指派任务（所有修改都在隔离层）
+# 或：CLI 模式
+./target/release/agent --sandbox --workdir /path/to/project
+
+# 3. 查看 Agent 做了什么
+🤖 > /changes
+
+# 4a. 满意 → 提交到真实项目
+🤖 > /commit
+
+# 4b. 不满意 → 全部回滚
+🤖 > /rollback
+```
 
 ---
 

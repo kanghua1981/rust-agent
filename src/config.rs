@@ -131,7 +131,7 @@ impl Config {
             max_tool_iterations: args.max_iterations,
             model_alias,
             sub_agents,
-            extra_binds: vec![],
+            extra_binds: models_cfg.extra_binds.clone(),
         })
     }
 

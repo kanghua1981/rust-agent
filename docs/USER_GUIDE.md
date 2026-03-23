@@ -34,12 +34,18 @@
     - [添加新模型](#添加新模型)
     - [设置默认模型](#设置默认模型)
     - [通过 CLI 参数指定](#通过-cli-参数指定)
+  - [� 执行模式切换](#-执行模式切换)
+    - [查看当前模式](#查看当前模式)
+    - [切换执行模式](#切换执行模式)
+    - [执行模式说明](#执行模式说明)
+    - [自适应路由](#自适应路由)
   - [📝 Plan 模式（先分析后执行）](#-plan-模式先分析后执行)
-    - [/plan 斜杠命令（手动）](#plan-斜杠命令手动)
+    - [`/plan` 斜杠命令（手动）](#plan-斜杠命令手动)
     - [自动 Pipeline（Planner → Executor → Checker）](#自动-pipelineplanner--executor--checker)
-    - [计划审核](#计划审核)
-    - [执行前注入背景（approve 时）](#执行前注入背景approve-时)
-    - [执行中随时打断（Ctrl+\\）](#执行中随时打断ctrl)
+      - [流程概览](#流程概览)
+      - [计划审核](#计划审核)
+      - [执行前注入背景（approve 时）](#执行前注入背景approve-时)
+      - [执行中随时打断（Ctrl+\\）](#执行中随时打断ctrl)
   - [📜 会话管理](#-会话管理)
     - [列出历史会话](#列出历史会话)
     - [恢复会话](#恢复会话)
@@ -54,11 +60,34 @@
     - [查看已加载的 Skills](#查看已加载的-skills)
   - [✏️ 自定义系统提示词](#️-自定义系统提示词)
   - [🔒 安全与确认机制](#-安全与确认机制)
-  - [🛡️ 沙盒模式（文件保护与回滚）](#️-沙盒模式文件保护与回滚)
     - [需要确认的操作](#需要确认的操作)
     - [确认交互](#确认交互)
     - [跳过确认](#跳过确认)
     - [无需确认的操作](#无需确认的操作)
+  - [🛡️ 沙盒模式（文件保护与回滚）](#️-沙盒模式文件保护与回滚)
+    - [启用方式](#启用方式)
+      - [方式一：服务器启动时全局开启（推荐 Web UI 用户）](#方式一服务器启动时全局开启推荐-web-ui-用户)
+      - [方式二：CLI 模式逐次开启](#方式二cli-模式逐次开启)
+      - [方式三：Web UI 逐连接开启](#方式三web-ui-逐连接开启)
+    - [隔离后端](#隔离后端)
+    - [Overlay 后端架构](#overlay-后端架构)
+    - [扩展工具链（`extra_binds`）](#扩展工具链extra_binds)
+    - [沙盒命令（CLI）](#沙盒命令cli)
+      - [`/changes` — 查看改动](#changes--查看改动)
+      - [`/rollback` — 撤销全部改动](#rollback--撤销全部改动)
+      - [`/commit` — 提交改动](#commit--提交改动)
+    - [Web UI 沙盒面板](#web-ui-沙盒面板)
+    - [典型工作流](#典型工作流)
+    - [故障排查](#故障排查)
+  - [🤖 多 Agent 协作（多进程专家池）](#-多-agent-协作多进程专家池)
+    - [为什么需要多 Agent？](#为什么需要多-agent)
+    - [两种子 Agent 调用方式](#两种子-agent-调用方式)
+      - [1. `call_sub_agent` - 连接预启动的 WebSocket 服务器](#1-call_sub_agent---连接预启动的-websocket-服务器)
+      - [2. `spawn_sub_agent` - 动态创建 stdio 子进程](#2-spawn_sub_agent---动态创建-stdio-子进程)
+    - [工具参数说明](#工具参数说明)
+      - [`call_sub_agent` 参数：](#call_sub_agent-参数)
+      - [`spawn_sub_agent` 参数：](#spawn_sub_agent-参数)
+    - [透明度与安全](#透明度与安全)
   - [🧰 内置工具一览](#-内置工具一览)
     - [外部依赖（可选）](#外部依赖可选)
   - [🏷️ CLI 参数速查](#️-cli-参数速查)
@@ -423,7 +452,7 @@ git checkout -b fix/my-feature
 | `/plan clear` | 清除当前计划 |
 | `/changes` | 查看沙盒模式下所有已修改的文件 |
 | `/rollback` | 撤销沙盒内的全部改动，恢复原始状态 |
-| `/commit` | 将沙盒改动写入真实项目（overlay 模式）或确认保留（snapshot 模式） |
+| `/commit` | 将沙盒改动（overlay 上层）合并写入真实项目目录 |
 | `/skills` | 查看已加载的项目 Skills |
 | `/quit` | 退出（自动保存会话） |
 
@@ -875,27 +904,106 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ## 🛡️ 沙盒模式（文件保护与回滚）
 
-通过 `--sandbox` 启动参数开启沙盒模式。开启后所有文件修改都在隔离环境中进行，原始项目受到保护，出问题随时可以回滚。
+沙盒模式是本工具的核心安全特性。开启后，Agent 对原始项目**零写入**——所有文件修改都落入隔离层，你可以随时查看、提交或回滚，源码始终受到保护。
+
+### 启用方式
+
+#### 方式一：服务器启动时全局开启（推荐 Web UI 用户）
+
+```bash
+# 服务器模式下，所有后续 Web UI 连接默认启用沙盒
+./target/release/agent --mode server --sandbox
+
+# 同时指定工作目录
+./target/release/agent --mode server --sandbox --workdir /path/to/project
+```
+
+#### 方式二：CLI 模式逐次开启
 
 ```bash
 ./target/release/agent --sandbox
+./target/release/agent --sandbox --workdir /path/to/project
 ```
 
-### 两种后端
+#### 方式三：Web UI 逐连接开启
 
-| 后端 | 触发条件 | 保护范围 | 说明 |
-|------|---------|---------|------|
-| **Overlay**（叠加层） | Linux + 已安装 `fuse-overlayfs` | 全部文件写入，含命令副作用（如 `cargo build` 产物） | 原始项目**完全不动**，所有写入落入上层；Agent 崩溃也不影响源文件 |
-| **Snapshot**（快照） | 跨平台回退方案 | 仅 Agent 工具直接写入的文件 | 每次写入前自动备份；命令（`run_command`）的副作用不纳入跟踪 |
+在 ConnectModal（连接对话框）中勾选「启用沙盒模式」，即可仅对当前连接启用沙盒，服务器无需加 `--sandbox` 参数。
 
-启动时会显示当前使用的后端及操作提示：
+也可在 WebSocket URL 中显式指定：
+
+```
+ws://localhost:9527?sandbox=1&workdir=/path/to/project
+```
+
+### 两种隔离后端
+
+| 后端 | 触发条件 | 保护范围 | 适用场景 |
+|------|---------|---------|---------|
+| **Overlay**（内核叠加层） | Linux + 已安装 `fuse-overlayfs` | 全部文件写入 + 命令副作用（如 `cargo build` 产物） | 生产环境推荐，保护最完整 |
+| **Snapshot**（快照） | 跨平台回退方案（overlayfs 不可用时自动回退） | 仅 Agent 工具直接写入的文件 | 非 Linux 环境，或快速体验 |
+
+启动时终端会显示当前后端：
 
 ```
 🔒  Sandbox enabled (overlay) — original project untouched, all changes in overlay layer
    Use /changes to view changes, /rollback to undo, /commit to accept.
 ```
 
-### 沙盒命令
+### Overlay 后端架构
+
+Overlay 后端使用 Linux 内核的 overlayfs 叠加文件系统，结合 **用户命名空间（user namespace）+ 挂载命名空间（mount namespace）** 实现进程级隔离：
+
+```
+┌─────────────────── Agent 进程看到的视图 ───────────────────────┐
+│                     /workspace (merged)                       │
+│   读：优先读 upper，upper 没有则穿透到 lower                   │
+│   写：所有写操作由内核重定向到 upper（tmpfs），lower 不变       │
+└───────────────────────────────────────────────────────────────┘
+              ↑                          ↑
+    upper layer (tmpfs)          lower layer (bind mount)
+    所有写入落这里                 原始项目目录，只读
+    Agent 崩溃自动清理            始终不动
+```
+
+每个 WebSocket 连接独立一个命名空间：
+- 不同客户端同时连接互不干扰
+- 连接断开或回滚后，tmpfs 上层自动清理，不留垃圾文件
+- `run_command` 执行的 Shell 命令（如 `cargo build`、`make`）也在此隔离环境中运行，构建产物不污染源码树
+
+### 扩展工具链（`extra_binds`）
+
+容器环境默认只挂载系统标准路径（`/usr`、`/lib`、`/bin` 等）。若项目需要 `rustup`、`cargo`、`node`、浏览器等非标准工具，需在 `~/.config/rust_agent/models.toml` 中配置额外绑定挂载：
+
+```toml
+# Rust 工具链（rustup 管理的版本，需写权限以支持 sccache / target 缓存）
+[[extra_binds]]
+src = "/home/user/.rustup"
+dst = "/root/.rustup"
+readonly = false
+
+[[extra_binds]]
+src = "/home/user/.cargo"
+dst = "/root/.cargo"
+readonly = false
+
+# Node.js（只读即可）
+[[extra_binds]]
+src = "/usr/local/lib/nodejs"
+dst = "/usr/local/lib/nodejs"
+readonly = true
+
+# 只读数据集或模型权重
+[[extra_binds]]
+src = "/mnt/models"
+dst = "/models"
+readonly = true
+```
+
+> **提示**：可以通过 `which rustc` / `which cargo` 在宿主机确认工具链路径，再填写到 `src`。
+
+配置后重启 server，沙盒内的 `run_command` 即可调用这些工具链。
+
+### 沙盒命令（CLI）
 
 #### `/changes` — 查看改动
 
@@ -917,7 +1025,7 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 ✅  Rollback complete: 2 files restored, 1 file deleted
 ```
 
-> ⚠️  rollback 不可逆，执行前请确认。
+> ⚠️ rollback 不可逆，执行前请确认。rollback 后可以继续与 Agent 对话，从干净状态重新开始。
 
 #### `/commit` — 提交改动
 
@@ -927,14 +1035,31 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 ✅  Committed: 2 modified, 1 created
 ```
 
-- **Overlay 模式**：将上层修改合并写入原始项目目录，并卸载挂载点。
-- **Snapshot 模式**：清除备份快照，将已在磁盘上的文件视为最终结果。
+将 tmpfs 上层的所有变更合并写入原始项目目录，然后卸载 overlayfs。
+
+### Web UI 沙盒面板
+
+使用 Web UI 时，顶部 Header 会显示沙盒状态徽标：
+
+| 徽标 | 含义 |
+|------|------|
+| 🔒 **沙盒**（绿色）| 沙盒已激活，尚无待提交的改动 |
+| 🔒 **沙盒 · N 待提交**（黄色）| 有 N 个文件已修改/新建，等待处理 |
+
+点击「沙盒」徽标（或通过侧边栏「沙盒」Tab）可打开**沙盒面板**，其中提供：
+
+- **改动列表**：显示所有 modified / created / deleted 文件及大小变化
+- **全量提交**：一键将所有改动合并到原始项目
+- **全量回滚**：一键撤销所有改动
+- **逐文件提交** ✓：点击单个文件右侧的 ✓ 按钮，只将该文件合并到原始目录，其他改动继续保留在沙盒中——适合部分接受 Agent 修改的场景
 
 ### 典型工作流
 
+**CLI 模式：**
+
 ```bash
 # 1. 以沙盒模式启动
-./target/release/agent --sandbox
+./target/release/agent --sandbox --workdir /path/to/project
 
 # 2. 指派任务（所有修改都在隔离层）
 🤖 > 帮我重构 GPIO 驱动，统一用 HAL 接口
@@ -942,12 +1067,52 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 # 3. 查看 Agent 做了什么
 🤖 > /changes
 
-# 4a. 满意 → 提交
+# 4a. 满意 → 提交到真实项目
 🤖 > /commit
 
-# 4b. 不满意 → 回滚
+# 4b. 不满意 → 全部回滚
 🤖 > /rollback
+
+# 4c. 部分满意 → 先回滚，再让 Agent 重新针对性修改，再提交
+🤖 > /rollback
+🤖 > 只修改 gpio.c，不要动 gpio.h
+🤖 > /commit
 ```
+
+**Web UI 模式：**
+
+1. 启动服务器：`./target/release/agent --mode server --sandbox`
+2. 在 ConnectModal 填写服务器地址，确认「启用沙盒模式」已勾选，点击连接
+3. 在聊天框输入任务，Agent 执行期间 Header 会显示「🔒 沙盒 · N 待提交」
+4. 打开沙盒面板查看改动详情
+5. 逐文件或全量提交/回滚
+
+### 故障排查
+
+**Q：连接后收到「⚠️ 沙盒模式请求失败」警告**
+
+沙盒只有 Overlay 一种后端，依赖 `fuse-overlayfs`。若该工具不存在，沙盒直接禁用，**不会降级保护**，所有文件操作将直接作用于真实项目。安装方式：
+
+```bash
+# Ubuntu / Debian
+sudo apt install fuse-overlayfs
+
+# Arch Linux
+sudo pacman -S fuse-overlayfs
+
+# 验证
+fuse-overlayfs --version
+```
+
+安装后重启 Agent 并重新连接即可。
+
+**Q：容器内 `cargo`/`rustc` 命令找不到**
+
+需在 `models.toml` 中添加 `extra_binds` 将 `~/.rustup` 和 `~/.cargo` 挂载进容器。详见上方「扩展工具链」小节。
+
+**Q：`/commit` 后原始项目文件有变化，但 Git 没有显示 diff**
+
+文件内容与提交前完全相同时，Git 不会报变更。可以用 `/changes` 确认沙盒内的改动是否非空，再决定是否提交。
 
 ---
 

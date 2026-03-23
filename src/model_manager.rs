@@ -25,6 +25,17 @@ pub struct ModelsConfig {
     #[serde(default)]
     pub models: BTreeMap<String, ModelEntry>,
 
+    /// Extra bind-mounts injected into every worker container.
+    /// Example in models.toml:
+    ///   [[extra_binds]]
+    ///   host   = "/home/user/.rustup"
+    ///   target = "/.rustup"
+    ///   [[extra_binds]]
+    ///   host   = "/home/user/.cargo"
+    ///   target = "/.cargo"
+    #[serde(default)]
+    pub extra_binds: Vec<crate::container::ExtraBindMount>,
+
     /// Role definitions (planner, executor, checker, or any custom name).
     #[serde(default)]
     pub roles: BTreeMap<String, RoleConfig>,
