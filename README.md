@@ -21,8 +21,8 @@
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
 - **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示
-- **🛡️ 沙盒模式**: `--sandbox` 全局启用，或 Web UI 逐连接开启；基于 Linux 内核 overlayfs 容器隔离（`fuse-overlayfs` 驱动），`/changes` 查看 · `/rollback` 回滚 · `/commit` 提交（支持 Web UI 逐文件提交）；`extra_binds` 配置将 rustup/cargo/node 等工具链挂载进容器
-- **🤖 多 Agent 协作**: 通过 `call_sub_agent` 工具实现任务委派，支持子目录隔离、实时事件代理及授权转发。可在 `models.toml` 中预设专家 Agent
+- **🛡️ 三种隔离模式**: `--isolation normal/container/sandbox` 按需选择；`normal` 直接运行、`container` namespace+rootfs 隔离直写、`sandbox` 额外叠加 overlayfs 保护（`/changes` · `/rollback` · `/commit`，Web UI 支持逐文件提交）；`extra_binds` 配置将 rustup/cargo/node 等工具链挂载进容器
+- **🤖 多 Agent 协作**: 通过 `call_node` 工具实现任务委派，支持按名称、直连 URL、标签路由和广播四种寻址方式（`any:<tag>` / `all:<tag>`）；实时事件代理及授权转发。先用 `list_nodes` 查看可用节点
 - **🛡️ 上下文安全截断**: 智能保持 tool_use/tool_result 配对完整性，避免 API 错误
 - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低
 
@@ -219,31 +219,24 @@ model = "sonnet"
 
 #### 多 Agent 协作模式
 
-Agent 支持两种子 Agent 调用机制，实现任务分解与委派：
+Agent 通过 `call_node` 工具实现任务委派，支持将复杂任务分发给其他 Agent 实例：
 
-**1. `call_sub_agent` - 连接预启动的 WebSocket 服务器**
+**target 参数寻址方式**
 ```bash
-# 配置专家池（models.toml）
-[sub_agents.coder]
-port = 9001
-role = "代码实现专家"
+# 1. 按名称（优先用 list_nodes 查看可用节点）
+target = "build-server"
 
-[sub_agents.reviewer]
-port = 9002
-role = "代码审查专家"
+# 2. 直接 WebSocket URL
+target = "ws://192.168.1.10:9527"
+
+# 3. 标签路由：自动分配给第一个匹配的节点
+target = "any:gpu"
+
+# 4. 广播：向所有匹配节点广播
+target = "all:embedded"
 ```
 
-**2. `spawn_sub_agent` - 动态创建 stdio 子进程**
-```bash
-# 无需预配置，按需创建临时子进程
-# 适合一次性小任务，默认自动批准工具调用
-```
-
-**特点对比：**
-- **`call_sub_agent`**: 长期服务，保持状态，适合专家池
-- **`spawn_sub_agent`**: 临时任务，用完即焚，无需维护
-
-两种方式都支持 `target_dir` 参数隔离工作目录，确保子 Agent 不会误操作全局文件。
+**支持指定远端隔离模式**和工作目录，远窳 Agent 的所有工具调用均实时回放到主 Agent。用前调用 `list_nodes` 确认可用节点名称。
 
 #### WebSocket 服务器模式（远程 / Web UI 集成）
 
@@ -677,52 +670,61 @@ Agent 在执行以下操作前会要求确认：
 
 ---
 
-## 🛡️ 沙盒模式
+## 🛡️ 隔离模式
 
-沙盒模式让 Agent 在完全隔离的环境中工作，对原始项目**零写入**。满意后一键提交；不满意则全部回滚，源码原封不动。
+Agent 支持三种隔离模式，按安全需求选择：
+
+| 模式 | 参数值 | rootfs | overlayfs | /rollback | 适用场景 |
+|------|--------|--------|-----------|-----------|----------|
+| **Normal** | `normal` | ✗ | ✗ | ✗ | 本地开发、完全信任的自动化 |
+| **Container** | `container` | ✅ | ✗ | ✗ | 进程隔离、直写结果（**默认**）|
+| **Sandbox** | `sandbox` | ✅ | ✅ | ✅ | overlayfs 保护，支持回滚与提交 |
 
 ### 启用方式
 
-**服务器启动时全局开启（推荐）：**
+**服务器启动（全局生效）：**
 
 ```bash
-./target/release/agent --mode server --sandbox
+# 默认使用 container 模式
+./target/release/agent --mode server
+
+# 指定 sandbox 模式（所有连接均受 overlay 保护）
+./target/release/agent --mode server --isolation sandbox
+
+# normal 模式（无容器，兼容性最好）
+./target/release/agent --mode server --isolation normal
 ```
 
-**Web UI / WebSocket 客户端逐连接开启：**
+**Web UI / WebSocket 客户端逐连接指定：**
 
-ConnectModal 中勾选「启用沙盒模式」，或在 WebSocket URL 中附加参数：
+在 ConnectModal 的「隔离模式」下拉菜单中选择，或在 WebSocket URL 中附加参数：
 
 ```
+# 新参数（推荐）
+ws://localhost:9527?mode=sandbox&workdir=/your/project
+ws://localhost:9527?mode=normal&workdir=/your/project
+
+# 向后兼容（sandbox=1 映射到 sandbox 模式）
 ws://localhost:9527?sandbox=1&workdir=/your/project
 ```
 
-### 隔离后端
+### 隔离实现
 
-沙盒只有一种后端：**Overlay**（overlayfs 叠加层）。依赖 `fuse-overlayfs`，若不可用则沙盒直接禁用（不会降级保护）。
+Container 与 Sandbox 模式均使用 **Linux 用户命名空间 + 挂载命名空间**，worker 进程在隔离的 rootfs 内运行：
 
-| 状态 | 条件 | 效果 |
-|------|------|------|
-| **Overlay 激活** | Linux + 已安装 `fuse-overlayfs` | 全部文件写入 + 命令副作用均被隔离，原始项目零写入 |
-| **沙盒禁用** | `fuse-overlayfs` 不可用 | 沙盒请求失败，前端收到警告，操作直接作用于真实项目 |
+- 进程视图与宿主分离，看不到 `/home` 等宿主目录
+- `run_command` 执行的 Shell 命令也在此命名空间内运行
+- 连接断开时，mount namespace 随进程退出自动销毁，不留垃圾文件
 
-**Overlay 架构示意：**
+**Sandbox 模式额外叠加 overlayfs：**
 
 ```
-原始项目目录（只读 lower layer）
+原始项目目录（lower layer，内核保证不可绕过写入）
         +
 tmpfs 上层（upper layer，所有写入落这里）
         =
-Agent 看到的完整视图（merged，读写透明）
+Agent 看到的完整视图（/workspace，读写透明）
 ```
-
-### 容器隔离（Linux Overlay 模式）
-
-开启 Overlay 后端时，每个 WebSocket 连接都在独立的 **Linux 用户命名空间 + 挂载命名空间**中运行：
-
-- 原始项目以 overlayfs lower layer 挂载，Agent 所有写操作由内核重定向到 tmpfs
-- `run_command` 执行的 Shell 命令也在此隔离环境中运行，构建产物不污染源码树
-- 连接断开或回滚时，tmpfs 上层自动清理
 
 ### 扩展工具链（`extra_binds`）
 
@@ -747,7 +749,7 @@ dst = "/datasets"
 readonly = true
 ```
 
-### 沙盒命令
+### 沙盒命令（Sandbox 模式专属）
 
 | 命令 | 说明 |
 |------|------|
@@ -759,20 +761,22 @@ Web UI 的「沙盒」面板还支持**逐文件提交**：点击单个文件右
 
 ### 状态标识（Web UI）
 
-Header 会实时显示沙盒状态徽标：
+Header 会根据当前隔离模式显示对应徽标：
 
-- 🔒 **沙盒**（绿色）：沙盒激活，无待提交改动
-- 🔒 **沙盒 · N 待提交**（黄色）：有 N 个文件已修改，尚未提交
+- 🔒 **沙盒**（绿色）：Sandbox 模式，无待提交改动
+- 🔒 **沙盒 · N 待提交**（黄色）：Sandbox 模式，有 N 个文件已修改
+- 🔲 **容器**（蓝色）：Container 模式（默认）
+- 🔓 **无容器**（灰色）：Normal 模式
 
 ### 典型工作流
 
 ```bash
-# 1. 以沙盒模式启动（--sandbox 对所有连接生效）
-./target/release/agent --mode server --sandbox
+# 1. 以 sandbox 模式启动（--isolation sandbox 对所有连接生效）
+./target/release/agent --mode server --isolation sandbox
 
 # 2. 在 Web UI 连接并指派任务（所有修改都在隔离层）
 # 或：CLI 模式
-./target/release/agent --sandbox --workdir /path/to/project
+./target/release/agent --isolation sandbox --workdir /path/to/project
 
 # 3. 查看 Agent 做了什么
 🤖 > /changes
@@ -870,9 +874,8 @@ src/
 | `think` | 💭 | 内部推理，无副作用 | ❌ |
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
 | `read_ebook` | 📕 | 电子书读取（MOBI/EPUB/AZW3 等） | ❌ |
-| `fetch_url` | 🌐 | 网页抓取与正文提取 | ❌ |
-| `call_sub_agent` | 🤝 | 委派任务给预启动的 WebSocket 专家 Agent | ✅ |
-| `spawn_sub_agent` | 👶 | 动态创建 stdio 子进程处理临时任务 | ✅ |
+| `call_node` | 🤖 | 委派任务给其他 Agent 节点（按名/URL/标签路由） | ✅ |
+| `list_nodes` | 📶 | 列出当前可用的 Agent 节点 | ❌ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
 | `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
 | `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |

@@ -56,18 +56,20 @@ pub async fn run(
     initial_prompt: Option<String>,
     resume_id: Option<String>,
     output: Arc<dyn AgentOutput>,
-    sandbox_enabled: bool,
+    isolation: crate::container::IsolationMode,
     global_session: bool,
 ) -> Result<()> {
     ui::print_banner();
     ui::print_workdir();
 
-    // Build sandbox
-    let sandbox = if sandbox_enabled {
+    // Build sandbox: only Sandbox mode tries fuse-overlayfs.
+    // Normal and Container both run without overlay protection in the CLI.
+    let sandbox = if isolation == crate::container::IsolationMode::Sandbox {
         crate::sandbox::Sandbox::new(&project_dir)
     } else {
         crate::sandbox::Sandbox::disabled(&project_dir)
     };
+    let sandbox_enabled = isolation == crate::container::IsolationMode::Sandbox;
 
     // Create or restore agent
     let mut agent = if let Some(ref session_id) = resume_id {

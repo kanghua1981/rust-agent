@@ -99,6 +99,11 @@ pub struct VirtualNodeInfo {
     pub workdir: String,
     #[serde(default)]
     pub description: String,
+    /// Isolation mode string: "normal" | "container" | "sandbox".
+    /// Takes precedence over the legacy `sandbox` bool when present.
+    #[serde(default)]
+    pub isolation: Option<String>,
+    /// Legacy field kept for backward compatibility with older server responses.
     #[serde(default)]
     pub sandbox: bool,
     #[serde(default)]
@@ -195,6 +200,7 @@ pub fn probe_capabilities(workspaces: &[WorkspaceEntry]) -> (NodeCapabilities, V
             name: w.name.clone(),
             workdir: w.workdir.display().to_string(),
             description: w.description.clone(),
+            isolation: None,
             sandbox: w.sandbox,
             tags: w.tags.clone(),
         })

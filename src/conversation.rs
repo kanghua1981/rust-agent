@@ -154,7 +154,7 @@ impl Conversation {
         let models_cfg = crate::model_manager::load();
         if !models_cfg.sub_agents.is_empty() {
             system_prompt.push_str("\n\n## Available Sub-Agents\n");
-            system_prompt.push_str("You can delegate specialized tasks to the following sub-agents running in server mode. Use the `call_sub_agent` tool with the corresponding `server_url`.\n\n");
+            system_prompt.push_str("You can delegate specialized tasks to the following agents running in server mode. Use the `call_node` tool with the node `target` name or direct WebSocket URL.\n\n");
             for (name, sa) in &models_cfg.sub_agents {
                 let role_info = if let Some(role) = &sa.role {
                     format!(" (Role: {})", role)

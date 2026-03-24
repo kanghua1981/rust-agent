@@ -409,29 +409,29 @@ export const useWebSocket = () => {
     removeSessionFromList, clearSession, setSandboxBackend, setPendingChanges,
   ]);
 
-  // Sync execution mode and sandbox to server whenever they change or connection is established.
+  // Sync execution mode to server whenever it changes or connection is established.
+  // NOTE: isolation mode is connection-time only (sent as URL ?mode=), not a runtime toggle.
   const agentMode = config.agentMode ?? 'auto';
-  const sandbox = config.sandbox ?? false;
+  const isolation = config.isolation ?? 'container';
   useEffect(() => {
     if (connectionStatus === 'connected') {
       sendRaw({ type: 'set_mode', data: { mode: agentMode as 'auto' | 'simple' | 'plan' | 'pipeline' } });
-      sendRaw({ type: 'set_sandbox', data: { enabled: sandbox } });
       // 连接建立时发送工作目录
       if (workdir) {
         sendRaw({ type: 'set_workdir', data: { workdir } });
       }
     }
-  }, [agentMode, sandbox, connectionStatus, sendRaw, workdir]);
+  }, [agentMode, connectionStatus, sendRaw, workdir]);
 
   const connect = useCallback(() => {
     wsRef.current?.close();
     setConnectionStatus('connecting');
     try {
-      // Ensure URL targets /agent path; append workdir/sandbox as query params.
+      // Ensure URL targets /agent path; append workdir/mode as query params.
       const base = ensureAgentPath(serverUrl);
       const params: string[] = [];
       if (workdir) params.push(`workdir=${encodeURIComponent(workdir)}`);
-      if (sandbox) params.push('sandbox=1');
+      if (isolation !== 'container') params.push(`mode=${isolation}`);
       if (clusterToken) params.push(`token=${encodeURIComponent(clusterToken)}`);
       const sep = base.includes('?') ? '&' : '?';
       const wsUrl = params.length > 0 ? `${base}${sep}${params.join('&')}` : base;
@@ -448,7 +448,7 @@ export const useWebSocket = () => {
       setConnectionStatus('error');
       console.error('[ws] connect failed:', err);
     }
-  }, [serverUrl, workdir, sandbox, clusterToken, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
+  }, [serverUrl, workdir, isolation, clusterToken, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
 
   const disconnect = useCallback(() => {
     // Guard: only update global state if this hook instance actually owns a WebSocket.

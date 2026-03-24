@@ -13,8 +13,6 @@ pub mod load_skill;
 pub mod create_skill;
 pub mod call_node;
 pub mod list_nodes;
-pub mod call_sub_agent;      // internal — not registered as LLM tool
-pub mod spawn_sub_agent;     // internal — not registered as LLM tool
 pub mod connect_service;
 pub mod query_service;
 pub mod subscribe_service;

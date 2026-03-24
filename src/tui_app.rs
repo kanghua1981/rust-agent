@@ -1614,7 +1614,7 @@ pub async fn run(
     project_dir: PathBuf,
     initial_prompt: Option<String>,
     resume_id: Option<String>,
-    sandbox_enabled: bool,
+    isolation: crate::container::IsolationMode,
     global_session: bool,
     yes: bool,
 ) -> Result<()> {
@@ -1633,7 +1633,7 @@ pub async fn run(
     let agent_out: Arc<dyn AgentOutput> = tui_out.clone();
     let tui_tx2 = tui_tx.clone();
     let mut agent_task = tokio::spawn(async move {
-        let sandbox = if sandbox_enabled {
+        let sandbox = if isolation == crate::container::IsolationMode::Sandbox {
             Sandbox::new(&project_dir)
         } else {
             Sandbox::disabled(&project_dir)

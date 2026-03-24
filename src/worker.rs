@@ -27,6 +27,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent::Agent;
 use crate::config::Config;
+use crate::container::IsolationMode;
 use crate::output::{WsCommand, WsOutput};
 use crate::sandbox::Sandbox;
 use crate::workspaces;
@@ -64,18 +65,20 @@ impl std::str::FromStr for BindMount {
 
 /// Run the worker.  Called synchronously from main() for `--mode worker`.
 ///
-/// If `sandbox` is true this function sets up fuse-overlayfs while still
-/// single-threaded, then creates the tokio runtime and runs the async loop.
+/// Isolation mode controls sandbox setup:
+/// - Normal    → no sandbox, direct host access.
+/// - Container → no sandbox overlay (rootfs set up by server before exec).
+/// - Sandbox   → kernel overlayfs already mounted by server; wire it up.
 pub async fn run(
     config: Config,
     project_dir: PathBuf,
     fd: i32,
-    sandbox_enabled: bool,
+    isolation: IsolationMode,
     _worker_id: &str,
     _extra_binds: Vec<BindMount>,
     workspaces: Vec<crate::workspaces::WorkspaceEntry>,
 ) -> Result<()> {
-    run_async(config, project_dir, sandbox_enabled, fd, workspaces).await
+    run_async(config, project_dir, isolation, fd, workspaces).await
 }
 
 
@@ -86,7 +89,7 @@ pub async fn run(
 async fn run_async(
     config: Config,
     project_dir: PathBuf,
-    sandbox_enabled: bool,
+    isolation: IsolationMode,
     fd: i32,
     workspaces: Vec<crate::workspaces::WorkspaceEntry>,
 ) -> Result<()> {
@@ -110,21 +113,17 @@ async fn run_async(
         Sandbox::disabled(&project_dir),
     );
 
-    // Apply sandbox flag from server startup (--sandbox) or from initial
-    // client set_sandbox message.
+    // Apply isolation mode to the sandbox handle.
     //
-    // Two paths:
-    //  1. Container mode (server mode + sandbox): container.rs already mounted
-    //     a kernel overlayfs before exec():
-    //       lower  = /workspace-ro  (real project, read-only view)
-    //       upper  = /tmp/overlay/upper  (writes land here, discarded on exit)
-    //       merged = /workspace  (what tools should see)
-    //     Detect this by checking for /workspace-ro; use from_overlay_dirs
-    //     to tell the Sandbox struct about the pre-mounted dirs — no fuse-overlayfs
-    //     subprocess needed.
-    //  2. CLI / non-container mode: use set_sandbox_enabled() which tries
-    //     fuse-overlayfs and falls back to snapshot.
-    if sandbox_enabled {
+    // Normal    → no sandbox; runs on host.
+    // Container → rootfs was set up by server (pre_exec), /workspace is a rw
+    //             bind of the real project.  No overlay, no rollback.
+    // Sandbox   → server pre_exec also mounted kernel overlayfs:
+    //               lower  = /workspace-ro  (real project, read-only view)
+    //               upper  = /tmp/overlay/upper  (writes land here, tmpfs)
+    //               merged = /workspace  (tools see a mutable view)
+    //             Detect /workspace-ro and wire up Sandbox::from_overlay_dirs.
+    if isolation == IsolationMode::Sandbox {
         let workspace_ro = std::path::Path::new("/workspace-ro");
         if workspace_ro.exists() {
             // Container kernel overlay already mounted — wire it up directly.
@@ -139,8 +138,7 @@ async fn run_async(
             agent.set_sandbox_enabled(true);
         }
         // If sandbox was requested but ended up disabled (fuse-overlayfs unavailable),
-        // emit a warning to the frontend before the session starts so the user knows
-        // they are NOT operating in isolation.
+        // emit a warning to the frontend before the session starts.
         if agent.sandbox.is_disabled {
             ws_output.emit_public("warning", serde_json::json!({
                 "message": "⚠️  沙盒模式请求失败：fuse-overlayfs 不可用，沙盒已禁用。所有文件操作将直接作用于真实项目目录！请安装 fuse-overlayfs 后重新连接。"
@@ -221,7 +219,9 @@ async fn run_async(
     ws_output.emit_public("ready", serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "workdir": project_dir.display().to_string(),
-        "sandbox": sandbox_enabled,
+        "isolation": isolation.to_string(),
+        // legacy field for older clients
+        "sandbox": isolation == IsolationMode::Sandbox,
         "sandbox_backend": agent.sandbox.backend_label_sync(),
         "caps": node_caps,
         "virtual_nodes": virtual_nodes,

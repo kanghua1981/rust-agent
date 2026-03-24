@@ -20,7 +20,9 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
     const node: VirtualNodeInfo | undefined = nodeList.find(n => n.name === nodeName);
     if (node) {
       setDir(node.workdir);
-      setConfig({ sandbox: node.sandbox });
+      // prefer new isolation field; fall back to legacy sandbox boolean
+      const iso = node.isolation ?? (node.sandbox ? 'sandbox' : 'container');
+      setConfig({ isolation: iso });
     }
   };
 
@@ -123,7 +125,7 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
                   <option key={n.name} value={n.name}>
                     {n.name}
                     {n.tags.length > 0 ? `  [${n.tags.join(', ')}]` : ''}
-                    {n.sandbox ? '  🔒' : ''}
+                    {(n.isolation === 'sandbox' || (!n.isolation && n.sandbox)) ? '  🔒' : n.isolation === 'normal' ? '  🔓' : '  🔲'}
                   </option>
                 ))}
               </select>
@@ -163,20 +165,30 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
             <span style={{ fontSize: '13px', color: 'var(--text2)' }}>自动确认工具调用（跳过每次确认弹窗）</span>
           </label>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={!!config.sandbox}
-              onChange={(e) => setConfig({ sandbox: e.target.checked })}
-              style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
-            />
-            <div>
-              <span style={{ fontSize: '13px', color: 'var(--text2)' }}>启用沙盒模式</span>
-              <p style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>
-                在隔离环境中执行文件操作，支持回滚和提交（需服务器支持 overlay）
-              </p>
-            </div>
-          </label>
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>
+              隔离模式
+            </label>
+            <select
+              value={config.isolation ?? 'container'}
+              onChange={(e) => setConfig({ isolation: e.target.value as 'normal' | 'container' | 'sandbox' })}
+              style={{
+                width: '100%', padding: '9px 12px',
+                background: 'var(--bg3)', border: '1px solid var(--border)',
+                borderRadius: '8px', color: 'var(--text)',
+                outline: 'none', fontSize: '13px', cursor: 'pointer',
+              }}
+            >
+              <option value="normal">🕑3 直接运行（无容器，完全兼容）</option>
+              <option value="container">🔲 容器模式（namespace 隔离，默认）</option>
+              <option value="sandbox">🔒 沙筱模式（overlayfs 保护，支持回滚）</option>
+            </select>
+            <p style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '4px' }}>
+              {(config.isolation ?? 'container') === 'normal' && '直接在宿主运行，工具可访问全部路径'}
+              {(config.isolation ?? 'container') === 'container' && '进程视图隔离，写操作直接落到项目文件'}
+              {(config.isolation ?? 'container') === 'sandbox' && '写操作落到 tmpfs upper 层，支持 /rollback 和 /commit'}
+            </p>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>

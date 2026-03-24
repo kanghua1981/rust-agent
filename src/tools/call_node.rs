@@ -50,9 +50,9 @@ struct CallNodeInput {
     /// Override the node's default working directory.
     #[serde(default)]
     workdir: Option<String>,
-    /// Override the node's default sandbox setting.
+    /// Override the node's default isolation mode ("normal" | "container" | "sandbox").
     #[serde(default)]
-    sandbox: Option<bool>,
+    isolation: Option<String>,
     /// Auto-approve all tool confirmations from the remote agent.
     #[serde(default)]
     auto_approve: bool,
@@ -65,15 +65,18 @@ fn default_timeout() -> u64 { 600 }
 
 // ── URL builder ───────────────────────────────────────────────────────────────
 
-/// Append `workdir`, `sandbox` and `token` as URL query parameters.
-fn build_url(base: &str, workdir: Option<&str>, sandbox: Option<bool>, token: Option<&str>) -> String {
+/// Append `workdir`, `mode` (isolation) and `token` as URL query parameters.
+fn build_url(base: &str, workdir: Option<&str>, isolation: Option<&str>, token: Option<&str>) -> String {
     let mut params: Vec<String> = Vec::new();
 
     if let Some(wd) = workdir {
         params.push(format!("workdir={}", url_encode(wd)));
     }
-    if let Some(sb) = sandbox {
-        params.push(format!("sandbox={}", if sb { "1" } else { "0" }));
+    // Only append mode when it is not the default (container).
+    if let Some(mode) = isolation {
+        if mode != "container" {
+            params.push(format!("mode={}", mode));
+        }
     }
     if let Some(tok) = token {
         if !tok.is_empty() {
@@ -244,9 +247,10 @@ impl Tool for CallNodeTool {
                         "description": "Override the working directory on the remote node. \
                             If omitted, uses the node's configured default."
                     },
-                    "sandbox": {
-                        "type": "boolean",
-                        "description": "Override whether the remote agent runs in sandbox mode. \
+                    "isolation": {
+                        "type": "string",
+                        "enum": ["normal", "container", "sandbox"],
+                        "description": "Override the remote agent's isolation mode. \
                             If omitted, uses the node's configured default."
                     },
                     "auto_approve": {
@@ -274,9 +278,9 @@ impl Tool for CallNodeTool {
         // ── Resolve target → base_url + defaults ──────────────────────────────
         let is_direct_url = input.target.starts_with("ws://") || input.target.starts_with("wss://");
 
-        let (base_url, node_workdir, node_sandbox, cluster_token) = if is_direct_url {
+        let (base_url, node_workdir, node_isolation, cluster_token) = if is_direct_url {
             let tok = std::env::var("AGENT_CLUSTER_TOKEN").ok();
-            (input.target.clone(), None::<String>, None::<bool>, tok)
+            (input.target.clone(), None::<String>, None::<String>, tok)
         } else {
             // Cluster token from env var injected by parent server before fork.
             let cluster_token = std::env::var("AGENT_CLUSTER_TOKEN").ok();
@@ -316,7 +320,8 @@ impl Tool for CallNodeTool {
                     Some(n) => (
                         n["url"].as_str().unwrap_or("").to_string(),
                         n["workdir"].as_str().map(|s| s.to_string()),
-                        n["sandbox"].as_bool(),
+                        n["isolation"].as_str().map(|s| s.to_string())
+                            .or_else(|| n["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
                         cluster_token,
                     ),
                     None => return ToolResult::error(format!(
@@ -353,7 +358,8 @@ impl Tool for CallNodeTool {
                 (
                     first["url"].as_str().unwrap_or("").to_string(),
                     first["workdir"].as_str().map(|s| s.to_string()),
-                    first["sandbox"].as_bool(),
+                    first["isolation"].as_str().map(|s| s.to_string())
+                        .or_else(|| first["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
                     cluster_token,
                 )
             } else {
@@ -377,12 +383,12 @@ impl Tool for CallNodeTool {
 
         // Explicit parameters override node defaults.
         let effective_workdir = input.workdir.as_deref().or(node_workdir.as_deref());
-        let effective_sandbox = input.sandbox.or(node_sandbox);
+        let effective_isolation = input.isolation.as_deref().or(node_isolation.as_deref());
 
         // ── Build final URL ───────────────────────────────────────────────────
         // Ensure the URL targets /agent (not the root path).
         let base_url = crate::workspaces::with_path(&base_url, "/agent");
-        let url = build_url(&base_url, effective_workdir, effective_sandbox, cluster_token.as_deref());
+        let url = build_url(&base_url, effective_workdir, effective_isolation, cluster_token.as_deref());
 
         // ── Connect ───────────────────────────────────────────────────────────
         self.output.on_warning(&format!("[call_node] connecting to {} (target={})", url, input.target));
@@ -501,10 +507,11 @@ impl Tool for CallNodeTool {
                                 }
                                 NodeEvent::Ready { workdir, sandbox, caps, virtual_nodes } => {
                                     let wd = workdir.as_deref().unwrap_or("(server default)");
+                                    // Translate legacy bool to isolation string for display.
                                     let sb = match sandbox {
-                                        Some(true)  => "on",
-                                        Some(false) => "off",
-                                        None        => "unknown",
+                                        Some(true)  => "sandbox",
+                                        Some(false) => "normal",
+                                        None        => "container",
                                     };
 
                                     // Build caps summary line.
@@ -533,12 +540,15 @@ impl Tool for CallNodeTool {
                                     let vnode_table = if !virtual_nodes.is_empty() {
                                         let mut t = String::from("\n  Virtual nodes:\n");
                                         t.push_str(&format!(
-                                            "  {:<22} {:<8} {}\n",
-                                            "NAME", "SANDBOX", "WORKDIR / TAGS"
+                                            "  {:<22} {:<12} {}\n",
+                                            "NAME", "ISOLATION", "WORKDIR / TAGS"
                                         ));
                                         t.push_str(&format!("  {}\n", "─".repeat(72)));
                                         for vn in &virtual_nodes {
-                                            let sb_str = if vn.sandbox { "on " } else { "off" };
+                                            let sb_str = match vn.isolation.as_deref() {
+                                                Some(m) => m,
+                                                None => if vn.sandbox { "sandbox" } else { "container" },
+                                            };
                                             let tags_str = if vn.tags.is_empty() {
                                                 String::new()
                                             } else {
@@ -555,7 +565,7 @@ impl Tool for CallNodeTool {
                                     };
 
                                     connect_header = format!(
-                                        "[Node '{}' connected — workdir: {}  sandbox: {}]\n{}{}\n",
+                                        "[Node '{}' connected — workdir: {}  isolation: {}]\n{}{}\n",
                                         input.target, wd, sb, caps_summary, vnode_table
                                     );
 

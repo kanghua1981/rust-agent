@@ -17,7 +17,8 @@ export const NodesPanel: React.FC = () => {
   const handleSelectNode = (node: VirtualNodeInfo) => {
     if (isConnected) return; // read-only while connected
     setWorkdir(node.workdir);
-    setConfig({ sandbox: node.sandbox });
+    const iso = node.isolation ?? (node.sandbox ? 'sandbox' : 'container');
+    setConfig({ isolation: iso });
   };
 
   if (nodeList.length === 0) {
@@ -76,7 +77,7 @@ export const NodesPanel: React.FC = () => {
             >
               {/* Header row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                <span style={{ fontSize: '16px' }}>{node.sandbox ? '🔒' : '📂'}</span>
+                <span style={{ fontSize: '16px' }}>{node.isolation === 'sandbox' || (!node.isolation && node.sandbox) ? '🔒' : node.isolation === 'normal' ? '🔓' : '📂'}</span>
                 <span style={{ fontSize: '13px', fontWeight: '600', color: active ? 'var(--accent)' : 'var(--text)' }}>
                   {node.name}
                 </span>
@@ -101,7 +102,7 @@ export const NodesPanel: React.FC = () => {
                       padding: '1px 6px',
                     }}>已预选</span>
                   )}
-                  {node.sandbox && (
+                  {(node.isolation === 'sandbox' || (!node.isolation && node.sandbox)) && (
                     <span style={{
                       fontSize: '10px', color: 'var(--yellow)',
                       background: 'var(--yellow-dim)',
@@ -109,6 +110,15 @@ export const NodesPanel: React.FC = () => {
                       borderRadius: '4px',
                       padding: '1px 6px',
                     }}>沙盒</span>
+                  )}
+                  {node.isolation === 'normal' && (
+                    <span style={{
+                      fontSize: '10px', color: 'var(--text3)',
+                      background: 'var(--bg3)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '4px',
+                      padding: '1px 6px',
+                    }}>无容器</span>
                   )}
                 </div>
               </div>

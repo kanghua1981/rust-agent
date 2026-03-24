@@ -19,7 +19,7 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::Config;
-use crate::container::{ContainerConfig, CONTAINER_EXE, setup_rootfs};
+use crate::container::{ContainerConfig, IsolationMode, CONTAINER_EXE, setup_rootfs};
 
 /// Start the WebSocket server and listen forever.
 ///
@@ -31,7 +31,7 @@ pub async fn run(
     project_dir: PathBuf,
     host: &str,
     port: u16,
-    sandbox: bool,
+    isolation: IsolationMode,
 ) -> Result<()> {
     // Reap zombie worker processes asynchronously via a real SIGCHLD handler.
     //
@@ -79,10 +79,10 @@ pub async fn run(
 
     println!("🤖 Agent WebSocket server listening on ws://{}", addr);
     println!("   Provider: {:?}  Model: {}", config.provider, config.model);
-    if sandbox {
-        println!("   Sandbox: ENABLED by default (override per-connection via URL sandbox=1/0)");
-    } else {
-        println!("   Sandbox: disabled by default (enable per-connection via URL sandbox=1)");
+    match isolation {
+        IsolationMode::Normal    => println!("   Isolation: normal (no container) — default per-connection (override via URL mode=normal/container/sandbox)"),
+        IsolationMode::Container => println!("   Isolation: container (namespace+rootfs, direct write) — default per-connection"),
+        IsolationMode::Sandbox   => println!("   Isolation: sandbox (container+overlayfs, /rollback enabled) — default per-connection"),
     }
     if cluster_token.is_some() {
         println!("   Auth: cluster token required");
@@ -104,9 +104,9 @@ pub async fn run(
         let peek_n = stream.peek(&mut peek_buf).await.unwrap_or(0);
         let conn_project_dir = parse_workdir_from_http(&peek_buf[..peek_n])
             .unwrap_or_else(|| project_dir.clone());
-        // Per-connection sandbox flag: URL param `sandbox=1` overrides the
-        // server-level default (set at startup with --sandbox).
-        let conn_sandbox = parse_sandbox_from_http(&peek_buf[..peek_n]).unwrap_or(sandbox);
+        // Per-connection isolation mode: URL param `mode=normal/container/sandbox`
+        // overrides the server-level default.  Legacy `sandbox=1/0` still understood.
+        let conn_isolation = parse_isolation_from_http(&peek_buf[..peek_n]).unwrap_or(isolation);
 
         // Token validation.  If a cluster token is configured, reject connections
         // that don't present it.  We send a minimal HTTP 401 response and drop
@@ -124,7 +124,7 @@ pub async fn run(
             }
         }
 
-        tracing::info!("Accepted connection from {} -> project_dir={:?} sandbox={}", peer, conn_project_dir, conn_sandbox);
+        tracing::info!("Accepted connection from {} -> project_dir={:?} isolation={}", peer, conn_project_dir, conn_isolation);
 
         // ── Path-based routing ────────────────────────────────────────────────
         // Route BEFORE converting to a raw fd.
@@ -137,7 +137,7 @@ pub async fn run(
                 let caps   = cached_caps.clone();
                 let vnodes = cached_vnodes.clone();
                 let wd     = cached_workdir.clone();
-                let sb     = conn_sandbox;
+                let sb     = conn_isolation;
                 tokio::spawn(async move {
                     handle_probe(stream, sb, wd, caps, vnodes).await;
                 });
@@ -195,46 +195,69 @@ pub async fn run(
         let workspaces_json = serde_json::to_string(&cached_ws_cfg.workspaces)
             .unwrap_or_else(|_| "[]".to_string());
 
-        // Gather info needed by the container setup closure.
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
         let extra_binds = config.extra_binds.clone();
         let project_dir_for_container = conn_project_dir.clone();
 
-        // Inside the container the agent binary is always at CONTAINER_EXE (/agent).
-        let mut cmd = std::process::Command::new(CONTAINER_EXE);
-        cmd.arg("--mode").arg("worker")
-            .arg("--worker-fd").arg(raw_fd.to_string())
-            .arg("--worker-id").arg(&worker_id)
-            // Inside the container, project_dir is always /workspace.
-            .arg("-d").arg("/workspace")
-            .arg("--config-json").arg(&config_json)
-            .arg("--workspaces-json").arg(&workspaces_json);
-        // Expose parent server address so worker tools (list_nodes, call_node)
-        // can query localhost:{port}/nodes without reading the filesystem.
-        cmd.env("AGENT_PARENT_PORT", port.to_string());
-        if let Some(ref tok) = cluster_token {
-            cmd.env("AGENT_CLUSTER_TOKEN", tok);
-        }
-        if conn_sandbox {
-            cmd.arg("--sandbox");
-        }
+        // ── Spawn strategy depends on isolation mode ──────────────────────────
+        //
+        // Normal    → no container at all; use the real executable and real
+        //             project_dir.  Worker runs on the host directly.
+        // Container → namespace + rootfs; pre_exec calls setup_rootfs with
+        //             overlay=false.  Worker sees /workspace as a rw bind.
+        // Sandbox   → namespace + rootfs + overlayfs; pre_exec calls
+        //             setup_rootfs with overlay=true.  Writes go to tmpfs.
+        let mut cmd = if conn_isolation == IsolationMode::Normal {
+            // Normal mode: spawn directly — no container, no pre_exec.
+            let mut c = std::process::Command::new(&exe);
+            c.arg("--mode").arg("worker")
+                .arg("--worker-fd").arg(raw_fd.to_string())
+                .arg("--worker-id").arg(&worker_id)
+                .arg("-d").arg(&conn_project_dir)
+                .arg("--config-json").arg(&config_json)
+                .arg("--workspaces-json").arg(&workspaces_json)
+                .arg("--isolation").arg(conn_isolation.to_string());
+            c.env("AGENT_PARENT_PORT", port.to_string());
+            if let Some(ref tok) = cluster_token {
+                c.env("AGENT_CLUSTER_TOKEN", tok);
+            }
+            c
+        } else {
+            // Container / Sandbox mode: exec inside a fresh rootfs.
+            let mut c = std::process::Command::new(CONTAINER_EXE);
+            c.arg("--mode").arg("worker")
+                .arg("--worker-fd").arg(raw_fd.to_string())
+                .arg("--worker-id").arg(&worker_id)
+                // Inside the container project_dir is always /workspace.
+                .arg("-d").arg("/workspace")
+                .arg("--config-json").arg(&config_json)
+                .arg("--workspaces-json").arg(&workspaces_json)
+                .arg("--isolation").arg(conn_isolation.to_string());
+            c.env("AGENT_PARENT_PORT", port.to_string());
+            if let Some(ref tok) = cluster_token {
+                c.env("AGENT_CLUSTER_TOKEN", tok);
+            }
 
-        // Set up the container rootfs in the child between fork() and exec().
-        // SAFETY: pre_exec runs single-threaded in the forked child; we only
-        // do pure Linux syscalls and file I/O, no tokio or async.
-        unsafe {
-            cmd.pre_exec(move || {
-                setup_rootfs(&ContainerConfig {
-                    project_dir: project_dir_for_container.clone(),
-                    exe_path: exe_clone.clone(),
-                    extra_binds: extra_binds.clone(),
-                    uid,
-                    gid,
-                    sandbox: conn_sandbox,
-                })
-            });
-        }
+            // Set up the container rootfs in the child between fork() and exec().
+            // SAFETY: pre_exec runs single-threaded in the forked child; we only
+            // do pure Linux syscalls and file I/O, no tokio or async.
+            let use_overlay = conn_isolation == IsolationMode::Sandbox;
+            let exe_clone2 = exe_clone.clone();
+            unsafe {
+                c.pre_exec(move || {
+                    setup_rootfs(&ContainerConfig {
+                        project_dir: project_dir_for_container.clone(),
+                        exe_path: exe_clone2.clone(),
+                        extra_binds: extra_binds.clone(),
+                        uid,
+                        gid,
+                        overlay: use_overlay,
+                    })
+                });
+            }
+            c
+        };
 
         match cmd.spawn() {
             Ok(child) => {
@@ -284,19 +307,25 @@ fn parse_workdir_from_http(bytes: &[u8]) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Extract the `sandbox` query parameter (`sandbox=1` / `sandbox=0`) from the
-/// raw HTTP Upgrade request bytes.  Returns `None` if the param is absent.
-fn parse_sandbox_from_http(bytes: &[u8]) -> Option<bool> {
+/// Extract the isolation mode from the raw HTTP Upgrade request bytes.
+/// Supports `mode=normal/container/sandbox` (preferred) and legacy
+/// `sandbox=1` → Sandbox, `sandbox=0` → Container.
+/// Returns `None` if no relevant param is present.
+fn parse_isolation_from_http(bytes: &[u8]) -> Option<IsolationMode> {
     let text = std::str::from_utf8(bytes).ok()?;
     let line = text.lines().next()?;
     let path = line.split_whitespace().nth(1)?;
     let query = path.split_once('?')?.1;
     for param in query.split('&') {
+        if let Some(val) = param.strip_prefix("mode=") {
+            return val.parse::<IsolationMode>().ok();
+        }
+        // Legacy compat
         if param == "sandbox=1" || param == "sandbox=true" {
-            return Some(true);
+            return Some(IsolationMode::Sandbox);
         }
         if param == "sandbox=0" || param == "sandbox=false" {
-            return Some(false);
+            return Some(IsolationMode::Container);
         }
     }
     None
@@ -355,7 +384,7 @@ fn url_decode(s: &str) -> String {
 /// waits for the client to close (or times out after 5 s).
 async fn handle_probe(
     stream: tokio::net::TcpStream,
-    sandbox_enabled: bool,
+    isolation: IsolationMode,
     workdir: String,
     caps: Arc<crate::workspaces::NodeCapabilities>,
     virtual_nodes: Arc<Vec<crate::workspaces::VirtualNodeInfo>>,
@@ -371,7 +400,9 @@ async fn handle_probe(
         "data": {
             "version": env!("CARGO_PKG_VERSION"),
             "workdir": workdir,
-            "sandbox": sandbox_enabled,
+            "isolation": isolation.to_string(),
+            // legacy field — kept for older web-ui versions
+            "sandbox": isolation == IsolationMode::Sandbox,
             "caps": *caps,
             "virtual_nodes": *virtual_nodes,
         }

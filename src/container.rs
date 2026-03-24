@@ -27,6 +27,64 @@ use serde::{Deserialize, Serialize};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
+/// Three isolation levels for worker processes spawned by the server.
+///
+/// - **Normal**    – no container at all; worker runs directly in the host
+///   environment.  Fastest and most compatible, but no filesystem isolation.
+/// - **Container** – user+mount namespace + rootfs prison; writes go directly
+///   to `/workspace` (rw bind of the real project).  Isolates the process
+///   view of the filesystem from the rest of the host, but does NOT protect
+///   project files from being modified.
+/// - **Sandbox**   – Container + kernel overlayfs; all writes land in a tmpfs
+///   upper layer so originals are never touched.  Enables `/rollback` and
+///   `/commit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IsolationMode {
+    /// No container — runs on the host directly.
+    Normal,
+    /// Namespace + rootfs, direct write to project files.
+    #[default]
+    Container,
+    /// Namespace + rootfs + overlayfs copy-on-write protection.
+    Sandbox,
+}
+
+impl IsolationMode {
+    /// true for Container and Sandbox — both require `setup_rootfs`.
+    pub fn is_containerized(self) -> bool {
+        matches!(self, IsolationMode::Container | IsolationMode::Sandbox)
+    }
+
+    /// true only for Sandbox — overlayfs is mounted.
+    pub fn uses_overlay(self) -> bool {
+        self == IsolationMode::Sandbox
+    }
+}
+
+impl std::fmt::Display for IsolationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IsolationMode::Normal    => write!(f, "normal"),
+            IsolationMode::Container => write!(f, "container"),
+            IsolationMode::Sandbox   => write!(f, "sandbox"),
+        }
+    }
+}
+
+impl std::str::FromStr for IsolationMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "normal"     => Ok(IsolationMode::Normal),
+            "container"  => Ok(IsolationMode::Container),
+            "sandbox"    => Ok(IsolationMode::Sandbox),
+            other => Err(format!(
+                "unknown isolation mode '{}', expected: normal, container, sandbox", other
+            )),
+        }
+    }
+}
+
 /// One extra bind-mount entry from `models.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExtraBindMount {
@@ -55,7 +113,8 @@ pub struct ContainerConfig {
     pub gid: u32,
     /// When true, mount a kernel overlayfs over /workspace so writes go to a
     /// tmpfs upper layer — the real project files are never modified.
-    pub sandbox: bool,
+    /// Set to `true` only for `IsolationMode::Sandbox`.
+    pub overlay: bool,
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -166,7 +225,7 @@ pub fn setup_rootfs(config: &ContainerConfig) -> io::Result<()> {
     // sandbox=true  → bind project_dir to /workspace-ro (lower layer); the
     //                  overlayfs mount over /workspace is set up in Phase B
     //                  after pivot_root, once /tmp tmpfs is available.
-    if config.sandbox && config.project_dir.exists() {
+    if config.overlay && config.project_dir.exists() {
         let ro = newroot.join("workspace-ro");
         step("mkdir workspace-ro", fs::create_dir_all(&ro))?;
         // bind_ro: /workspace-ro is the overlay lower layer and must be read-only
@@ -227,7 +286,7 @@ pub fn setup_rootfs(config: &ContainerConfig) -> io::Result<()> {
     // tmpfs is always allowed in a user namespace.
     step("mount tmpfs /tmp", mount_tmpfs(Path::new("/tmp"), "mode=1777"))?;
 
-    if config.sandbox {
+    if config.overlay {
         // Build a copy-on-write overlay over /workspace using the kernel's
         // overlayfs.  Supported in user namespaces since Linux 5.11
         // (no root required, no external binary).
@@ -243,8 +302,7 @@ pub fn setup_rootfs(config: &ContainerConfig) -> io::Result<()> {
             Path::new("/tmp/overlay/work"),
             Path::new("/workspace"),
         ))?;
-        eprintln!("[container] sandbox overlay active — writes go to /tmp/overlay/upper");
-    }
+        eprintln!("[container] sandbox overlay active — writes go to /tmp/overlay/upper");    }
 
     eprintln!("[container] setup_rootfs complete");
     Ok(())

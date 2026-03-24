@@ -47,8 +47,8 @@ export const SettingsPanel: React.FC = () => {
     agentMode: 'auto',
   });
 
-  const handleSandboxToggle = (enabled: boolean) => {
-    setConfig({ sandbox: enabled });
+  const handleIsolationChange = (mode: 'normal' | 'container' | 'sandbox') => {
+    setConfig({ isolation: mode });
   };
 
   const saveCurrentConfig = () => {
@@ -249,21 +249,18 @@ export const SettingsPanel: React.FC = () => {
             </Field>
           </Section>
 
-          <Section title="沙盒模式">
-            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={config.sandbox ?? false}
-                onChange={(e) => handleSandboxToggle(e.target.checked)}
-                style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
-              />
-              <div>
-                <p style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>启用沙盒模式</p>
-                <p style={{ fontSize: '12px', color: 'var(--text3)' }}>
-                  在隔离环境中执行文件操作，支持回滚和提交
-                </p>
-              </div>
-            </label>
+          <Section title="隔离模式">
+            <Field label="隔离模式（连接时生效）">
+              <select
+                value={config.isolation ?? 'container'}
+                onChange={(e) => handleIsolationChange(e.target.value as 'normal' | 'container' | 'sandbox')}
+                style={selectStyle}
+              >
+                <option value="normal">🕑3 直接运行（无容器，完全兼容）</option>
+                <option value="container">🔲 容器模式（namespace 隔离，默认）</option>
+                <option value="sandbox">🔒 沙盒模式（overlayfs 保护，支持回滚）</option>
+              </select>
+            </Field>
           </Section>
 
           <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>

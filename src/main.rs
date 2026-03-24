@@ -122,10 +122,11 @@ struct Args {
     #[arg(long, default_value = "100")]
     max_iterations: usize,
 
-    /// Enable sandbox mode: snapshot files before modification,
-    /// allowing /rollback to restore all changes.
-    #[arg(long)]
-    sandbox: bool,
+    /// Isolation level: normal (no container), container (namespace+rootfs),
+    /// or sandbox (container + overlayfs copy-on-write, enables /rollback).
+    /// Default: container.
+    #[arg(long, default_value = "container")]
+    isolation: crate::container::IsolationMode,
 
     /// (Worker mode) Raw socket file descriptor passed from the server process.
     #[arg(long, hide = true)]
@@ -215,7 +216,7 @@ async fn main() -> Result<()> {
             project_dir,
             args.prompt,
             args.resume,
-            args.sandbox,
+            args.isolation,
             args.global_session,
             args.auto_approve,
         )
@@ -244,12 +245,12 @@ async fn main() -> Result<()> {
             } else {
                 vec![]
             };
-        return worker::run(worker_config, project_dir, fd, args.sandbox, &id, vec![], worker_workspaces).await;
+        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![], worker_workspaces).await;
     }
 
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
-        return server::run(config, project_dir, &args.host, args.port, args.sandbox).await;
+        return server::run(config, project_dir, &args.host, args.port, args.isolation).await;
     }
 
     // Build the output backend based on --mode
@@ -260,7 +261,7 @@ async fn main() -> Result<()> {
     };
 
     // Run the agent
-    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.sandbox, args.global_session).await;
+    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.isolation, args.global_session).await;
 
     // Kill auto-spawned sub-agents so they don't become orphan processes.
     // On the next startup the ports would be occupied, causing port-bind failures.
