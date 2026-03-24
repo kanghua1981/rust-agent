@@ -29,6 +29,7 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::output::{WsCommand, WsOutput};
 use crate::sandbox::Sandbox;
+use crate::workspaces;
 
 // ═══════════════════════════════════════════════════════════════════
 //  Extra bind-mount descriptor
@@ -72,9 +73,11 @@ pub async fn run(
     sandbox_enabled: bool,
     _worker_id: &str,
     _extra_binds: Vec<BindMount>,
+    workspaces: Vec<crate::workspaces::WorkspaceEntry>,
 ) -> Result<()> {
-    run_async(config, project_dir, sandbox_enabled, fd).await
+    run_async(config, project_dir, sandbox_enabled, fd, workspaces).await
 }
+
 
 // ═══════════════════════════════════════════════════════════════════
 //  Async agent loop
@@ -85,6 +88,7 @@ async fn run_async(
     project_dir: PathBuf,
     sandbox_enabled: bool,
     fd: i32,
+    workspaces: Vec<crate::workspaces::WorkspaceEntry>,
 ) -> Result<()> {
     // Reconstruct TcpStream from the raw fd inherited from the server process.
     let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
@@ -203,13 +207,24 @@ async fn run_async(
         // Dropping user_tx signals the agent loop to exit.
     });
 
-    // Send ready event — include workdir and sandbox so remote managers (call_node)
-    // can tell the LLM where they are and what mode they're running in.
+    // Send ready event — include workdir, sandbox, hardware caps and virtual nodes
+    // so remote managers (call_node) can make informed routing decisions.
+    // Use pre-passed workspaces (from server via --workspaces-json) if available;
+    // fall back to loading from disk (CLI/direct worker invocations).
+    let effective_workspaces = if workspaces.is_empty() {
+        let ws_cfg = workspaces::load(&project_dir);
+        ws_cfg.workspaces
+    } else {
+        workspaces
+    };
+    let (node_caps, virtual_nodes) = workspaces::probe_capabilities(&effective_workspaces);
     ws_output.emit_public("ready", serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "workdir": project_dir.display().to_string(),
         "sandbox": sandbox_enabled,
         "sandbox_backend": agent.sandbox.backend_label_sync(),
+        "caps": node_caps,
+        "virtual_nodes": virtual_nodes,
     }));
     ws_output.emit_public("session_info", session_info_json(&project_dir));
     // Always emit sandbox_status so the frontend reflects the actual state

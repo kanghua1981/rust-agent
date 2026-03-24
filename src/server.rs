@@ -10,9 +10,13 @@
 use std::os::unix::io::IntoRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use futures::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::Config;
 use crate::container::{ContainerConfig, CONTAINER_EXE, setup_rootfs};
@@ -58,7 +62,17 @@ pub async fn run(
     cleanup_stale_worker_dirs();
 
     // Load cluster token once at startup.  No token = open server (local use).
-    let cluster_token: Option<String> = crate::workspaces::load(&project_dir).cluster.token;
+    let ws_cfg = crate::workspaces::load(&project_dir);
+    let cluster_token: Option<String> = ws_cfg.cluster.token.clone(); // clone so ws_cfg stays intact
+    // Keep the full workspaces config behind Arc for the /nodes HTTP endpoint.
+    let cached_ws_cfg = Arc::new(ws_cfg);
+
+    // Probe capabilities once at startup and cache behind Arc so every probe
+    // connection can clone cheaply without re-running nvidia-smi etc.
+    let (caps, virtual_nodes) = crate::workspaces::probe_capabilities(&cached_ws_cfg.workspaces);
+    let cached_caps    = Arc::new(caps);
+    let cached_vnodes  = Arc::new(virtual_nodes);
+    let cached_workdir = project_dir.display().to_string();
 
     let addr = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&addr).await?;
@@ -112,6 +126,55 @@ pub async fn run(
 
         tracing::info!("Accepted connection from {} -> project_dir={:?} sandbox={}", peer, conn_project_dir, conn_sandbox);
 
+        // ── Path-based routing ────────────────────────────────────────────────
+        // Route BEFORE converting to a raw fd.
+        // /agent  → fork worker (LLM session)
+        // /probe  → inline ready-frame handler (no fork)
+        // unknown → 404, no fork
+        let req_path = parse_path_from_http(&peek_buf[..peek_n]);
+        match req_path.as_deref().unwrap_or("/agent") {
+            "/probe" => {
+                let caps   = cached_caps.clone();
+                let vnodes = cached_vnodes.clone();
+                let wd     = cached_workdir.clone();
+                let sb     = conn_sandbox;
+                tokio::spawn(async move {
+                    handle_probe(stream, sb, wd, caps, vnodes).await;
+                });
+                continue;
+            }
+            "/nodes" => {
+                // Plain HTTP GET — return all known nodes as JSON.
+                // Token validation already passed above; safe to respond.
+                let body = build_nodes_json(&cached_ws_cfg);
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let mut s = stream;
+                    let _ = s.write_all(resp.as_bytes()).await;
+                });
+                continue;
+            }
+            "/agent" | "/" => {
+                // fall through to fork
+            }
+            other => {
+                tracing::warn!("Unknown path '{}' from {} — rejected", other, peer);
+                use tokio::io::AsyncWriteExt;
+                let body = format!("Unknown path: {other}. Available: /agent (LLM session), /probe (capability query), /nodes (node list)");
+                let resp = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let mut s = stream;
+                let _ = s.write_all(resp.as_bytes()).await;
+                continue;
+            }
+        }
+
         // Convert to raw fd AFTER peeking (peek is non-consuming).
         let raw_fd = stream.into_std()?.into_raw_fd();
 
@@ -125,7 +188,12 @@ pub async fn run(
         // read models.toml or .env files at all — safe inside a filesystem
         // sandbox where those paths may not be accessible.
         let config_json = serde_json::to_string(&config)
-            .unwrap_or_else(|_| "{}".to_string());
+            .unwrap_or_else(|_| "{}" .to_string());
+        // Serialize the workspaces list so the worker can build the virtual_nodes
+        // ready frame without touching the filesystem (which may be unavailable
+        // inside the container namespace).
+        let workspaces_json = serde_json::to_string(&cached_ws_cfg.workspaces)
+            .unwrap_or_else(|_| "[]".to_string());
 
         // Gather info needed by the container setup closure.
         let uid = unsafe { libc::getuid() };
@@ -140,7 +208,14 @@ pub async fn run(
             .arg("--worker-id").arg(&worker_id)
             // Inside the container, project_dir is always /workspace.
             .arg("-d").arg("/workspace")
-            .arg("--config-json").arg(&config_json);
+            .arg("--config-json").arg(&config_json)
+            .arg("--workspaces-json").arg(&workspaces_json);
+        // Expose parent server address so worker tools (list_nodes, call_node)
+        // can query localhost:{port}/nodes without reading the filesystem.
+        cmd.env("AGENT_PARENT_PORT", port.to_string());
+        if let Some(ref tok) = cluster_token {
+            cmd.env("AGENT_CLUSTER_TOKEN", tok);
+        }
         if conn_sandbox {
             cmd.arg("--sandbox");
         }
@@ -178,6 +253,16 @@ pub async fn run(
         // Close our copy of the fd — the child has its own.
         unsafe { libc::close(raw_fd) };
     }
+}
+
+/// Extract the URL path (without query string) from the raw HTTP request line.
+/// e.g. `GET /agent?workdir=... HTTP/1.1` → `Some("/agent")`
+fn parse_path_from_http(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let line = text.lines().next()?;
+    let full = line.split_whitespace().nth(1)?;
+    let path = full.split('?').next().unwrap_or(full);
+    Some(path.to_string())
 }
 
 /// Extract the `workdir` query parameter from the raw bytes of an HTTP Upgrade
@@ -231,29 +316,115 @@ fn parse_token_from_http(bytes: &[u8]) -> Option<String> {
     None
 }
 
-/// Minimal percent-decoding (`%XX` → byte, `+` → space).
+/// Percent-decoding (`%XX` → byte, `+` → space).
+/// Collects raw bytes first, then converts to UTF-8 — required for multi-byte
+/// sequences such as Chinese characters (`调` → `%E8%B0%83`).
 fn url_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut buf: Vec<u8> = Vec::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             if let Ok(hex) = std::str::from_utf8(&bytes[i+1..i+3]) {
                 if let Ok(b) = u8::from_str_radix(hex, 16) {
-                    out.push(b as char);
+                    buf.push(b);
                     i += 3;
                     continue;
                 }
             }
         } else if bytes[i] == b'+' {
-            out.push(' ');
+            buf.push(b' ');
+            i += 1;
+            continue;
+        } else {
+            buf.push(bytes[i]);
             i += 1;
             continue;
         }
-        out.push(bytes[i] as char);
+        buf.push(bytes[i]);
         i += 1;
     }
-    out
+    String::from_utf8(buf)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+// ── Inline probe handler (no fork) ──────────────────────────────────────────
+
+/// Handle a `/probe` WebSocket connection entirely in the parent process.
+/// Sends one `ready` frame with cached capabilities and virtual nodes, then
+/// waits for the client to close (or times out after 5 s).
+async fn handle_probe(
+    stream: tokio::net::TcpStream,
+    sandbox_enabled: bool,
+    workdir: String,
+    caps: Arc<crate::workspaces::NodeCapabilities>,
+    virtual_nodes: Arc<Vec<crate::workspaces::VirtualNodeInfo>>,
+) {
+    let ws = match tokio_tungstenite::accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => { tracing::debug!("probe: WS upgrade failed: {}", e); return; }
+    };
+    let (mut write, mut read) = ws.split();
+
+    let payload = serde_json::json!({
+        "type": "ready",
+        "data": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "workdir": workdir,
+            "sandbox": sandbox_enabled,
+            "caps": *caps,
+            "virtual_nodes": *virtual_nodes,
+        }
+    });
+    if let Err(e) = write.send(Message::Text(payload.to_string().into())).await {
+        tracing::debug!("probe: send ready failed: {}", e);
+        return;
+    }
+
+    // Drain until client closes or 5 s elapses.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        async { while read.next().await.map(|m| m.is_ok()).unwrap_or(false) {} },
+    ).await;
+}
+
+/// Build the JSON body for `GET /nodes`.
+///
+/// Returns all statically configured `[[remote]]` entries merged with any
+/// virtual-node entries that have been dynamically discovered and stored in
+/// the in-process route table (populated by `/probe` calls or `call_node`
+/// `ready` frames).  The combined list lets worker sub-agents resolve node
+/// names and perform tag-based routing without reading the filesystem.
+fn build_nodes_json(ws_cfg: &crate::workspaces::WorkspacesFile) -> String {
+    use crate::workspaces;
+    let mut nodes: Vec<serde_json::Value> = Vec::new();
+
+    // Static [[remote]] entries from workspaces.toml.
+    for r in ws_cfg.all_remotes() {
+        nodes.push(serde_json::json!({
+            "name":   r.name,
+            "url":    r.url,
+            "source": "static",
+        }));
+    }
+
+    // Dynamic entries from the in-process route table (discovered at runtime).
+    if let Ok(table) = workspaces::get_route_table() {
+        for e in &table {
+            nodes.push(serde_json::json!({
+                "name":        format!("{}/{}", e.server_name, e.node_name),
+                "server_name": e.server_name,
+                "node_name":   e.node_name,
+                "url":         e.server_url,
+                "workdir":     e.workdir,
+                "sandbox":     e.sandbox,
+                "tags":        e.tags,
+                "source":      "route_table",
+            }));
+        }
+    }
+
+    serde_json::json!({ "nodes": nodes }).to_string()
 }
 
 fn cleanup_stale_worker_dirs() {

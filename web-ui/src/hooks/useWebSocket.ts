@@ -3,6 +3,24 @@ import { useAgentStore } from '../stores/agentStore';
 import { ClientMessage, ServerEvent, ToolCall } from '../types/agent';
 import { v4 as uuidv4 } from 'uuid';
 
+// Ensure the WebSocket URL targets /agent. Mirrors the Rust with_path() helper.
+function ensureAgentPath(url: string): string {
+  try {
+    const http = url.replace(/^ws(s?):/, 'http$1:');
+    const u = new URL(http);
+    if (!u.pathname || u.pathname === '/') {
+      u.pathname = '/agent';
+    }
+    return u.toString().replace(/^http(s?):/, 'ws$1:');
+  } catch {
+    const [base, query] = url.split('?');
+    const cleanBase = base.endsWith('/') ? base.slice(0, -1) : base;
+    const hasPath = cleanBase.replace(/^wss?:\/\/[^/]+/, '').length > 0;
+    const withPath = hasPath ? cleanBase : `${cleanBase}/agent`;
+    return query ? `${withPath}?${query}` : withPath;
+  }
+}
+
 export const useWebSocket = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const streamingMsgIdRef = useRef<string | null>(null);
@@ -11,6 +29,7 @@ export const useWebSocket = () => {
   const {
     connectionStatus,
     serverUrl,
+    clusterToken,
     workdir,
     config,
     setConnectionStatus,
@@ -31,6 +50,8 @@ export const useWebSocket = () => {
     setSandboxBackend,
     setPendingChanges,
     setSandboxChangesData,
+    setNodeList,
+    setConnectedWorkdir,
   } = useAgentStore();
 
   const sendRaw = useCallback((message: ClientMessage) => {
@@ -131,9 +152,12 @@ export const useWebSocket = () => {
     switch (event.type) {
       case 'ready':
         console.log('[ws] agent ready, version:', event.data.version);
-        // Use the backend label reported by the server (overlay / disabled)
         setSandboxBackend((event.data.sandbox_backend as 'overlay' | 'snapshot' | 'disabled') ?? 'disabled');
         setPendingChanges(0);
+        setConnectedWorkdir(event.data.workdir ?? null);
+        if (event.data.virtual_nodes) {
+          setNodeList(event.data.virtual_nodes);
+        }
         break;
 
       case 'sandbox_status':
@@ -403,19 +427,18 @@ export const useWebSocket = () => {
     wsRef.current?.close();
     setConnectionStatus('connecting');
     try {
-      // Pass workdir and sandbox as query parameters so the server can set up
-      // the correct container (mount project dir + optional overlay) before
-      // spawning the worker process.
+      // Ensure URL targets /agent path; append workdir/sandbox as query params.
+      const base = ensureAgentPath(serverUrl);
       const params: string[] = [];
       if (workdir) params.push(`workdir=${encodeURIComponent(workdir)}`);
       if (sandbox) params.push('sandbox=1');
-      const wsUrl = params.length > 0
-        ? `${serverUrl}${serverUrl.includes('?') ? '&' : '/?'}${params.join('&')}`
-        : serverUrl;
+      if (clusterToken) params.push(`token=${encodeURIComponent(clusterToken)}`);
+      const sep = base.includes('?') ? '&' : '?';
+      const wsUrl = params.length > 0 ? `${base}${sep}${params.join('&')}` : base;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.onopen = () => { setConnectionStatus('connected'); };
-      ws.onclose = () => { setConnectionStatus('disconnected'); streamingMsgIdRef.current = null; setStreamingMessageId(null); setIsProcessing(false); };
+      ws.onclose = () => { setConnectionStatus('disconnected'); setConnectedWorkdir(null); streamingMsgIdRef.current = null; setStreamingMessageId(null); setIsProcessing(false); };
       ws.onerror = () => { setConnectionStatus('error'); };
       ws.onmessage = (e) => {
         try { handleServerEvent(JSON.parse(e.data) as ServerEvent); }
@@ -425,7 +448,7 @@ export const useWebSocket = () => {
       setConnectionStatus('error');
       console.error('[ws] connect failed:', err);
     }
-  }, [serverUrl, workdir, sandbox, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
+  }, [serverUrl, workdir, sandbox, clusterToken, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
 
   const disconnect = useCallback(() => {
     // Guard: only update global state if this hook instance actually owns a WebSocket.

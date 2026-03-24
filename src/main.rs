@@ -141,6 +141,12 @@ struct Args {
     #[arg(long, hide = true)]
     config_json: Option<String>,
 
+    /// (Worker mode) Workspaces list serialized as JSON by the server.
+    /// When present, skips workspaces::load() so the worker does not need to
+    /// read workspaces.toml from inside a (potentially isolated) container.
+    #[arg(long, hide = true)]
+    workspaces_json: Option<String>,
+
     /// Use the global session store (~/.local/share/rust_agent/sessions/) instead of
     /// the project-local `.agent/session.json`. Useful when you want to manage
     /// multiple named sessions across projects.
@@ -227,14 +233,18 @@ async fn main() -> Result<()> {
     if args.mode == RunMode::Worker {
         let fd = args.worker_fd.expect("--worker-fd required in worker mode");
         let id = args.worker_id.clone().unwrap_or_else(|| "default".to_string());
-        // Prefer the pre-resolved config passed by the server so we never need
-        // to read models.toml or .env from inside a (potentially isolated) sandbox.
         let worker_config = if let Some(ref json) = args.config_json {
             serde_json::from_str(json).unwrap_or(config)
         } else {
             config
         };
-        return worker::run(worker_config, project_dir, fd, args.sandbox, &id, vec![]).await;
+        let worker_workspaces: Vec<crate::workspaces::WorkspaceEntry> =
+            if let Some(ref json) = args.workspaces_json {
+                serde_json::from_str(json).unwrap_or_default()
+            } else {
+                vec![]
+            };
+        return worker::run(worker_config, project_dir, fd, args.sandbox, &id, vec![], worker_workspaces).await;
     }
 
     // Server mode has its own event loop — launch and return

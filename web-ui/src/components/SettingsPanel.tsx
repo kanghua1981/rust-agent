@@ -7,6 +7,7 @@ import type { ConfigPreset } from '../types/agent';
 export const SettingsPanel: React.FC = () => {
   const { 
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset, connectionStatus,
+    clusterToken, setClusterToken,
     presets, addPreset, updatePreset, deletePreset, applyPreset 
   } = useAgentStore();
 
@@ -19,7 +20,8 @@ export const SettingsPanel: React.FC = () => {
   // Current config form state
   const [urlDraft, setUrlDraft] = useState(serverUrl);
   const [dirDraft, setDirDraft] = useState(workdir ?? '');
-  const [modelDraft, setModelDraft] = useState(config.model ?? '');
+  const [tokenDraft, setTokenDraft] = useState(clusterToken);
+  const [modelDraft, setModelDraft] = useState(config.model ?? '');  
 
   // Keep draft in sync with store when workdir changes externally
   // (e.g. applyPreset, or Zustand persist async rehydration on first load)
@@ -57,6 +59,7 @@ export const SettingsPanel: React.FC = () => {
     if (isConnected && newWorkdir) {
       setWorkdirRemote(newWorkdir);
     }
+    setClusterToken(tokenDraft.trim());
     if (modelDraft.trim()) setConfig({ model: modelDraft.trim() });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -193,6 +196,15 @@ export const SettingsPanel: React.FC = () => {
                 value={dirDraft}
                 onChange={(e) => setDirDraft(e.target.value)}
                 placeholder="/path/to/project"
+                style={inputStyle}
+              />
+            </Field>
+            <Field label="集群 Token（认证，留空则无需鉴权）">
+              <input
+                type="password"
+                value={tokenDraft}
+                onChange={(e) => setTokenDraft(e.target.value)}
+                placeholder="无 token 则留空"
                 style={inputStyle}
               />
             </Field>

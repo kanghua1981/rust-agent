@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface SandboxFileChange {
@@ -52,7 +52,17 @@ interface AgentState {
   // Session info (saved on server)
   sessionInfo: SessionInfo | null;
   sessionList: SessionMeta[];
+
+  // Virtual nodes from last ready frame
+  nodeList: VirtualNodeInfo[];
+
+  // Workdir the server actually reported in the ready frame (real connected workdir)
+  connectedWorkdir: string | null;
   
+  
+  // 集群 token（认证）
+  clusterToken: string;
+
   // 文件浏览
   currentPath: string;
   fileList: FileInfo[];
@@ -92,6 +102,9 @@ interface AgentState {
   deletePreset: (id: string) => void;
   applyPreset: (id: string) => void;
   clearSession: () => void;
+  setNodeList: (nodes: VirtualNodeInfo[]) => void;
+  setClusterToken: (token: string) => void;
+  setConnectedWorkdir: (workdir: string | null) => void;
   reset: () => void;
 }
 
@@ -142,6 +155,9 @@ const initialState = {
   fileList: [],
   sessionInfo: null,
   sessionList: [],
+  nodeList: [],
+  clusterToken: '',
+  connectedWorkdir: null,
   presets: persistedConfig.presets || [],
   config: {
     serverUrl: persistedConfig.serverUrl || getDefaultServerUrl(),
@@ -257,6 +273,10 @@ export const useAgentStore = create<AgentState>()(
     }
   },
   
+  setNodeList: (nodes) => set({ nodeList: nodes }),
+  setClusterToken: (token) => set({ clusterToken: token }),
+  setConnectedWorkdir: (workdir) => set({ connectedWorkdir: workdir }),
+
   clearSession: () => set({
     messages: [],
     toolCalls: [],
@@ -270,6 +290,7 @@ export const useAgentStore = create<AgentState>()(
   // reset only clears session/conversation state, preserving connection settings and presets
   reset: () => set((state) => ({
     connectionStatus: 'disconnected',
+    connectedWorkdir: null,
     messages: [],
     toolCalls: [],
     pendingConfirmations: [],
@@ -286,8 +307,10 @@ export const useAgentStore = create<AgentState>()(
       partialize: (state) => ({
         serverUrl: state.serverUrl,
         workdir: state.workdir,
+        clusterToken: state.clusterToken,
         config: state.config,
         presets: state.presets,
+        nodeList: state.nodeList,
       }),
     }
   )

@@ -388,8 +388,29 @@ export interface ReadyEvent extends BaseMessage {
   type: 'ready';
   data: {
     version: string;
+    workdir?: string;
+    sandbox?: boolean;
     sandbox_backend?: 'overlay' | 'snapshot' | 'disabled';
+    caps?: NodeCapabilities;
+    virtual_nodes?: VirtualNodeInfo[];
   };
+}
+
+export interface NodeCapabilities {
+  arch: string;
+  os: string;
+  cpu_cores: number;
+  ram_gb: number;
+  gpus: Array<{ name: string }>;
+  bins: string[];
+}
+
+export interface VirtualNodeInfo {
+  name: string;
+  workdir: string;
+  description: string;
+  sandbox: boolean;
+  tags: string[];
 }
 
 export interface PongEvent extends BaseMessage {

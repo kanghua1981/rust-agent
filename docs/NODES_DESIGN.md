@@ -494,20 +494,19 @@ mdns-sd = "0.11"   # 约 10KB，纯 Rust，无系统依赖
 
 ### Phase 2：能力通告 + 虚拟节点自描述
 
-- [ ] `workspaces.toml` 服务端配置（工程目录声明）
-- [ ] server 启动时读取 `workspaces.toml`，探测各 workspace 的 bins / caps
-- [ ] `ready` 帧加 `caps`（硬件+软件探测）和 `virtual_nodes` 字段
-- [ ] `call_node` 收到 `ready` 后把 `virtual_nodes` 格式化展示给 manager LLM
-- [ ] `any:<tag>` / `best:<tag>` / `all:<tag>` 路由逻辑（扫描内存路由表）
-- [ ] `/nodes` 命令展示层级结构（物理 server → 虚拟节点）
+- [x] `workspaces.rs` 加 `Serialize` + `VirtualNodeInfo` / `NodeCapabilities` / `GpuInfo`
+- [x] `probe_bins()` / `probe_ram_gb()` / `probe_gpus()` / `probe_capabilities()` 探测函数（无新依赖，纯标准库）
+- [x] `worker.rs` 启动时调用 `probe_capabilities()`，`ready` 帧加 `caps`（硬件+软件）和 `virtual_nodes` 字段
+- [x] `call_node` 收到 `ready` 后格式化 `caps` 摘要 + `virtual_nodes` 表格作为 `connect_header`，调用 `update_route_table()`
+- [x] `any:<tag>` / `best:<tag>` 路由（扫描内存 `ROUTE_TABLE`）；`all:<tag>` 顺序执行首个匹配（Phase 3 并行广播）
+- [x] `/nodes` 命令展示层级结构：物理 server（caps 摘要）→ 虚拟节点 tree（sandbox/workdir/tags）；自动填充路由表
 
-预计代码量：**~300 行**
+预计代码量：**~300 行**（实际约 280 行新增）
 
 ### Phase 3：mDNS 自动发现
 
 - [ ] 引入 `mdns-sd` crate
 - [ ] server 启动时广播 mDNS（含 `has_workspaces` TXT 记录）
-- [ ] manager 后台扫描，发探测连接（`?discover=1`）获取完整能力+虚拟节点
 - [ ] 自动填充内存路由表；`/nodes scan` 命令手动触发
 - [ ] （可选）`/nodes save` 将发现的节点追加到 `workspaces.toml [[remote]]`
 

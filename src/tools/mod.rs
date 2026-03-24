@@ -12,6 +12,7 @@ pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
 pub mod call_node;
+pub mod list_nodes;
 pub mod call_sub_agent;      // internal — not registered as LLM tool
 pub mod spawn_sub_agent;     // internal — not registered as LLM tool
 pub mod connect_service;
@@ -107,10 +108,12 @@ impl ToolExecutor {
         // worker sub-agents (to prevent infinite recursion).
         let agent_role = std::env::var("AGENT_ROLE").unwrap_or_else(|_| "manager".to_string());
         if agent_role == "manager" {
-            // call_node is the single unified tool for all agent-to-agent delegation.
+            // call_node: unified agent-to-agent delegation.
+            // list_nodes: query parent's /nodes endpoint to discover available targets.
             // call_sub_agent and spawn_sub_agent are kept as internal modules but
             // NOT exposed to the LLM to avoid confusion.
             executor.register(Box::new(call_node::CallNodeTool::new(output.clone())));
+            executor.register(Box::new(list_nodes::ListNodesTool));
         }
 
         // Service tools are available to all roles.

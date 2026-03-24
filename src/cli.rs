@@ -1456,8 +1456,9 @@ async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
 
 // ── /nodes command ────────────────────────────────────────────────────────────
 
-/// Probe every `[[remote]]` entry in workspaces.toml, print their status and
-/// workdir.  Uses a short-lived WebSocket connect → wait for ready → close.
+/// Probe every `[[remote]]` entry in workspaces.toml, print hierarchical status
+/// (physical server → virtual nodes with workdir/sandbox/tags), and populate the
+/// in-process route table so that subsequent `any:<tag>` calls work immediately.
 async fn handle_nodes_command(project_dir: &std::path::Path) {
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
@@ -1480,21 +1481,14 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
     }
 
     println!("\n{}", "📡  Probing remote nodes...".bright_cyan());
-    println!(
-        "  {:<22} {:<8} {:<8} {}",
-        "REMOTE".bright_white().bold(),
-        "STATUS".bright_white().bold(),
-        "SANDBOX".bright_white().bold(),
-        "WORKDIR".bright_white().bold(),
-    );
-    println!("  {}", "─".repeat(70).dimmed());
 
     for remote in &remotes {
-        // Append ?discover=1 so the server knows this is a probe (future use).
-        let url = if remote.url.contains('?') {
-            format!("{}&discover=1", remote.url)
+        // Use /probe path so the server handles this inline (no worker fork).
+        let probe_base = crate::workspaces::with_path(&remote.url, "/probe");
+        let url = if probe_base.contains('?') {
+            format!("{}&discover=1", probe_base)
         } else {
-            format!("{}?discover=1", remote.url)
+            format!("{}?discover=1", probe_base)
         };
 
         let connect_result = tokio::time::timeout(
@@ -1504,7 +1498,6 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
 
         match connect_result {
             Ok(Ok((ws_stream, _))) => {
-                // Wait for the ready frame.
                 let (mut write, mut read) = ws_stream.split();
                 let ready_result = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
@@ -1521,41 +1514,126 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
                         None
                     },
                 ).await;
-                // Close immediately after getting ready (or giving up).
                 let _ = write.send(Message::Close(None)).await;
 
                 match ready_result {
-                    Ok(Some(ev)) => {
+                    Ok(Some(ref ev)) => {
                         let workdir = ev["data"]["workdir"].as_str().unwrap_or("(default)");
-                        let sb = if ev["data"]["sandbox"].as_bool().unwrap_or(false) { "on" } else { "off" };
+                        let sb_raw  = ev["data"]["sandbox"].as_bool().unwrap_or(false);
+                        let sb_str  = if sb_raw { "on " } else { "off" };
+
+                        // Parse caps for summary line.
+                        let caps_line = if ev["data"]["caps"].is_object() {
+                            let c    = &ev["data"]["caps"];
+                            let arch = c["arch"].as_str().unwrap_or("?");
+                            let os   = c["os"].as_str().unwrap_or("?");
+                            let cpu  = c["cpu_cores"].as_u64().unwrap_or(0);
+                            let ram  = c["ram_gb"].as_u64().unwrap_or(0);
+                            let gpu_str = if let Some(gpus) = c["gpus"].as_array() {
+                                if gpus.is_empty() {
+                                    String::new()
+                                } else {
+                                    let names: Vec<&str> =
+                                        gpus.iter().filter_map(|g| g["name"].as_str()).collect();
+                                    format!("  GPU: {}", names.join(", "))
+                                }
+                            } else {
+                                String::new()
+                            };
+                            let bins = if let Some(b) = c["bins"].as_array() {
+                                let v: Vec<&str> = b.iter().filter_map(|x| x.as_str()).collect();
+                                if v.is_empty() { String::new() } else { format!("  bins: {}", v.join(" ")) }
+                            } else {
+                                String::new()
+                            };
+                            format!(
+                                "{}/{}  CPU:{} cores  RAM:{} GiB{}{}",
+                                os, arch, cpu, ram, gpu_str, bins
+                            )
+                        } else {
+                            String::new()
+                        };
+
+                        // Parse virtual nodes.
+                        let virtual_nodes: Vec<crate::workspaces::VirtualNodeInfo> =
+                            if let Some(arr) = ev["data"]["virtual_nodes"].as_array() {
+                                arr.iter()
+                                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
+
+                        // Populate route table so any:<tag> works immediately.
+                        if !virtual_nodes.is_empty() {
+                            let base_url = remote.url.splitn(2, '?').next().unwrap_or(&remote.url);
+                            crate::workspaces::update_route_table(
+                                &remote.name, base_url, &virtual_nodes,
+                            );
+                        }
+
+                        // Print physical server header.
                         println!(
-                            "  {} {:<20} {:<8} {:<8} {}",
+                            "  {} {}  sandbox:{}  {}",
                             "✅".green(),
-                            remote.name.bright_white(),
-                            "online".green(),
-                            sb,
+                            remote.name.bright_white().bold(),
+                            sb_str,
                             workdir.dimmed(),
                         );
+                        if !caps_line.is_empty() {
+                            println!("     {}", caps_line.dimmed());
+                        }
+
+                        // Print virtual nodes indented.
+                        if !virtual_nodes.is_empty() {
+                            println!("     {}", "Virtual nodes:".bright_cyan());
+                            let last = virtual_nodes.len() - 1;
+                            for (i, vn) in virtual_nodes.iter().enumerate() {
+                                let prefix = if i == last { "└──" } else { "├──" };
+                                let vn_sb = if vn.sandbox { "sandbox:on " } else { "sandbox:off" };
+                                let tags_str = if vn.tags.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("  [{}]", vn.tags.join(", "))
+                                };
+                                let desc = if vn.description.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("  — {}", vn.description)
+                                };
+                                println!(
+                                    "     {} {} {}  {}{}{}",
+                                    prefix.dimmed(),
+                                    vn.name.bright_white(),
+                                    vn_sb,
+                                    vn.workdir.dimmed(),
+                                    tags_str.bright_yellow(),
+                                    desc.dimmed(),
+                                );
+                            }
+                        }
+                        println!();
                     }
                     _ => {
                         println!(
-                            "  {} {:<20} {}",
+                            "  {} {}  {}",
                             "✅".green(),
-                            remote.name.bright_white(),
+                            remote.name.bright_white().bold(),
                             "online (no ready data)".yellow(),
                         );
+                        println!();
                     }
                 }
             }
             _ => {
                 println!(
-                    "  {} {:<20} {}",
+                    "  {} {}  {}",
                     "❌".red(),
-                    remote.name.bright_white(),
+                    remote.name.bright_white().bold(),
                     "offline".red(),
                 );
+                println!();
             }
         }
     }
-    println!();
 }

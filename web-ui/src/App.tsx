@@ -7,11 +7,12 @@ import { ToolsPanel } from './components/ToolsPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { SandboxPanel } from './components/SandboxPanel';
+import { NodesPanel } from './components/NodesPanel';
 import { ConnectModal } from './components/ConnectModal';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -64,6 +65,7 @@ function App() {
             </>
           )}
           {activeTab === 'tools' && <ToolsPanel />}
+          {activeTab === 'nodes' && <NodesPanel />}
           {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} />}
           {activeTab === 'settings' && <SettingsPanel />}
           {activeTab === 'sandbox' && (
