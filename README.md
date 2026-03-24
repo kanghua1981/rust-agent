@@ -15,7 +15,8 @@
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
 - **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换
 - **📜 对话持久化**: 支持上下文保持、会话保存与恢复
-- **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识
+- **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识；兼容 [OpenClaw AgentSkills](https://agentskills.io/) 格式（`SKILL.md`），可直接使用社区发布的技能包
+- **🧩 动态工具**: 在 Skill 目录加一个 `tool.json` 即可注册新工具，参数 JSON 通过 stdin 传递给任意 shell 脚本/可执行文件
 - **🧠 持久记忆**: 自动记录所有工具操作到 `.agent/memory.md`，跨会话保持
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
@@ -515,11 +516,14 @@ Skills 是项目级别的知识文件，让 Agent "理解"你的项目规范。
 
 ```
 your-project/
-├── AGENT.md                    # 全局项目指令（自动加载）
+├── AGENT.md                    # 全局项目指令（自动加载，原生格式）
+├── SKILL.md                    # 等效入口（OpenClaw AgentSkills 兼容格式）
 └── .agent/
     └── skills/
-        ├── modify-dts-gpio.md  # 设备树修改规范
-        ├── cross-compile.md    # 交叉编译流程
+        ├── modify-dts-gpio.md  # 单文件 Skill（原生格式）
+        ├── cross-compile/       # 目录 Skill
+        │   ├── SKILL.md        # 入口（OpenClaw AgentSkills 兼容）或 README.md
+        │   └── scripts/        # 关联资源文件
         └── add-driver.md       # 驱动开发规范
 ```
 
@@ -562,6 +566,79 @@ After editing, run: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs
   • Modify Dts Gpio (.agent/skills/modify-dts-gpio.md)
   • Cross Compile (.agent/skills/cross-compile.md)
 ```
+
+### OpenClaw AgentSkills 兼容
+
+本项目的 Skills 系统兼容 [OpenClaw AgentSkills](https://agentskills.io/) 标准格式，可以**直接使用**为 OpenClaw 编写的技能包，无需修改：
+
+- **目录 Skill**：子目录内的 `SKILL.md`（OpenClaw 格式）和 `README.md`（原生格式）均被识别
+- **根目录 Skill**：根目录下的 `SKILL.md` 等同于 `AGENT.md`，随会话自动注入
+- **frontmatter 字段**：`name`、`description` 字段完全兼容；OpenClaw 特有的 `metadata`（环境门控、平台过滤）字段被优雅忽略
+- **关联文件**：目录 Skill 中除入口文件外的所有资源都会在 Skill 内容末尾列出，方便 Agent 精准引用
+
+**从 OpenClaw 社区安装 Skill（示例）：**
+```bash
+# 把任意 AgentSkills 格式技能包放入 .agent/skills/ 即可
+cp -r ~/Downloads/my-skill/ .agent/skills/
+# 或直接 git clone
+git clone https://github.com/example/my-skill .agent/skills/my-skill
+```
+
+### 🧩 动态工具（tool.json）
+
+在任意 Skill 目录里放一个 `tool.json`，Agent 启动时会自动扫描并注册为可调用工具，无需修改任何 Rust 代码。
+
+**`tool.json` 格式：**
+```json
+{
+  "name": "query-db",
+  "description": "根据 SQL 查询数据库并返回结果",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "sql": { "type": "string", "description": "SQL 查询语句" }
+    },
+    "required": ["sql"]
+  },
+  "command": "./query.sh",
+  "timeout_secs": 30
+}
+```
+
+**执行合同：**
+- Agent 调用工具时，LLM 传来的参数会被序列化为 JSON 并写入脚本的 **stdin**
+- 脚本工作目录为 Skill 目录，相对路径均有效
+- stdout 作为工具返回值，非零退出码会返回错误
+
+**目录结构示例：**
+```
+.agent/skills/
+└── query-db/
+    ├── SKILL.md      # 工具使用说明（注入系统 prompt）
+    ├── tool.json     # 工具定义（自动注册）
+    └── query.sh      # 实际执行的脚本
+```
+
+`query.sh` 从 stdin 读取 JSON 参数：
+```bash
+#!/bin/bash
+params=$(cat)  # 读取 stdin JSON
+sql=$(echo "$params" | jq -r '.sql')
+sqlite3 ./data.db "$sql"
+```
+
+或用 Python：
+```python
+#!/usr/bin/env python3
+import sys, json
+params = json.load(sys.stdin)
+result = run_query(params['sql'])
+print(result)
+```
+
+**扫描路径**（两者均支持）：
+- `.agent/skills/*/tool.json` — 原生格式
+- `skills/*/tool.json` — OpenClaw AgentSkills 目录布局兼容
 
 ---
 
@@ -729,7 +806,7 @@ src/
 ├── diff.rs          # 文件修改的 Diff 展示
 ├── memory.rs        # 持久记忆系统（.agent/memory.md）
 ├── summary.rs       # 项目摘要管理（.agent/summary.md）
-├── skills.rs        # Skills 加载系统（AGENT.md + .agent/skills/*.md）
+├── skills.rs        # Skills 加载系统（AGENT.md / SKILL.md + .agent/skills/），兼容 OpenClaw AgentSkills 格式
 ├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染，UTF-8 安全截断）
 ├── llm/
 │   ├── mod.rs       # LlmClient trait 定义
@@ -748,7 +825,8 @@ src/
     ├── think.rs        # 💭 内部推理（无副作用，不消耗工具配额）
     ├── read_pdf.rs     # 📄 PDF 文本提取（marker / pdftotext / mutool）
     ├── read_ebook.rs   # 📕 电子书读取（Calibre ebook-convert / pandoc）
-    └── fetch_url.rs    # 🌐 网页抓取与正文提取（readable / pandoc / 内置 regex）
+    ├── fetch_url.rs    # 🌐 网页抓取与正文提取（readable / pandoc / 内置 regex）
+    └── script_tool.rs  # 🧩 动态脚本工具（扫描 tool.json，stdin JSON 协议）
 ```
 
 ### 输出抽象层
@@ -942,7 +1020,8 @@ Agent 在项目下自动管理 `.agent/` 目录：
 
 ```
 your-project/
-├── AGENT.md                        # 全局项目指令（自动加载）
+├── AGENT.md                        # 全局项目指令（自动加载，原生格式）
+├── SKILL.md                        # 等效入口（OpenClaw AgentSkills 兼容格式，可选）
 └── .agent/
     ├── memory.md                   # 持久记忆（自动维护）
     ├── summary.md                  # 项目摘要（/summary 生成）

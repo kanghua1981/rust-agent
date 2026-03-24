@@ -203,9 +203,12 @@ async fn run_async(
         // Dropping user_tx signals the agent loop to exit.
     });
 
-    // Send ready event
+    // Send ready event — include workdir and sandbox so remote managers (call_node)
+    // can tell the LLM where they are and what mode they're running in.
     ws_output.emit_public("ready", serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "workdir": project_dir.display().to_string(),
+        "sandbox": sandbox_enabled,
         "sandbox_backend": agent.sandbox.backend_label_sync(),
     }));
     ws_output.emit_public("session_info", session_info_json(&project_dir));

@@ -23,6 +23,7 @@ mod container;
 mod server;
 mod ui;
 mod worker;
+mod workspaces;
 
 use std::sync::Arc;
 

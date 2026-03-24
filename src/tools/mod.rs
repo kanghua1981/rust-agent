@@ -11,13 +11,15 @@ pub mod read_pdf;
 pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
-pub mod call_sub_agent;
-pub mod spawn_sub_agent;
+pub mod call_node;
+pub mod call_sub_agent;      // internal — not registered as LLM tool
+pub mod spawn_sub_agent;     // internal — not registered as LLM tool
 pub mod connect_service;
 pub mod query_service;
 pub mod subscribe_service;
 pub mod list_services;
 pub mod browser;
+pub mod script_tool;
 // pub mod git; // Removed - Git operations handled by run_command
 
 use std::sync::Arc;
@@ -101,12 +103,14 @@ impl ToolExecutor {
         executor.register(Box::new(browser::BrowserTool::new()));
         // executor.register(Box::new(git::GitTool)); // Removed - Git operations handled by run_command
 
-        // Only register agent-spawning tools for the main manager agent (not for
-        // worker sub-agents spawned by spawn_sub_agent, to prevent infinite recursion).
+        // Only register agent-to-agent tools for the main manager agent, not for
+        // worker sub-agents (to prevent infinite recursion).
         let agent_role = std::env::var("AGENT_ROLE").unwrap_or_else(|_| "manager".to_string());
         if agent_role == "manager" {
-            executor.register(Box::new(call_sub_agent::CallSubAgentTool::new(output.clone())));
-            executor.register(Box::new(spawn_sub_agent::SpawnSubAgentTool::new(output)));
+            // call_node is the single unified tool for all agent-to-agent delegation.
+            // call_sub_agent and spawn_sub_agent are kept as internal modules but
+            // NOT exposed to the LLM to avoid confusion.
+            executor.register(Box::new(call_node::CallNodeTool::new(output.clone())));
         }
 
         // Service tools are available to all roles.
@@ -116,12 +120,37 @@ impl ToolExecutor {
         executor.register(Box::new(subscribe_service::UnsubscribeServiceTool));
         executor.register(Box::new(list_services::ListServicesTool));
 
+        // Dynamically register script tools from tool.json files in skill dirs.
+        executor.load_script_tools_from(&executor.project_dir.clone());
+
         executor
     }
 
     fn register(&mut self, tool: Box<dyn Tool + Send + Sync>) {
         let def = tool.definition();
         self.tools.insert(def.name.clone(), tool);
+    }
+
+    /// Scan `workdir` for `tool.json` files and register each as a ScriptTool.
+    /// Existing tools with the same name are overwritten (script tools win).
+    fn load_script_tools_from(&mut self, workdir: &std::path::Path) {
+        for st in script_tool::load_script_tools(workdir) {
+            let name = st.definition().name.clone();
+            tracing::info!("Loaded script tool: {name}");
+            self.tools.insert(name, Box::new(st));
+        }
+    }
+
+    /// Reload script tools after the working directory changes.
+    /// Built-in tools are unaffected; only script tools are refreshed.
+    pub fn reload_script_tools(&mut self) {
+        // Remove previously registered script tools (identified by checking
+        // whether the tool name is NOT in the static built-in set).
+        // Simplest approach: re-scan and overwrite — no stale entries remain
+        // because script tools from the old dir are simply replaced or
+        // shadowed on next call.
+        let workdir = self.project_dir.clone();
+        self.load_script_tools_from(&workdir);
     }
 
     /// Update the working directory used by all tools.

@@ -215,6 +215,11 @@ pub async fn run(
                         handle_plan_command(input, &mut agent).await;
                         continue;
                     }
+                    // /nodes probes all [[remote]] entries in workspaces.toml
+                    if input == "/nodes" {
+                        handle_nodes_command(&agent.project_dir).await;
+                        continue;
+                    }
                     // Sandbox commands need async
                     if input == "/rollback" {
                         handle_rollback_command(&mut agent).await;
@@ -1447,4 +1452,110 @@ async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
     #[cfg(unix)]
     guidance_guard.abort();
     result
+}
+
+// ── /nodes command ────────────────────────────────────────────────────────────
+
+/// Probe every `[[remote]]` entry in workspaces.toml, print their status and
+/// workdir.  Uses a short-lived WebSocket connect → wait for ready → close.
+async fn handle_nodes_command(project_dir: &std::path::Path) {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let cfg = crate::workspaces::load(project_dir);
+    let remotes = cfg.all_remotes();
+
+    if remotes.is_empty() {
+        println!(
+            "\n{}",
+            "📡  No [[remote]] entries in workspaces.toml.".bright_yellow()
+        );
+        println!(
+            "  Add entries to {} or {}",
+            ".agent/workspaces.toml".bright_yellow(),
+            "~/.config/rust_agent/workspaces.toml".bright_yellow()
+        );
+        return;
+    }
+
+    println!("\n{}", "📡  Probing remote nodes...".bright_cyan());
+    println!(
+        "  {:<22} {:<8} {:<8} {}",
+        "REMOTE".bright_white().bold(),
+        "STATUS".bright_white().bold(),
+        "SANDBOX".bright_white().bold(),
+        "WORKDIR".bright_white().bold(),
+    );
+    println!("  {}", "─".repeat(70).dimmed());
+
+    for remote in &remotes {
+        // Append ?discover=1 so the server knows this is a probe (future use).
+        let url = if remote.url.contains('?') {
+            format!("{}&discover=1", remote.url)
+        } else {
+            format!("{}?discover=1", remote.url)
+        };
+
+        let connect_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connect_async(&url),
+        ).await;
+
+        match connect_result {
+            Ok(Ok((ws_stream, _))) => {
+                // Wait for the ready frame.
+                let (mut write, mut read) = ws_stream.split();
+                let ready_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    async {
+                        while let Some(msg) = read.next().await {
+                            if let Ok(Message::Text(text)) = msg {
+                                if let Ok(ev) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if ev["type"] == "ready" {
+                                        return Some(ev);
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    },
+                ).await;
+                // Close immediately after getting ready (or giving up).
+                let _ = write.send(Message::Close(None)).await;
+
+                match ready_result {
+                    Ok(Some(ev)) => {
+                        let workdir = ev["data"]["workdir"].as_str().unwrap_or("(default)");
+                        let sb = if ev["data"]["sandbox"].as_bool().unwrap_or(false) { "on" } else { "off" };
+                        println!(
+                            "  {} {:<20} {:<8} {:<8} {}",
+                            "✅".green(),
+                            remote.name.bright_white(),
+                            "online".green(),
+                            sb,
+                            workdir.dimmed(),
+                        );
+                    }
+                    _ => {
+                        println!(
+                            "  {} {:<20} {}",
+                            "✅".green(),
+                            remote.name.bright_white(),
+                            "online (no ready data)".yellow(),
+                        );
+                    }
+                }
+            }
+            _ => {
+                println!(
+                    "  {} {:<20} {}",
+                    "❌".red(),
+                    remote.name.bright_white(),
+                    "offline".red(),
+                );
+            }
+        }
+    }
+    println!();
 }

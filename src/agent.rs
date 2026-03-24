@@ -818,12 +818,6 @@ impl Agent {
                     result.is_error,
                 ));
 
-                // If this was call_sub_agent, the sub-agent's response already contains
-                // the final answer to the user's prompt. We should stop the loop here
-                // to avoid the main agent trying to "summarize" or continue.
-                if tool_name == "call_sub_agent" && !result.is_error {
-                    return Ok(result.output);
-                }
             }
 
             // Check context window after tool results

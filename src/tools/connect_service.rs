@@ -36,10 +36,14 @@ impl Tool for ConnectServiceTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "connect_service".to_string(),
-            description: "Register and connect to a named external service (e.g. a local model \
-                          server, notification gateway, or knowledge-base).  Use ws:// for \
+            description: "Register and connect to a simple external service such as a local \
+                          model server, notification gateway, or REST API.  Use ws:// for \
                           WebSocket services and http:// for REST APIs.  The connection persists \
-                          for the session so you only need to call this once per service."
+                          for the session so you only need to call this once per service.\n\
+                          \n\
+                          IMPORTANT: Do NOT use this for agent servers (agent --mode server). \
+                          Use call_node instead, which implements the correct agent-to-agent \
+                          protocol (ready handshake, user_message, streaming events, confirmations)."
                 .to_string(),
             parameters: json!({
                 "type": "object",

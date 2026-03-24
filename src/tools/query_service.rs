@@ -35,9 +35,8 @@ impl Tool for QueryServiceTool {
             name: "query_service".to_string(),
             description: "Send a question to a named external service and return its answer.  \
                           The service must have been registered first with connect_service.  \
-                          This is a simple single-round-trip query — the service should not \
-                          run a multi-step pipeline.  If the service is busy, the call will \
-                          wait up to 10 seconds for a slot before returning a 'busy' error."
+                          This is for simple single-round-trip services (model servers, REST APIs) \
+                          — NOT for agent servers. Use call_node to delegate tasks to another agent."
                 .to_string(),
             parameters: json!({
                 "type": "object",

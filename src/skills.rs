@@ -93,11 +93,20 @@ pub fn load_skills(workdir: &Path) -> LoadedSkills {
     let mut skills = Vec::new();
     let mut index = Vec::new();
 
-    // 1. Load AGENT.md from the project root — always full content
+    // 1. Load root-level skill files — always full content.
+    //    Supports both AGENT.md (native format) and SKILL.md (OpenClaw AgentSkills format).
+    //    Both can coexist; AGENT.md is loaded first.
     let agent_md = workdir.join("AGENT.md");
     if let Some(skill) = load_skill_file(&agent_md, "Project Instructions", "AGENT.md") {
         debug!("Loaded project instructions from AGENT.md");
         skills.push(skill);
+    }
+    let skill_md = workdir.join("SKILL.md");
+    if skill_md.exists() {
+        if let Some(skill) = load_skill_file(&skill_md, "Project Skill", "SKILL.md") {
+            debug!("Loaded project skill from SKILL.md (OpenClaw AgentSkills format)");
+            skills.push(skill);
+        }
     }
 
     // 2. Index .agent/skills/ — supports both *.md files and directories
@@ -345,9 +354,11 @@ fn build_skill_index(path: &Path, source: &str) -> Option<SkillIndex> {
     })
 }
 
-/// Find a README.md (case-insensitive) inside a skill directory.
+/// Find the entry file (SKILL.md or README.md, case-insensitive) inside a skill directory.
+/// OpenClaw AgentSkills format uses SKILL.md; legacy format uses README.md.
+/// SKILL.md takes precedence when both exist.
 fn find_readme(skill_dir: &Path) -> Option<PathBuf> {
-    for candidate in &["README.md", "readme.md", "Readme.md"] {
+    for candidate in &["SKILL.md", "skill.md", "README.md", "readme.md", "Readme.md"] {
         let p = skill_dir.join(candidate);
         if p.exists() {
             return Some(p);
@@ -410,8 +421,8 @@ fn collect_assets_recursive(dir: &Path, workdir: &Path, out: &mut Vec<String>) {
             collect_assets_recursive(&path, workdir, out);
         } else {
             let fname = path.file_name().map(|s| s.to_string_lossy().to_lowercase());
-            // Skip the README itself
-            if fname.as_deref() == Some("readme.md") {
+            // Skip the skill entry file itself (README.md or SKILL.md)
+            if matches!(fname.as_deref(), Some("readme.md") | Some("skill.md")) {
                 continue;
             }
             // Relative to workdir for easy use in tool calls

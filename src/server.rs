@@ -57,6 +57,9 @@ pub async fn run(
 
     cleanup_stale_worker_dirs();
 
+    // Load cluster token once at startup.  No token = open server (local use).
+    let cluster_token: Option<String> = crate::workspaces::load(&project_dir).cluster.token;
+
     let addr = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&addr).await?;
 
@@ -66,6 +69,9 @@ pub async fn run(
         println!("   Sandbox: ENABLED by default (override per-connection via URL sandbox=1/0)");
     } else {
         println!("   Sandbox: disabled by default (enable per-connection via URL sandbox=1)");
+    }
+    if cluster_token.is_some() {
+        println!("   Auth: cluster token required");
     }
     println!("   Press Ctrl+C to stop.\n");
 
@@ -87,6 +93,23 @@ pub async fn run(
         // Per-connection sandbox flag: URL param `sandbox=1` overrides the
         // server-level default (set at startup with --sandbox).
         let conn_sandbox = parse_sandbox_from_http(&peek_buf[..peek_n]).unwrap_or(sandbox);
+
+        // Token validation.  If a cluster token is configured, reject connections
+        // that don't present it.  We send a minimal HTTP 401 response and drop
+        // the TCP stream — no process is forked for rejected connections.
+        if let Some(required) = &cluster_token {
+            let presented = parse_token_from_http(&peek_buf[..peek_n]);
+            if presented.as_deref() != Some(required.as_str()) {
+                tracing::warn!("Rejected connection from {} — token mismatch", peer);
+                use tokio::io::AsyncWriteExt;
+                let mut stream = stream; // move out of peek reference
+                let _ = stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                ).await;
+                continue;
+            }
+        }
+
         tracing::info!("Accepted connection from {} -> project_dir={:?} sandbox={}", peer, conn_project_dir, conn_sandbox);
 
         // Convert to raw fd AFTER peeking (peek is non-consuming).
@@ -189,6 +212,20 @@ fn parse_sandbox_from_http(bytes: &[u8]) -> Option<bool> {
         }
         if param == "sandbox=0" || param == "sandbox=false" {
             return Some(false);
+        }
+    }
+    None
+}
+
+/// Extract the `token` query parameter from the raw HTTP Upgrade request bytes.
+fn parse_token_from_http(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let line = text.lines().next()?;
+    let path = line.split_whitespace().nth(1)?;
+    let query = path.split_once('?')?.1;
+    for param in query.split('&') {
+        if let Some(val) = param.strip_prefix("token=") {
+            return Some(url_decode(val));
         }
     }
     None

@@ -413,6 +413,10 @@ pub fn print_help() {
         "/skills".bright_white()
     );
     println!(
+        "  {}    - Probe remote agent nodes (workspaces.toml [[remote]])",
+        "/nodes".bright_white()
+    );
+    println!(
         "  {}   - Show persistent memory",
         "/memory".bright_white()
     );
