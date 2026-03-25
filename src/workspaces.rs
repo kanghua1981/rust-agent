@@ -74,6 +74,10 @@ pub struct NodeEntry {
     /// Ignored when `isolation` is set explicitly.
     #[serde(default)]
     pub sandbox: bool,
+    /// Default execution mode for this node.
+    /// "simple" | "plan" | "pipeline" | "auto" (= let router decide, the default).
+    #[serde(default)]
+    pub exec_mode: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -129,6 +133,9 @@ pub struct VirtualNodeInfo {
     /// Legacy field kept for backward compatibility with older server responses.
     #[serde(default)]
     pub sandbox: bool,
+    /// Default execution mode: "simple" | "plan" | "pipeline" | None (auto).
+    #[serde(default)]
+    pub exec_mode: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -232,6 +239,7 @@ pub fn probe_capabilities(nodes: &[NodeEntry]) -> (NodeCapabilities, Vec<Virtual
                 description: n.description.clone(),
                 isolation,
                 sandbox: n.sandbox,
+                exec_mode: n.exec_mode.clone(),
                 tags: n.tags.clone(),
             }
         }))
@@ -344,6 +352,9 @@ pub struct RegistryEntry {
     /// Absolute working directory for this node (used by call_node to set ?workdir= param).
     #[serde(default)]
     pub workdir: Option<String>,
+    /// Default execution mode: "simple" | "plan" | "pipeline" | None (auto).
+    #[serde(default)]
+    pub exec_mode: Option<String>,
 }
 
 static NODE_REGISTRY: once_cell::sync::Lazy<std::sync::RwLock<Vec<RegistryEntry>>> =
@@ -388,6 +399,7 @@ pub fn registry_init_local(nodes: &[NodeEntry], port: u16) {
             sandbox:       n.sandbox || matches!(n.isolation.as_deref(), Some("sandbox")),
             description:   n.description.clone(),
             workdir:       Some(workdir.display().to_string()),
+            exec_mode:     n.exec_mode.clone(),
         })
     }).collect();
 
@@ -432,6 +444,7 @@ pub fn registry_mark_peer_offline(peer_name: &str, peer_url: &str) {
             sandbox:        false,
             description:    format!("peer '{}' is unreachable", peer_name),
             workdir:        None,
+            exec_mode:      None,
         });
     }
 }

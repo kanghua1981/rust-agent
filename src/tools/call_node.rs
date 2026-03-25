@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::confirm::{ConfirmAction, ConfirmResult};
-use crate::output::AgentOutput;
+use crate::output::{AgentOutput, PlanReview};
 use crate::tools::{Tool, ToolDefinition, ToolResult};
 use crate::agent::is_interrupted;
 use crate::workspaces;
@@ -53,6 +53,10 @@ struct CallNodeInput {
     /// Override the node's default isolation mode ("normal" | "container" | "sandbox").
     #[serde(default)]
     isolation: Option<String>,
+    /// Override the node's default execution mode.
+    /// "simple" | "plan" | "pipeline" | "auto" (= node/router default).
+    #[serde(default)]
+    exec_mode: Option<String>,
     /// Auto-approve all tool confirmations from the remote agent.
     #[serde(default)]
     auto_approve: bool,
@@ -115,6 +119,7 @@ enum NodeEvent {
     ToolResult { name: String, output: String },
     ConfirmRequest { action: String, details: Option<String> },
     AskUser(String),
+    ReviewPlan(String),
     Done(String),
     Error(String),
     Ready {
@@ -173,6 +178,10 @@ fn parse_event(ev: &Value) -> NodeEvent {
         Some("ask_user") => {
             let question = ev["data"]["question"].as_str().unwrap_or("").to_string();
             NodeEvent::AskUser(question)
+        }
+        Some("review_plan") => {
+            let plan = ev["data"]["plan"].as_str().unwrap_or("").to_string();
+            NodeEvent::ReviewPlan(plan)
         }
         Some("done") | Some("final_response") => {
             let text = ev["data"]["text"].as_str().or_else(|| ev["text"].as_str()).unwrap_or("").to_string();
@@ -257,6 +266,14 @@ impl Tool for CallNodeTool {
                         "enum": ["normal", "container", "sandbox"],
                         "description": "Override the remote agent's isolation mode. \
                             If omitted, uses the node's configured default."
+                    },
+                    "exec_mode": {
+                        "type": "string",
+                        "enum": ["simple", "plan", "pipeline", "auto"],
+                        "description": "Override the execution mode on the remote node. \
+                            'simple' = basic loop (fast), 'plan' = plan+execute, \
+                            'pipeline' = full Planner→Executor→Checker, \
+                            'auto' = let the remote router decide (default)."
                     },
                     "auto_approve": {
                         "type": "boolean",
@@ -351,9 +368,9 @@ impl Tool for CallNodeTool {
             }
         }
 
-        let (base_url, node_workdir, node_isolation, cluster_token) = if is_direct_url {
+        let (base_url, node_workdir, node_isolation, node_exec_mode, cluster_token) = if is_direct_url {
             let tok = std::env::var("AGENT_CLUSTER_TOKEN").ok();
-            (input.target.clone(), None::<String>, None::<String>, tok)
+            (input.target.clone(), None::<String>, None::<String>, None::<String>, tok)
         } else {
             // Cluster token from env var injected by parent server before fork.
             let cluster_token = std::env::var("AGENT_CLUSTER_TOKEN").ok();
@@ -396,6 +413,7 @@ impl Tool for CallNodeTool {
                         n["workdir"].as_str().map(|s| s.to_string()),
                         n["isolation"].as_str().map(|s| s.to_string())
                             .or_else(|| n["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
+                        n["exec_mode"].as_str().map(|s| s.to_string()),
                         cluster_token,
                     ),
                     None => return ToolResult::error(format!(
@@ -434,6 +452,7 @@ impl Tool for CallNodeTool {
                     first["workdir"].as_str().map(|s| s.to_string()),
                     first["isolation"].as_str().map(|s| s.to_string())
                         .or_else(|| first["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
+                    first["exec_mode"].as_str().map(|s| s.to_string()),
                     cluster_token,
                 )
             } else {
@@ -479,6 +498,7 @@ impl Tool for CallNodeTool {
                                     n["workdir"].as_str().map(|s| s.to_string()),
                                     n["isolation"].as_str().map(|s| s.to_string())
                                         .or_else(|| n["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
+                                    n["exec_mode"].as_str().map(|s| s.to_string()),
                                     cluster_token,
                                 ),
                                 _ => return ToolResult::error(format!(
@@ -499,6 +519,7 @@ impl Tool for CallNodeTool {
                         n["workdir"].as_str().map(|s| s.to_string()),
                         n["isolation"].as_str().map(|s| s.to_string())
                             .or_else(|| n["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
+                        n["exec_mode"].as_str().map(|s| s.to_string()),
                         cluster_token,
                     ),
                     None => {
@@ -516,8 +537,12 @@ impl Tool for CallNodeTool {
         };
 
         // Explicit parameters override node defaults.
-        let effective_workdir = input.workdir.as_deref().or(node_workdir.as_deref());
+        let effective_workdir   = input.workdir.as_deref().or(node_workdir.as_deref());
         let effective_isolation = input.isolation.as_deref().or(node_isolation.as_deref());
+        // exec_mode: "auto" (or None) = let router decide; anything else is forced.
+        let effective_exec_mode = input.exec_mode.as_deref()
+            .filter(|m| *m != "auto")
+            .or_else(|| node_exec_mode.as_deref().filter(|m| *m != "auto"));
 
         // ── Build final URL ───────────────────────────────────────────────────
         // Ensure the URL targets /agent (not the root path).
@@ -536,6 +561,12 @@ impl Tool for CallNodeTool {
         let (mut write, mut read) = ws_stream.split();
 
         // ── Send initial task ─────────────────────────────────────────────────
+        // Force execution mode on the remote node BEFORE the user message so the
+        // agent picks it up when processing this turn.
+        if let Some(mode) = effective_exec_mode {
+            let mode_msg = json!({ "type": "set_mode", "data": { "mode": mode } });
+            let _ = write.send(Message::Text(mode_msg.to_string().into())).await;
+        }
         let initial_msg = json!({
             "type": "user_message",
             "data": { "text": input.prompt }
@@ -633,6 +664,24 @@ impl Tool for CallNodeTool {
                                         "type": "ask_user_response",
                                         "data": { "answer": answer }
                                     });
+                                    let _ = write.send(Message::Text(response.to_string().into())).await;
+                                }
+                                NodeEvent::ReviewPlan(plan) => {
+                                    let output = self.output.clone();
+                                    let review = tokio::task::spawn_blocking(move || {
+                                        output.review_plan(&plan)
+                                    }).await.unwrap_or(PlanReview::Reject);
+                                    let (approved, feedback, context) = match review {
+                                        PlanReview::Approve              => (true,  String::new(), String::new()),
+                                        PlanReview::ApproveWithContext(c) => (true,  String::new(), c),
+                                        PlanReview::Reject               => (false, String::new(), String::new()),
+                                        PlanReview::Refine(fb)           => (true,  fb,            String::new()),
+                                    };
+                                    let mut data = json!({ "approved": approved, "feedback": feedback });
+                                    if !context.is_empty() {
+                                        data["context"] = json!(context);
+                                    }
+                                    let response = json!({ "type": "review_plan_response", "data": data });
                                     let _ = write.send(Message::Text(response.to_string().into())).await;
                                 }
                                 NodeEvent::Done(text) => {

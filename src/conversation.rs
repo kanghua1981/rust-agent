@@ -251,9 +251,6 @@ Skills management:
 - ALWAYS use the `create_skill` tool to create or update skills. NEVER use `write_file`
   or `edit_file` to directly create/modify files in `.agent/skills/`. The `create_skill`
   tool automatically generates the required YAML frontmatter format.
-- Good candidates for skills: build/deploy steps, cross-compilation recipes, hardware
-  configuration procedures, testing workflows, and any multi-step process you had to
-  figure out by exploring the project.
 - Before creating a skill, check the Available Skills list in this prompt to avoid duplicates.
 - To read the full content of an existing skill, use the `load_skill` tool."#,
             project_dir.display(),

@@ -495,6 +495,7 @@ fn build_nodes_json(_ws_cfg: &crate::workspaces::WorkspacesFile, _port: u16) -> 
                 "sandbox":     e.sandbox,
                 "description": e.description,
                 "workdir":     e.workdir,
+                "exec_mode":   e.exec_mode,
             });
             if let Some(ref peer) = e.peer_name {
                 obj["source"]    = serde_json::json!("remote");
@@ -601,6 +602,7 @@ async fn probe_and_update(
                     sandbox:        vn.sandbox || matches!(vn.isolation.as_deref(), Some("sandbox")),
                     description:    vn.description.clone(),
                     workdir:        Some(vn.workdir.clone()),
+                    exec_mode:      vn.exec_mode.clone(),
                 }
             }).collect();
             let n = entries.len();
