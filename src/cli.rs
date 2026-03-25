@@ -1467,12 +1467,12 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
     use tokio_tungstenite::tungstenite::Message;
 
     let cfg = crate::workspaces::load(project_dir);
-    let remotes = cfg.all_remotes();
+    let remotes = cfg.all_peers();
 
     if remotes.is_empty() {
         println!(
             "\n{}",
-            "📡  No [[remote]] entries in workspaces.toml.".bright_yellow()
+            "📡  No [[peer]] entries in workspaces.toml.".bright_yellow()
         );
         println!(
             "  Add entries to {} or {}",
@@ -1484,9 +1484,10 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
 
     println!("\n{}", "📡  Probing remote nodes...".bright_cyan());
 
-    for remote in &remotes {
+    for remote in remotes {
         // Use /probe path so the server handles this inline (no worker fork).
-        let probe_base = crate::workspaces::with_path(&remote.url, "/probe");
+        let remote_url = remote.url.as_str();
+        let probe_base = crate::workspaces::with_path(remote_url, "/probe");
         let url = if probe_base.contains('?') {
             format!("{}&discover=1", probe_base)
         } else {
@@ -1568,7 +1569,8 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
 
                         // Populate route table so any:<tag> works immediately.
                         if !virtual_nodes.is_empty() {
-                            let base_url = remote.url.splitn(2, '?').next().unwrap_or(&remote.url);
+                            let raw_url = remote.url.as_str();
+                            let base_url = raw_url.splitn(2, '?').next().unwrap_or(raw_url);
                             crate::workspaces::update_route_table(
                                 &remote.name, base_url, &virtual_nodes,
                             );

@@ -1,7 +1,7 @@
 # Distributed Nodes 设计文档
 
-> 状态：设计阶段，待实现
-> 讨论日期：2026-03-24
+> 状态：架构设计完成，编码中
+> 讨论日期：2026-03-24 / 2026-03-25
 
 ---
 
@@ -49,9 +49,10 @@ A (manager) → B (worker) → C (sub-worker)
 ## 二、核心设计原则
 
 1. **零协议新增**：复用现有 `--mode server` WebSocket + StdioOutput JSON 事件格式，不引入新协议
-2. **最小侵入**：主体扩展在 `call_sub_agent` 和 `ready` 握手，不改 agent 核心循环
-3. **渐进式**：Phase 1 手动配置即可用，Phase 2 加能力通告，Phase 3 加 mDNS 自动发现
+2. **最小侵入**：主体扩展在 `call_node` 和 `ready` 握手，不改 agent 核心循环
+3. **渐进式**：Phase 1 手动配置即可用，Phase 2 加能力通告 + 自动 probe，Phase 3 加 mDNS 自动发现
 4. **对称性**：每台机器代码完全一样，无特殊 master/slave 编译选项
+5. **Server 是目录服务，不是代理**：server 负责聚合所有节点信息，sub-agent 向本机 server 查询节点，拿到真实 URL 后**直连**目标节点，server 不做任何流量转发
 
 ---
 
@@ -121,14 +122,12 @@ LLM 基于这些信息自主决定是否需要路径适配。
 
 ### 设计思路
 
-**一个配置文件管所有拓扑**。不论是 CLI 模式还是 server 模式，执行 `call_node` 的始终是一个 agent 进程，不存在"薄客户端"。因此没有理由把"我管哪些工程"和"我能联系谁"分成两个文件。
+**一个配置文件管所有拓扑**，两种键类型职责严格分离：
 
-`workspaces.toml` 是每台机器上 agent 进程的完整拓扑声明：
-
-- **`[[workspace]]`**：本机管理的工程目录，对**入站**连接有效，通过 `ready` 帧告知 manager
-- **`[[remote]]`**：可以联系的远端 server，供 `call_node` **出站**寻址
+- **`[[node]]`**：本机可调用节点，必须有 `workdir`。LLM 可以直接 `call_node target="<name>"` 调用。
+- **`[[peer]]`**：对等 agent server 的入口地址，必须有 `url`。**只有 server 进程能看到**，LLM 永远不感知这个配置。server 启动时 probe 对方，把展开的子节点以 `name@alias` 形式写入注册表，LLM 通过 `list_nodes` 看到的是展开后的节点，而非原始 `[[peer]]` 条目。
 - **`[cluster]`**：集群共享 token
-- **不配置此文件** = 通用 agent，行为与现在完全一致，workdir 由连接 URL 参数决定
+- **不配置此文件** = 通用 agent，行为与现在完全一致
 
 ### 配置文件：`workspaces.toml`
 
@@ -139,65 +138,127 @@ LLM 基于这些信息自主决定是否需要路径适配。
 [cluster]
 token = "my-secret-token-123"
 
-# ── 本机管理的工程（对入站连接暴露为虚拟节点）────────────────────────────────
-[[workspace]]
+# ── 本机节点：每个 [[node]] = 一个可调用节点，LLM 可直接 call_node ──────────
+[[node]]
 name        = "upper-sdk"
 workdir     = "/home/user/upper-project"
 description = "上位机 SDK 工程（Qt + C++）"
 sandbox     = false
 tags        = ["upper", "cpp", "qt"]
 
-[[workspace]]
+[[node]]
 name        = "firmware-bk7236"
 workdir     = "/home/user/firmware/bk7236"
 description = "BK7236 WiFi 芯片固件"
 sandbox     = true
 tags        = ["lower", "embedded", "bk7236", "wifi"]
 
-[[workspace]]
-name        = "firmware-t23"
-workdir     = "/home/user/firmware/t23"
-description = "Ingenic T23 ISP 固件"
-sandbox     = true
-tags        = ["lower", "embedded", "isp", "t23"]
-
-# ── 可联系的远端 server（call_node 出站寻址用）────────────────────────────────
-# 虚拟节点详情（workdir/sandbox/tags）从对方 ready 帧自动获取，无需在此手写
-[[remote]]
+# ── 对等机器：每个 [[peer]] = 另一台 agent server，只有 server 进程感知 ──────
+# server 启动时 probe 对方，子节点以 name@alias 展开，LLM 看展开结果不看这里
+[[peer]]
 name = "gpu-box"
 url  = "ws://192.168.1.20:9527"
 
-[[remote]]
+[[peer]]
 name = "pi"
 url  = "ws://raspberrypi.local:9527"
 ```
 
-> **Phase 3（mDNS）后**：`[[remote]]` 条目也不需要手写，服务器自动发现。
-> `workspaces.toml` 最终可能只剩 `[cluster]` + `[[workspace]]` 两部分。
-
-### 工作流程
-
-```
-agent --mode server 启动
-  → 读取 workspaces.toml
-  → 启动时探测所有 workspace 的 bins / caps（一次性，缓存结果）
-
-有连接进来时
-  → fork worker，worker 在 ready 帧里携带 virtual_nodes 列表
-  → manager 看到列表，LLM 自动理解「这台机器能做什么」
-  → manager 可以直接用 name 路由，call_node 自动带上对应 workdir
-```
+> **Phase 3（mDNS）后**：`[[peer]]` 条目也不需要手写，服务器自动发现局域网内的 peer。
 
 ---
 
-## 五、节点能力通告（NodeCapabilities）
+## 五、Server 作为本地目录服务（核心架构）
+
+### 原则：查询与连接分离
+
+```
+Sub-agent
+  Step 1: list_nodes → localhost:9527/nodes        ← 只向本机 server 查目录
+            └─ 拿到完整节点列表，每条含真实 URL
+
+  Step 2: call_node("firmware-bk7236")
+            └─ 直接连 ws://localhost:9527/?workdir=/home/user/firmware/bk7236
+               （本机节点 → 经本机 server fork worker）
+
+  Step 3: call_node("模型训练@gpu-box")
+            └─ 直接连 ws://192.168.1.20:9527/?workdir=/data/model
+               （远端节点 → 点对点直连远端 server，本机 server 不参与流量）
+```
+
+**本机 server 不做任何 WS 代理，角色等同于 DNS / 服务注册表。**
+
+### 本机 server 的节点注册表（NodeRegistry）
+
+```
+节点名                  真实 URL                                          来源    标签
+──────────────────────────────────────────────────────────────────────────────────────
+upper-sdk              ws://localhost:9527/?workdir=/home/user/upper      local   [upper,cpp]
+firmware-bk7236        ws://localhost:9527/?workdir=/home/user/fw/bk7236  local   [embedded]
+模型训练@gpu-box        ws://192.168.1.20:9527/?workdir=/data/model        remote  [gpu]
+数据集@gpu-box          ws://192.168.1.20:9527/?workdir=/datasets          remote  [gpu]
+```
+
+`gpu-box` 这个配置条目本身**不出现在注册表**，只有 probe 展开后的子节点出现。
+
+### 三种节点注册时机
+
+**① 启动时（startup probe）**
+- 本机节点：直接注入，无 IO
+- 远端节点：并发对每个 `url` 发起 `/probe`，收到 `ready` 帧后展开子节点写入注册表，标记 `online`
+- 远端不可达：标记 `offline`，不阻塞启动
+
+**② 定时轮询（periodic retry）**
+- `offline` 节点每 30s 重试一次 probe
+- `online` 节点每 120s 心跳确认，超时降级为 `offline`
+
+**③ 消息驱动（on-demand re-probe）**
+- `call_node` 遇到 `offline` 节点立即触发一次 probe
+- 成功：更新注册表，继续调用；失败：返回清晰错误
+
+### 节点命名规则：`name@alias`
+
+- **本机节点**：名字直接来自配置 `name` 字段，无后缀
+- **远端子节点**：`{子节点name}@{远端entry的name}`，例如 `模型训练@gpu-box`
+- **名字冲突**：本机节点不加后缀，远端子节点强制加 `@alias`
+- **一跳原则**：只展开直接配置的远端节点，不递归，避免拓扑爆炸
+
+### sub-agent 防止自连接
+
+- `list_nodes`：只查 `localhost:{AGENT_PARENT_PORT}/nodes`，从不直接访问远端 server 的 `/nodes`
+- `call_node` 连 `localhost:{PARENT_PORT}` 且无 workdir → 自连接检测，立即报错
+- `call_node` 连 `localhost:{PARENT_PORT}?workdir=/other/path` → 合法（不同工程的本机节点）
+
+### Server 互探的节点隔离（双 Endpoint 设计）
+
+**问题**：A、B 互相配置了对方为 `[[peer]]`。A 探测 B 时，如果 B 返回自己的 `/nodes`（其中包含 A 的节点），A 就会把自己的节点重新注册一遍，形成节点污染。
+
+**解决方案**：用两个职责不同的 endpoint，物理隔离"互探"和"查目录"：
+
+| Endpoint | 调用方 | 返回内容 |
+|---|---|---|
+| `ws://{host}/probe` | 其他 Server（互探） | **只返回本机 local_nodes()**，即本机 workdir 下的节点 |
+| `http://{host}/nodes` | 子 Agent 的 `list_nodes` 工具 | 完整注册表：local + 远端探测展开的 `name@alias` |
+
+`/probe` endpoint 使用 `probe_capabilities(ws_cfg.local_nodes())` 构建响应，永远不包含通过远端探测得到的节点。因此：
+
+```
+A 探测 B  →  B 只返回 B 自己的本机节点
+B 探测 A  →  A 只返回 A 自己的本机节点
+```
+
+**两者注册到各自注册表时，都加了 `@alias` 后缀**，也不会同名冲突。
+
+**额外约束**：`/nodes` HTTP endpoint 最终不应暴露原始 `[[peer]]` 的远端网关配置条目（即 `source: "static"` 的 raw URL 条目）。这些是 server 内部路由配置，对子 Agent 无意义，且可能被误用为直连目标。Phase 2 完成后，`/nodes` 只返回 local 节点 + `name@alias` 形式的展开节点，去掉 `source: "static"` 条目。
+
+---
+
+## 六、节点能力通告（NodeCapabilities）
 
 ### 数据结构
 
 ```rust
 pub struct NodeCapabilities {
-    /// agent 版本
-    pub version: String,
     /// 当前连接的工作目录（URL 参数传入）
     pub workdir: String,
     /// 是否在沙盒模式下运行
@@ -292,23 +353,7 @@ fn probe_gpus() -> Vec<GpuInfo> {
 
 ---
 
-## 六、节点路由
-
-### ✨ 亮点：一台机器，多个虚拟节点，零额外配置
-
-`agent --mode server` 采用 **process-per-connection** 设计（每个连接 fork 独立进程，各自有独立的工作目录和沙盒），**一台机器可以通过 `workspaces.toml` 声明多个工程目录，manager 无需任何额外配置即可按名字路由**。
-
-服务端只需在 `workspaces.toml` 里写好 `[[workspace]]` 条目（见第四节），调用方在自己的 `workspaces.toml` 里加一条 `[[remote]]` 指向这台 server：
-
-manager 探测后即可并发调用，server 为每个连接独立 fork 进程：
-
-```
-manager agent
-  → call_node target="firmware-bk7236"  ← fork 进程 A，workdir=/firmware/bk7236
-  → call_node target="firmware-t23"     ← fork 进程 B，workdir=/firmware/t23
-  （两进程并发，互不干扰）
-  ← 汇总结果
-```
+## 七、节点路由
 
 ### `call_node` 工具参数
 
@@ -344,9 +389,10 @@ ws://192.168.1.10:9527/?workdir=%2Fhome%2Fbuild%2Fmyapp&sandbox=1&token=my-secre
 | 服务端启动时的 `--sandbox` 标志 | 兜底 | 服务端默认值 |
 
 `call_node target="firmware-bk7236"` 的解析顺序：
-1. 查内存路由表（`/nodes` 探测或上次连接时缓存）→ 找到 workdir / sandbox
-2. 未找到 → 报错「未知节点，可在 workspaces.toml [[remote]] 中添加，或直接用 ws:// URL」
-3. `target` 为 `ws://...` 直接 URL → 跳过路由表，直连（此时需显式传 workdir）
+1. 查本机 server 注册表（`GET /nodes` 返回所有已展开节点）→ 找到真实 URL
+2. 未找到 → 报错「未知节点，请先用 list_nodes 查看可用节点」
+3. 目标节点 `offline` → 立即触发 re-probe，成功则继续，失败则报错
+4. `target` 为 `ws://...` 直接 URL → 跳过注册表，直连（bypass 所有路由逻辑）
 
 ### 路由策略
 
@@ -360,26 +406,109 @@ ws://192.168.1.10:9527/?workdir=%2Fhome%2Fbuild%2Fmyapp&sandbox=1&token=my-secre
 
 ---
 
-## 七、通信协议
+## 八、通信协议
 
-### 握手流程
+系统中存在三类独立协议，职责不同，不能混用：
 
-完全复用现有 WebSocket `ready` 事件，只扩展 `data` 字段：
+| 协议 | 参与方 | 传输 | 目的 |
+|---|---|---|---|
+| **目录同步协议** | Server ↔ Server | WebSocket `/probe` | 互探，获取对方本机节点列表 |
+| **节点获取协议** | Sub-agent → 本机 Server | HTTP `GET /nodes` | 子 agent 获取可调用的完整节点目录 |
+| **任务委派协议** | Agent → Worker | WebSocket `/` | 向具体节点委派任务，传输消息与结果 |
+
+---
+
+### 协议一：目录同步协议（Server ↔ Server）
+
+**触发时机**：本机 server 启动时、定时轮询时、on-demand re-probe 时。  
+**方向**：A server 主动发起，B server 被动响应。**两者不做反向查询**，不递归。
 
 ```
-manager                           worker (agent --mode server)
+Server-A                              Server-B
+   |                                     |
+   |  WS connect  ws://B:9527/probe      |
+   |─────────────────────────────────────→|
+   |                                     |
+   |  ← {"type":"ready","data":{         |   ← B 只返回 B 本机 local_nodes()
+   |       "version":"1.2.0",            |
+   |       "workdir": "",                |   ← 空（/probe 端口无 workdir 概念）
+   |       "caps":{...},                 |   ← B 机整体硬件/软件能力
+   |       "virtual_nodes":[             |   ← B 本机所有 workdir 节点
+   |         {"name":"模型训练",          |
+   |          "workdir":"/data/model",   |
+   |          "tags":["gpu"]},           |
+   |         ...                         |
+   |       ]                             |
+   |     }}                              |
+   |                                     |
+   |  WS close（Server-A 主动关闭）       |
+   |─────────────────────────────────────→|
+```
+
+**关键约束**：
+- `/probe` 响应**只包含本机 `local_nodes()`**，绝不包含从第三方 server 探测到的节点
+- A 探测 B，B 返回 B 自己的；B 探测 A，A 返回 A 自己的 → 不会交叉污染
+- Server-A 收到响应后，把 B 的节点展开写入本机 NodeRegistry，命名为 `{node}@{B的alias}`
+- **认证**：连接 URL 携带 token `ws://B:9527/probe?token=xxx`，token 不匹配返回 401
+
+---
+
+### 协议二：节点获取协议（Sub-agent → 本机 Server）
+
+**触发时机**：子 agent 执行 `list_nodes` 工具时。  
+**方向**：子 agent 只查询 **`localhost:{AGENT_PARENT_PORT}/nodes`**，永远不直接查询远端 server 的 `/nodes`。
+
+```
+Sub-agent                          Local Server (localhost:9527)
+   |                                     |
+   |  HTTP GET /nodes                    |
+   |─────────────────────────────────────→|
+   |                                     |
+   |  ← HTTP 200  application/json       |
+   |    {                                |
+   |      "nodes": [                     |
+   |        {                            |   ── 本机节点（直接可用）
+   |          "name": "upper-sdk",       |
+   |          "url":  "ws://localhost:9527/?workdir=/home/user/upper",
+   |          "source": "local",         |
+   |          "tags": ["cpp","upper"]    |
+   |        },                           |
+   |        {                            |   ── 远端展开节点（直连目标）
+   |          "name": "模型训练@gpu-box", |
+   |          "url":  "ws://192.168.1.20:9527/?workdir=/data/model",
+   |          "source": "remote",        |
+   |          "status": "online",        |
+   |          "last_seen": "2026-03-25T10:00:00Z"
+   |        }                            |
+   |      ]                              |
+   |    }                                |
+```
+
+**关键约束**：
+- 返回的是 NodeRegistry 快照，**不含** `[[peer]]` 原始网关配置条目（Phase 2 完成后去掉 `source: "static"` 条目）
+- 子 agent 拿到 URL 后**直连目标**，本机 server 不参与后续流量转发
+- offline 节点也出现在列表中（带 `"status":"offline"`），由 `call_node` 决定是否触发 re-probe
+
+---
+
+### 协议三：任务委派协议（Agent → Worker）
+
+完全复用现有 WebSocket 协议，连接 `/`（非 `/probe`）：
+
+```
+Manager Agent                      Worker (forked by Server)
    |                                  |
    |  WS connect                      |
    |  ws://192.168.1.10:9527/         |
    |  ?workdir=/path&token=xxx        |
    |─────────────────────────────────→|
    |                                  |
-   |  ← {"type":"ready","data":{      |
+   |  ← {"type":"ready","data":{      |   ← 实际执行环境确认
    |       "version":"1.2.0",         |
-   |       "workdir":"/home/build",   |  ← URL 参数传入的实际目录
-   |       "sandbox": false,          |  ← 实际生效的沙盒状态
-   |       "caps":{...},              |  ← 硬件+软件能力
-   |       "virtual_nodes":[...]      |  ← workspaces.toml 声明的工程列表
+   |       "workdir":"/home/build",   |
+   |       "sandbox": false,          |
+   |       "caps":{...},              |
+   |       "virtual_nodes":[...]      |
    |     }}                           |
    |                                  |
    |  → {"type":"user_message",       |
@@ -388,21 +517,43 @@ manager                           worker (agent --mode server)
    |  ← 流式事件（现有协议不变）        |
 ```
 
-### 认证
-
-连接 URL 中携带 token：
-
-```
-ws://192.168.1.10:9527/?token=my-secret-token-123&workdir=/path
-```
-
-server 端在 HTTP 握手阶段校验，token 不匹配则拒绝连接（返回 401）。
-
-无 token 配置时退化为当前行为（无认证，适合纯本机使用）。
+**认证**：连接 URL 携带 token，server 在 HTTP 握手阶段校验，不匹配返回 401。无 token 配置时无认证（适合纯本机使用）。
 
 ---
 
-## 八、健康检查与故障恢复
+### LLM 可见边界（关键约束）
+
+LLM 只能通过工具间接触碰协议一和协议二，**绝不能直接调用内部管理 endpoint**。
+
+```
+LLM 可见                           LLM 不可见
+─────────────────────────────────  ──────────────────────────────────
+list_nodes 工具                    /probe  （目录同步，Server 内部）
+call_node  工具                    /nodes  （由 list_nodes 工具代理）
+                                   /health
+                                   /metrics
+```
+
+**防护措施（已在代码中实现）：**
+
+1. **工具注册表隔离**：`/probe`、`/nodes` 不注册为工具，LLM 的 tool-use 调用链里根本看不到它们。
+2. **call_node 路径拦截**：即使 LLM 构造出 `ws://host:port/probe` 的直连 URL，`call_node` 会在执行前拦截并返回错误：
+   ```
+   '/probe' is a server-internal management endpoint and cannot be used as a task target.
+   Use `list_nodes` to discover available agent nodes...
+   ```
+   被拦截的路径列表：`/probe`、`/nodes`、`/health`、`/metrics`。
+3. **工具描述不暴露 endpoint 细节**：`list_nodes` 和 `call_node` 的 description 字段只描述业务语义，不提及 HTTP/WebSocket endpoint 路径。
+
+**为什么 LLM 会"自作主张"调 /probe？**
+
+- LLM 在推理"如何发现节点"时，可能从系统提示、memory 或对话历史里拼凑出 `/probe` 的存在
+- 若 `call_node` 没有路径拦截，LLM 构造 `ws://localhost:9527/probe` 并调用，会收到一个 `ready` 帧——LLM 可能误以为这是一个正常的节点响应，进而用错误的 URL 继续操作
+- 根本原则：**内部协议的存在对 LLM 完全透明（它感知不到），不依赖 LLM 的"自觉不调用"来保证安全**
+
+---
+
+## 九、健康检查与故障恢复
 
 ### Heartbeat
 
@@ -425,29 +576,30 @@ server 端在 HTTP 握手阶段校验，token 不匹配则拒绝连接（返回 
 
 ---
 
-## 九、可观测性：`/nodes` 命令
+## 十、可观测性：`/nodes` 命令与 `list_nodes` 工具
 
-`/nodes` 命令对 `workspaces.toml` 中每个 `[[remote]]` 条目发一次探测连接（`?discover=1`），收到 `ready` 帧后立即 close。虚拟节点（来自远端的 workspaces.toml）在物理 server 下缩进展示：
+`/nodes`（CLI 斜杠命令）和 `list_nodes`（sub-agent 工具）都查询本机 `GET /nodes` 端点，展示本机注册表的完整视图：
 
 ```
 🤖 > /nodes
 
-PHYSICAL SERVER          STATUS    ARCH     CAPS
-build-server             ✅ 在线   x86_64   gcc,cargo,docker
-  └ upper-sdk            workdir=/home/user/upper-project    sandbox=off  [upper,cpp,qt]
-  └ firmware-bk7236      workdir=/home/user/firmware/bk7236  sandbox=on   [embedded,bk7236]
-  └ firmware-t23         workdir=/home/user/firmware/t23     sandbox=on   [embedded,isp]
-gpu-server               ✅ 在线   x86_64   nvcc,python,ollama
-  └ (通用，无 workspaces.toml 配置)
-pi                       ❌ 离线   aarch64  -
-(local)                  ✅ 在线   x86_64   cargo,git
+本机节点 (local)
+  upper-sdk         ws://localhost:9527/?workdir=...  sandbox=off  [upper,cpp,qt]
+  firmware-bk7236   ws://localhost:9527/?workdir=...  sandbox=on   [embedded,bk7236]
 
-提示：不配置 workspaces.toml 的 server 为通用 agent，调用时需显式传入 workdir
+远端节点 via gpu-box (ws://192.168.1.20:9527)  ✅ 在线  x86_64
+  模型训练@gpu-box   ws://192.168.1.20:9527/?workdir=/data/model    [gpu,python]
+  数据集@gpu-box     ws://192.168.1.20:9527/?workdir=/datasets       [gpu]
+
+远端节点 via pi (ws://raspberrypi.local:9527)  ❌ 离线
+  （上次在线：2026-03-25 14:32，正在重试...）
+
+提示：使用 call_node target="<名字>" 调用节点
 ```
 
 ---
 
-## 十、mDNS 自动发现（Phase 3）
+## 十一、mDNS 自动发现（Phase 3）
 
 ### 广播
 
@@ -476,58 +628,57 @@ mdns-sd = "0.11"   # 约 10KB，纯 Rust，无系统依赖
 
 ---
 
-## 十一、实现计划
+## 十二、实现计划
 
 ### Phase 1：静态配置 + 基础委派（✅ 已完成）
 
-- [x] `call_node` 工具替代 `call_sub_agent` / `spawn_sub_agent`
-  - `workspaces.toml` 解析（`[[remote]]` 出站列表 + `[cluster]` token，兼容旧 `[[nodes]]`/`[[servers]]`）
-  - 参数优先级：显式 > 内存路由表（来自远端 ready 帧）> 服务端默认值
-  - `workdir`、`sandbox`、`token` 拼入 WebSocket URL query string
-- [x] `connect_service` / `query_service` 描述加警告，避免 LLM 误用
-- [x] `ready` 帧加 `workdir` / `sandbox` 字段（worker 回告实际值）
-- [x] `call_node` 收到 `ready` 后格式化前置到 ToolResult，告知 manager LLM
+- [x] `call_node` 工具（替代 `call_sub_agent` / `spawn_sub_agent`）
+- [x] `workspaces.toml` 解析（仅支持 `[[node]]` 语法）
+- [x] `ready` 帧加 `workdir` / `sandbox` / `caps` / `virtual_nodes` 字段
 - [x] server 端 token 校验（URL 参数，不匹配返回 HTTP 401）
-- [x] `/nodes` 斜杠命令（探测各 `[[remote]]` 节点，展示在线状态）
+- [x] `GET /nodes` HTTP 端点（返回本机注册表 JSON）
+- [x] `list_nodes` 工具（sub-agent 专用，查父 server 的 `/nodes`）
+- [x] sub-agent 自连接检测（无 workdir 时拒绝回连父 server）
 
-预计剩余代码量：**~150 行**
+### Phase 2：Server 作为目录服务 + 自动 Probe ✅ 已完成
 
-### Phase 2：能力通告 + 虚拟节点自描述
+- [x] **Server 启动时 probe 所有 peer**
+  - 对每个 `[[peer]]` 的 `PeerEntry` 并发发起 `/probe`
+  - 从 `ready` 帧提取 `virtual_nodes`，展开为 `name@alias` 写入注册表（`registry_update_peer`）
+  - 不可达节点标记 `offline`，不阻塞启动
+- [x] **定时轮询**（`spawn_probe_loop`）
+  - `offline` 节点：每 30s 重试 probe
+  - `online` 节点：每 120s 心跳确认
+- [x] **消息驱动 re-probe**（`GET /reprobe?peer=<name>`）
+  - `call_node` 遇到 `offline` 节点时立即触发一次 probe，10s 超时
+- [x] **`GET /nodes` 返回完整注册表**（`registry_snapshot()`；含本机节点 + 展开的远端子节点，不含原始远端条目）
+- [x] **`/nodes` 命令 / `list_nodes` 工具** 展示新格式（本机节点 + 远端子节点分组 + 在线状态）
 
-- [x] `workspaces.rs` 加 `Serialize` + `VirtualNodeInfo` / `NodeCapabilities` / `GpuInfo`
-- [x] `probe_bins()` / `probe_ram_gb()` / `probe_gpus()` / `probe_capabilities()` 探测函数（无新依赖，纯标准库）
-- [x] `worker.rs` 启动时调用 `probe_capabilities()`，`ready` 帧加 `caps`（硬件+软件）和 `virtual_nodes` 字段
-- [x] `call_node` 收到 `ready` 后格式化 `caps` 摘要 + `virtual_nodes` 表格作为 `connect_header`，调用 `update_route_table()`
-- [x] `any:<tag>` / `best:<tag>` 路由（扫描内存 `ROUTE_TABLE`）；`all:<tag>` 顺序执行首个匹配（Phase 3 并行广播）
-- [x] `/nodes` 命令展示层级结构：物理 server（caps 摘要）→ 虚拟节点 tree（sandbox/workdir/tags）；自动填充路由表
-
-预计代码量：**~300 行**（实际约 280 行新增）
+实际代码量：**~380 行**（`workspaces.rs` +120，`server.rs` +230，`call_node.rs` +55，`list_nodes.rs` 重写）
 
 ### Phase 3：mDNS 自动发现
 
 - [ ] 引入 `mdns-sd` crate
-- [ ] server 启动时广播 mDNS（含 `has_workspaces` TXT 记录）
-- [ ] 自动填充内存路由表；`/nodes scan` 命令手动触发
-- [ ] （可选）`/nodes save` 将发现的节点追加到 `workspaces.toml [[remote]]`
+- [ ] server 启动时广播 mDNS（含 `has_nodes` TXT 记录）
+- [ ] 自动填充注册表；`/nodes scan` 命令手动触发
+- [ ] （可选）`/nodes save` 将发现的节点追加到 `workspaces.toml`
 
 预计代码量：**~200 行**
 
 ---
 
-## 十二、与现有功能的关系
+## 十三、与现有功能的关系
 
 | 现有功能 | 关系 |
 |---|---|
-| `call_sub_agent` | `call_node` 的基础，直接封装复用 |
-| `spawn_sub_agent` | 本机进程级委派，Nodes 是其网络级升级版 |
 | `connect_service` | 通用 WS 连接，Nodes 是 agent-aware 的特化版本 |
 | `--mode server` | 每个 node 的运行模式，**不需要改动** |
 | `StdioOutput` JSON 协议 | Nodes 通信的事件格式，**直接复用** |
-| `workspaces.toml` | 统一配置文件：`[[workspace]]`（入站）+ `[[remote]]`（出站）+ `[cluster]` token |
+| `workspaces.toml` | 统一配置文件：`[[node]]`（本机/远端）+ `[cluster]` token |
 
 ---
 
-## 十三、和 OpenClaw 的兼容机会
+## 十四、和 OpenClaw 的兼容机会
 
 完成 Phase 1 后，rust-agent 既可以作为独立集群运行，也可以通过以下方式接入 OpenClaw 生态：
 

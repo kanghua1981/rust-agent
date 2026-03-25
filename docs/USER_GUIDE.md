@@ -80,6 +80,7 @@
     - [故障排查](#故障排查)
   - [🤖 多 Agent 协作（节点委派）](#-多-agent-协作节点委派)
     - [为什么需要多 Agent？](#为什么需要多-agent)
+    - [节点配置（workspaces.toml）](#节点配置workspacestoml)
     - [`call_node` 统一接口](#call_node-统一接口)
       - [target 寻址方式](#target-寻址方式)
     - [工具参数说明](#工具参数说明)
@@ -894,7 +895,7 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ### 无需确认的操作
 
-`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`fetch_url`、`read_pdf`、`read_ebook`、`think` — 所有只读工具不需要确认。
+`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`read_ebook`、`think`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services` — 所有只读工具不需要确认。
 
 ---
 
@@ -1124,6 +1125,54 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 - **Monorepo 支持**：将 `workdir` 锁定到子目录，避免误触全局代码。
 - **专注度提升**：远端 Agent 只关注局部上下文，Token 消耗更低，响应更精准。
 
+### 节点配置（workspaces.toml）
+
+在 `~/.config/rust_agent/workspaces.toml`（全局）或 `.agent/workspaces.toml`（项目级）配置节点拓扑：
+
+```toml
+# 集群共享 token（可选，保护 /nodes 端点不被未授权访问）
+[cluster]
+token = "my-secret-token-123"
+
+# ── 本机节点：运行在本 server 上，LLM 可直接 call_node target="<name>" ──────
+[[node]]
+name        = "upper-sdk"
+workdir     = "/home/user/upper-project"
+description = "上位机 SDK 工程（Qt + C++）"
+sandbox     = false
+tags        = ["upper", "cpp", "qt"]
+
+[[node]]
+name        = "firmware-bk7236"
+workdir     = "/home/user/firmware/bk7236"
+description = "BK7236 WiFi 芯片固件"
+sandbox     = true
+tags        = ["embedded", "wifi"]
+
+# ── 对等服务器：另一台 agent server，server 进程自动 probe 并展开子节点 ────
+# LLM 看到的是展开后的 "节点名@peer名"，而不是这里的原始条目
+[[peer]]
+name = "gpu-box"
+url  = "ws://192.168.1.20:9527"
+token = "gpu-box-token"   # 可选
+
+[[peer]]
+name = "pi"
+url  = "ws://raspberrypi.local:9527"
+```
+
+**配置说明：**
+
+| 键类型 | 感知方 | 说明 |
+|--------|--------|------|
+| `[[node]]` | LLM + server | 本机可调用节点，有 `workdir`；LLM 可直接 `call_node` |
+| `[[peer]]` | 仅 server | 对等服务器入口，有 `url`；LLM 只看到展开的子节点 |
+| `[cluster]` | server | 集群共享 token，保护 `/nodes` 端点 |
+
+**自动 probe 机制**：server 启动时并发 probe 所有 `[[peer]]`，将其子节点以 `name@peer` 格式写入节点注册表；30s 重试离线节点，120s 心跳保活在线节点。`call_node` 遇到离线节点时会自动触发一次重探。
+
+**不配置此文件** = 通用 Agent，行为与未配置完全一致，可直连 URL 使用。
+
 ### `call_node` 统一接口
 
 `call_node` 是唯一的 Agent 委派工具。调用前**先用 `list_nodes` 查看可用节点**。
@@ -1183,12 +1232,17 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 | `list_directory` | 📂 | 列出目录内容 | ❌ |
 | `think` | 💭 | 内部推理（无副作用） | ❌ |
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
-| `read_ebook` | 📕 | 电子书读取 (MOBI/EPUB/AZW3) | ❌ |
-| `fetch_url` | 🌐 | 网页抓取与正文提取 | ❌ |
-| `call_node` | 🤖 | 委派任务给其他 Agent 节点（按名/URL/标签路由） | ✅ |
-| `list_nodes` | 📶 | 列出当前可用的 Agent 节点 | ❌ |
+| `read_ebook` | 📕 | 电子书读取（MOBI/EPUB/AZW3） | ❌ |
+| `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
+| `call_node` | 🤖 | 委派任务给其他 Agent 节点（按名/URL/标签路由），manager 专用 | ✅ |
+| `list_nodes` | 📶 | 列出当前可用的 Agent 节点（含在线状态），manager 专用 | ❌ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
 | `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
+| `connect_service` | 🔌 | 注册外部服务（WebSocket/HTTP） | ❌ |
+| `query_service` | ❓ | 向已注册的外部服务发送请求 | ❌ |
+| `subscribe_service` | 📡 | 订阅服务的推送事件 | ❌ |
+| `unsubscribe_service` | 📡 | 取消服务订阅 | ❌ |
+| `list_services` | 📋 | 列出所有已注册的外部服务 | ❌ |
 
 ### 外部依赖（可选）
 
@@ -1198,7 +1252,7 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 |------|------|----------|
 | `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |
 | `read_ebook` | ebook-convert → pandoc | `apt install calibre` / `apt install pandoc` |
-| `fetch_url` | readable → pandoc → 内置 regex | `npm install -g @nickersoft/readability-cli` / `apt install pandoc` |
+| `browser` | Chrome / Chromium（headless CDP） | `apt install chromium` / `snap install chromium` |
 
 ---
 

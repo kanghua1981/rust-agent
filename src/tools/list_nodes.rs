@@ -89,29 +89,87 @@ impl Tool for ListNodesTool {
 
         if nodes.is_empty() {
             return ToolResult::success(
-                "No remote nodes configured.\n\
-                 Add [[remote]] entries to ~/.config/rust_agent/workspaces.toml to register nodes."
+                "No nodes configured.\n\
+                 Add [[node]] entries (local) or [[peer]] entries (remote servers) \
+                 to ~/.config/rust_agent/workspaces.toml."
                     .to_string(),
             );
         }
 
-        // Format as a table.
-        let mut out = format!("Remote nodes on localhost:{}:\n\n", port);
-        out.push_str(&format!("{:<28} {:<8} {:<40} {}\n", "NAME", "SOURCE", "URL", "TAGS"));
-        out.push_str(&"─".repeat(90));
-        out.push('\n');
+        // ── Separate local from remote ───────────────────────────────────────
+        let local: Vec<&serde_json::Value> = nodes.iter()
+            .filter(|n| n["source"].as_str() == Some("local"))
+            .collect();
+        let remote: Vec<&serde_json::Value> = nodes.iter()
+            .filter(|n| n["source"].as_str() == Some("remote"))
+            .collect();
 
-        for node in nodes {
-            let name   = node["name"].as_str().unwrap_or("?");
-            let url    = node["url"].as_str().unwrap_or("?");
-            let source = node["source"].as_str().unwrap_or("?");
-            let tags: Vec<&str> = node["tags"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                .unwrap_or_default();
-            let tags_str = if tags.is_empty() { String::new() } else { format!("[{}]", tags.join(", ")) };
-            out.push_str(&format!("{:<28} {:<8} {:<40} {}\n", name, source, url, tags_str));
+        let mut out = String::new();
+
+        // Local nodes.
+        if !local.is_empty() {
+            out.push_str("本机节点 (local)\n");
+            for n in &local {
+                let name    = n["name"].as_str().unwrap_or("?");
+                let url     = n["url"].as_str().unwrap_or("?");
+                let sandbox = if n["sandbox"].as_bool().unwrap_or(false) { "sandbox=on" } else { "sandbox=off" };
+                let tags: Vec<&str> = n["tags"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                let tags_str = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
+                out.push_str(&format!("  {:<26} {}  {}{}\n", name, sandbox, url, tags_str));
+            }
+            out.push('\n');
         }
 
+        // Remote nodes — group by peer.
+        if !remote.is_empty() {
+            // Collect unique peer names in order of appearance.
+            let mut seen_peers: Vec<&str> = vec![];
+            for n in &remote {
+                if let Some(p) = n["peer_name"].as_str() {
+                    if !seen_peers.contains(&p) { seen_peers.push(p); }
+                }
+            }
+            for peer in seen_peers {
+                let peer_nodes: Vec<&&serde_json::Value> = remote.iter()
+                    .filter(|n| n["peer_name"].as_str() == Some(peer))
+                    .collect();
+                // Determine peer status from its nodes.
+                let all_offline = peer_nodes.iter().all(|n| n["offline"].as_bool().unwrap_or(false));
+                let status_icon = if all_offline { "❌ 离线" } else { "✅ 在线" };
+
+                out.push_str(&format!("远端节点 via {} — {}\n", peer, status_icon));
+                for n in &peer_nodes {
+                    let name = n["name"].as_str().unwrap_or("?");
+                    if name.starts_with("(unreachable)@") { continue; }
+                    let url  = n["url"].as_str().unwrap_or("?");
+                    let offline = n["offline"].as_bool().unwrap_or(false);
+                    let status  = if offline { " [offline]" } else { "" };
+                    let tags: Vec<&str> = n["tags"].as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                        .unwrap_or_default();
+                    let tags_str = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
+                    out.push_str(&format!("  {:<26} {}{}{}\n", name, url, status, tags_str));
+                }
+                if all_offline {
+                    if let Some(n) = peer_nodes.first() {
+                        if let Some(secs) = n["last_seen_secs"].as_u64() {
+                            let elapsed = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs().saturating_sub(secs))
+                                .unwrap_or(0);
+                            out.push_str(&format!("  （上次在线：{}s 前，正在重试...）\n", elapsed));
+                        } else {
+                            out.push_str("  （从未成功连接，正在重试...）\n");
+                        }
+                    }
+                }
+                out.push('\n');
+            }
+        }
+
+        out.push_str("提示：use call_node target=\"<name>\" to delegate a task");
         ToolResult::success(out)
     }
 }

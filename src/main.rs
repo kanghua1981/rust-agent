@@ -239,7 +239,7 @@ async fn main() -> Result<()> {
         } else {
             config
         };
-        let worker_workspaces: Vec<crate::workspaces::WorkspaceEntry> =
+        let worker_workspaces: Vec<crate::workspaces::NodeEntry> =
             if let Some(ref json) = args.workspaces_json {
                 serde_json::from_str(json).unwrap_or_default()
             } else {

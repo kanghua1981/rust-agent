@@ -76,7 +76,7 @@ pub async fn run(
     isolation: IsolationMode,
     _worker_id: &str,
     _extra_binds: Vec<BindMount>,
-    workspaces: Vec<crate::workspaces::WorkspaceEntry>,
+    workspaces: Vec<crate::workspaces::NodeEntry>,
 ) -> Result<()> {
     run_async(config, project_dir, isolation, fd, workspaces).await
 }
@@ -91,7 +91,7 @@ async fn run_async(
     project_dir: PathBuf,
     isolation: IsolationMode,
     fd: i32,
-    workspaces: Vec<crate::workspaces::WorkspaceEntry>,
+    workspaces: Vec<crate::workspaces::NodeEntry>,
 ) -> Result<()> {
     // Reconstruct TcpStream from the raw fd inherited from the server process.
     let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
@@ -211,7 +211,7 @@ async fn run_async(
     // fall back to loading from disk (CLI/direct worker invocations).
     let effective_workspaces = if workspaces.is_empty() {
         let ws_cfg = workspaces::load(&project_dir);
-        ws_cfg.workspaces
+        ws_cfg.local_nodes()
     } else {
         workspaces
     };

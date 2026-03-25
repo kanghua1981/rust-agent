@@ -278,6 +278,74 @@ impl Tool for CallNodeTool {
         // ── Resolve target → base_url + defaults ──────────────────────────────
         let is_direct_url = input.target.starts_with("ws://") || input.target.starts_with("wss://");
 
+        // ── Block internal infrastructure endpoints ───────────────────────────
+        // Endpoints like /probe, /nodes, /health are server-internal management
+        // interfaces, not task endpoints. They must never be called by the LLM.
+        // /probe is the server-to-server directory sync protocol; calling it from
+        // a tool would bypass the NodeRegistry and cause undefined behaviour.
+        if is_direct_url {
+            let after_scheme = input.target
+                .trim_start_matches("wss://")
+                .trim_start_matches("ws://");
+            // path starts after the first '/' that follows the host:port
+            let path = after_scheme
+                .splitn(2, '/')
+                .nth(1)
+                .map(|p| format!("/{}", p.split('?').next().unwrap_or("")))
+                .unwrap_or_else(|| "/".to_string());
+            let blocked: &[&str] = &["/probe", "/nodes", "/health", "/metrics"];
+            if let Some(ep) = blocked.iter().find(|&&ep| path == ep || path.starts_with(&format!("{}/", ep))) {
+                return ToolResult::error(format!(
+                    "'{}' is a server-internal management endpoint and cannot be used as a task target.\n\
+                     Use `list_nodes` to discover available agent nodes, then call with a node name or \
+                     a plain ws://host:port URL.",
+                    ep
+                ));
+            }
+        }
+
+        // ── Self-loop guard ───────────────────────────────────────────────────
+        // When running as a worker (AGENT_PARENT_PORT is set), connecting back
+        // to localhost:{AGENT_PARENT_PORT} with NO workdir (or the same workdir
+        // as the current worker) creates an infinite fork chain.
+        // Connecting to localhost:{AGENT_PARENT_PORT}?workdir=/other/path is
+        // legitimate — it spawns a worker in a different [[workspace]].
+        if is_direct_url {
+            if let Ok(parent_port_str) = std::env::var("AGENT_PARENT_PORT") {
+                let parent_port = parent_port_str.trim().to_string();
+                let target = &input.target;
+                let is_loopback = target.contains("localhost:") || target.contains("127.0.0.1:");
+                if is_loopback {
+                    // Extract port from the host:port portion.
+                    let after_scheme = target
+                        .trim_start_matches("wss://")
+                        .trim_start_matches("ws://");
+                    let host_port = after_scheme.split('/').next().unwrap_or("");
+                    let port_in_url = host_port.split(':').nth(1).unwrap_or("");
+
+                    if port_in_url == parent_port {
+                        // Allow only if a workdir is explicitly set in the URL
+                        // (connecting to a different [[workspace]] on the same server).
+                        let has_workdir_in_url = target.contains("workdir=");
+                        // Also allow if the call_node input has an explicit workdir override.
+                        let has_workdir_input = input.workdir.is_some();
+
+                        if !has_workdir_in_url && !has_workdir_input {
+                            return ToolResult::error(format!(
+                                "Self-loop detected: target '{}' points to the parent server \
+                                 (localhost:{}) with no workdir specified.\n\
+                                 This would spawn a worker with the same workspace, \
+                                 causing an infinite delegation chain.\n\
+                                 Use `list_nodes` to see available named nodes (including \
+                                 local [[workspace]] entries), then call with the node name.",
+                                target, parent_port
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         let (base_url, node_workdir, node_isolation, cluster_token) = if is_direct_url {
             let tok = std::env::var("AGENT_CLUSTER_TOKEN").ok();
             (input.target.clone(), None::<String>, None::<String>, tok)
@@ -311,7 +379,8 @@ impl Tool for CallNodeTool {
             if input.target.starts_with("any:") || input.target.starts_with("best:") {
                 let tag = input.target.splitn(2, ':').nth(1).unwrap_or("");
                 let found = nodes.iter().find(|n| {
-                    n["source"].as_str() == Some("route_table") &&
+                    // Match local workspaces and dynamically-discovered route_table entries.
+                    matches!(n["source"].as_str(), Some("local") | Some("route_table")) &&
                     n["tags"].as_array()
                         .map(|a| a.iter().any(|t| t.as_str() == Some(tag)))
                         .unwrap_or(false)
@@ -366,7 +435,67 @@ impl Tool for CallNodeTool {
                 // Named target — look up in entries returned by parent's /nodes.
                 let found = nodes.iter().find(|n| n["name"].as_str() == Some(input.target.as_str()));
                 match found {
-                    Some(n) => (n["url"].as_str().unwrap_or("").to_string(), None, None, cluster_token),
+                    Some(n) if n["offline"].as_bool().unwrap_or(false) => {
+                        // Node is known but currently offline — trigger on-demand re-probe.
+                        let peer_name = n["peer_name"].as_str().unwrap_or("").to_string();
+                        if !peer_name.is_empty() {
+                            self.output.on_warning(&format!(
+                                "[call_node] node '{}' is offline — re-probing peer '{}'...",
+                                input.target, peer_name
+                            ));
+                            let reprobe_url = match &cluster_token {
+                                Some(tok) => format!(
+                                    "http://localhost:{}/reprobe?peer={}&token={}",
+                                    parent_port, url_encode(&peer_name), url_encode(tok)
+                                ),
+                                None => format!(
+                                    "http://localhost:{}/reprobe?peer={}",
+                                    parent_port, url_encode(&peer_name)
+                                ),
+                            };
+                            // Wait for re-probe to complete (server probes synchronously in /reprobe).
+                            let refreshed: Vec<serde_json::Value> = match reqwest::Client::new()
+                                .get(&reprobe_url)
+                                .timeout(Duration::from_secs(10))
+                                .send().await
+                            {
+                                Ok(resp) => resp.json::<serde_json::Value>().await
+                                    .ok()
+                                    .and_then(|v| v["nodes"].as_array().cloned())
+                                    .unwrap_or_default(),
+                                Err(_) => vec![],
+                            };
+                            // Re-check the node in the updated list.
+                            let refreshed_node = refreshed.iter()
+                                .find(|n| n["name"].as_str() == Some(input.target.as_str()));
+                            match refreshed_node {
+                                Some(n) if !n["offline"].as_bool().unwrap_or(false) => (
+                                    n["url"].as_str().unwrap_or("").to_string(),
+                                    n["workdir"].as_str().map(|s| s.to_string()),
+                                    n["isolation"].as_str().map(|s| s.to_string())
+                                        .or_else(|| n["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
+                                    cluster_token,
+                                ),
+                                _ => return ToolResult::error(format!(
+                                    "Node '{}' (peer '{}') is offline and re-probe failed.\n\
+                                     The remote server may be down. Try again later.",
+                                    input.target, peer_name
+                                )),
+                            }
+                        } else {
+                            return ToolResult::error(format!(
+                                "Node '{}' is offline.",
+                                input.target
+                            ));
+                        }
+                    }
+                    Some(n) => (
+                        n["url"].as_str().unwrap_or("").to_string(),
+                        n["workdir"].as_str().map(|s| s.to_string()),
+                        n["isolation"].as_str().map(|s| s.to_string())
+                            .or_else(|| n["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
+                        cluster_token,
+                    ),
                     None => {
                         let names: Vec<&str> = nodes.iter()
                             .filter_map(|n| n["name"].as_str())

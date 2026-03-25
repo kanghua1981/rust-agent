@@ -4,7 +4,7 @@
 
 ## ✨ 特性
 
-- **🔧 工具系统**: 内置 13 种工具 — 文件读写、多文件批量读取、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF/电子书读取、网页抓取、内部推理
+- **🔧 工具系统**: 内置 22 种工具 — 文件读写、多文件批量读取、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF/电子书读取、浏览器自动化、内部推理、外部服务连接；另支持动态脚本工具（tool.json）
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
 - **🔀 多角色流水线**: 配置独立的 Planner / Executor / Checker 角色各用不同模型，自动路由，完全透明
@@ -236,7 +236,42 @@ target = "any:gpu"
 target = "all:embedded"
 ```
 
-**支持指定远端隔离模式**和工作目录，远窳 Agent 的所有工具调用均实时回放到主 Agent。用前调用 `list_nodes` 确认可用节点名称。
+**支持指定远端隔离模式**和工作目录，远端 Agent 的所有工具调用均实时回放到主 Agent。用前调用 `list_nodes` 确认可用节点名称。
+
+**节点配置（workspaces.toml）**
+
+在 `~/.config/rust_agent/workspaces.toml`（全局）或 `.agent/workspaces.toml`（项目级）配置多 Agent 拓扑：
+
+```toml
+# 集群共享 token（可选）
+[cluster]
+token = "my-secret-token-123"
+
+# 本机节点：LLM 可直接 call_node target="<name>"
+[[node]]
+name        = "upper-sdk"
+workdir     = "/home/user/upper-project"
+description = "上位机 SDK 工程（Qt + C++）"
+tags        = ["upper", "cpp"]
+sandbox     = false
+
+[[node]]
+name    = "firmware"
+workdir = "/home/user/firmware"
+tags    = ["embedded"]
+
+# 对等服务器：server 进程自动 probe，LLM 看到展开的 "子节点@peer" 记录
+[[peer]]
+name  = "gpu-box"
+url   = "ws://192.168.1.20:9527"
+token = "gpu-box-token"
+
+[[peer]]
+name = "pi"
+url  = "ws://raspberrypi.local:9527"
+```
+
+> **`[[node]]`**：本机可调用节点，LLM 直接感知。**`[[peer]]`**：对等 server 入口，仅 server 进程感知，LLM 看到展开的子节点。不配置 = 通用 Agent，行为不变。
 
 #### WebSocket 服务器模式（远程 / Web UI 集成）
 
@@ -666,7 +701,7 @@ Agent 在执行以下操作前会要求确认：
 
 也可以通过 `--yes` 启动参数或 `/yesall` 命令全局跳过。auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什么。
 
-只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`fetch_url`、`read_pdf`、`read_ebook`、`think`、`file_search`）不需要确认。
+只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`read_pdf`、`read_ebook`、`think`、`file_search`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services`）不需要确认。
 
 ---
 
@@ -811,26 +846,37 @@ src/
 ├── memory.rs        # 持久记忆系统（.agent/memory.md）
 ├── summary.rs       # 项目摘要管理（.agent/summary.md）
 ├── skills.rs        # Skills 加载系统（AGENT.md / SKILL.md + .agent/skills/），兼容 OpenClaw AgentSkills 格式
+├── workspaces.rs    # 多 Agent 节点配置解析（workspaces.toml）+ NodeRegistry 全局状态
+├── worker.rs        # worker 子进程入口（收 WebSocket 连接并运行 Agent）
+├── sandbox.rs       # Container / Sandbox 隔离实现（Linux namespace + overlayfs）
 ├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染，UTF-8 安全截断）
 ├── llm/
 │   ├── mod.rs       # LlmClient trait 定义
 │   ├── anthropic.rs # Anthropic Claude API 实现
 │   └── openai.rs    # OpenAI 兼容 API 实现
 └── tools/
-    ├── mod.rs          # Tool trait + ToolExecutor 注册中心 + readonly_definitions
-    ├── read_file.rs    # 📖 读取文件（支持行范围）
-    ├── write_file.rs   # ✏️ 写入/创建文件
-    ├── edit_file.rs    # 🔧 精确替换文件内容（find & replace）
+    ├── mod.rs             # Tool trait + ToolExecutor 注册中心 + readonly_definitions
+    ├── read_file.rs       # 📖 读取文件（支持行范围）
+    ├── write_file.rs      # ✏️ 写入/创建文件
+    ├── edit_file.rs       # 🔧 精确替换文件内容（find & replace）
     ├── multi_edit_file.rs # 🔧 单文件多处批量编辑
-    ├── batch_read.rs   # 📚 批量读取多个文件
-    ├── run_command.rs  # ⚡ 执行 Shell 命令（含超时控制）
-    ├── search.rs       # 🔍 Grep 搜索 + 📁 文件名搜索
-    ├── list_dir.rs     # 📂 列出目录内容（含文件大小、权限）
-    ├── think.rs        # 💭 内部推理（无副作用，不消耗工具配额）
-    ├── read_pdf.rs     # 📄 PDF 文本提取（marker / pdftotext / mutool）
-    ├── read_ebook.rs   # 📕 电子书读取（Calibre ebook-convert / pandoc）
-    ├── fetch_url.rs    # 🌐 网页抓取与正文提取（readable / pandoc / 内置 regex）
-    └── script_tool.rs  # 🧩 动态脚本工具（扫描 tool.json，stdin JSON 协议）
+    ├── batch_read.rs      # 📚 批量读取多个文件
+    ├── run_command.rs     # ⚡ 执行 Shell 命令（含超时控制）
+    ├── search.rs          # 🔍 Grep 搜索 + 📁 文件名搜索
+    ├── list_dir.rs        # 📂 列出目录内容（含文件大小、权限）
+    ├── think.rs           # 💭 内部推理（无副作用，不消耗工具配额）
+    ├── read_pdf.rs        # 📄 PDF 文本提取（marker / pdftotext / mutool）
+    ├── read_ebook.rs      # 📕 电子书读取（Calibre ebook-convert / pandoc）
+    ├── browser.rs         # 🌐 浏览器自动化（Chrome DevTools Protocol）
+    ├── call_node.rs       # 🤖 Agent 任务委派（名称/URL/标签路由，manager 专用）
+    ├── list_nodes.rs      # 📶 查看可用 Agent 节点（含在线状态，manager 专用）
+    ├── connect_service.rs # 🔌 注册外部服务（WebSocket/HTTP）
+    ├── query_service.rs   # ❓ 向已注册服务发送请求
+    ├── subscribe_service.rs # 📡 订阅/取消订阅服务推送
+    ├── list_services.rs   # 📋 列出已注册服务
+    ├── load_skill.rs      # 📚 加载项目技能
+    ├── create_skill.rs    # ✍️ 创建或更新项目技能
+    └── script_tool.rs     # 🧩 动态脚本工具（扫描 tool.json，stdin JSON 协议）
 ```
 
 ### 输出抽象层
@@ -893,7 +939,6 @@ src/
 |------|------|----------|
 | `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |
 | `read_ebook` | ebook-convert → pandoc | `apt install calibre` / `apt install pandoc` |
-| `fetch_url` | readable → pandoc → 内置 regex | `npm install -g @nickersoft/readability-cli` / `apt install pandoc` |
 
 ---
 
@@ -1013,7 +1058,7 @@ impl Tool for MyNewTool {
 5. 在 `src/ui.rs` 的 `print_tool_use()` 中添加图标和输入显示
 6. 如果需要确认，在 `needs_confirmation()` 和 `build_confirm_action()` 中添加
 
-参考实现：`src/tools/think.rs`（最简单）、`src/tools/fetch_url.rs`（中等）、`src/tools/edit_file.rs`（复杂）
+参考实现：`src/tools/think.rs`（最简单）、`src/tools/browser.rs`（中等）、`src/tools/edit_file.rs`（复杂）
 
 ---
 

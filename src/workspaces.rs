@@ -4,16 +4,28 @@
 //! [cluster]
 //! token = "shared-secret"
 //!
-//! [[workspace]]           # inbound: exposed as virtual nodes via ready frame
+//! # [[node]] — a local callable node on THIS machine (workdir required)
+//! [[node]]
 //! name    = "firmware-bk7236"
 //! workdir = "/home/user/firmware/bk7236"
 //! sandbox = true
 //! tags    = ["embedded", "bk7236"]
 //!
-//! [[remote]]              # outbound: call_node target resolution
+//! # [[peer]] — a remote agent server on ANOTHER machine.
+//! #   Visible only to the server process during startup probe.
+//! #   LLM never sees this entry; it sees the expanded `name@alias` nodes instead.
+//! [[peer]]
 //! name = "gpu-box"
 //! url  = "ws://192.168.1.20:9527"
+//!
+//! [[peer]]
+//! name = "pi"
+//! url  = "ws://raspberrypi.local:9527"
 //! ```
+//!
+//! Two distinct key types:
+//!   `[[node]]`  — a single callable node; has `workdir`; used by workers & LLM routing.
+//!   `[[peer]]`  — a peer server address; has `url`; consumed only by the server probe loop.
 //!
 //! Search order: `.agent/workspaces.toml` (project-level) →
 //!               `~/.config/rust_agent/workspaces.toml` (global)
@@ -29,19 +41,14 @@ pub struct WorkspacesFile {
     #[serde(default)]
     pub cluster: ClusterConfig,
 
-    /// `[[workspace]]` — inbound: local project dirs this server exposes.
-    #[serde(default, rename = "workspace")]
-    pub workspaces: Vec<WorkspaceEntry>,
+    /// `[[node]]` — a local callable node on this machine.
+    #[serde(default, rename = "node")]
+    pub nodes: Vec<NodeEntry>,
 
-    /// `[[remote]]` — outbound: remote agent servers reachable via call_node.
-    #[serde(default, rename = "remote")]
-    pub remote: Vec<RemoteEntry>,
-
-    // ── Legacy keys — accepted so old configs don't break ─────────────────
-    #[serde(default, rename = "nodes")]
-    pub nodes_legacy: Vec<RemoteEntry>,
-    #[serde(default, rename = "servers")]
-    pub servers_legacy: Vec<RemoteEntry>,
+    /// `[[peer]]` — a remote agent server to probe on startup.
+    /// Visible to the server process only; never exposed to LLM.
+    #[serde(default, rename = "peer")]
+    pub peers: Vec<PeerEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -49,11 +56,14 @@ pub struct ClusterConfig {
     pub token: Option<String>,
 }
 
-/// A local project directory declared in `[[workspace]]`.
+/// A single callable node on this machine.
+/// Corresponds to a `[[node]]` entry in `workspaces.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct WorkspaceEntry {
+pub struct NodeEntry {
     pub name: String,
-    pub workdir: PathBuf,
+    /// Local project directory (required).
+    #[serde(default)]
+    pub workdir: Option<PathBuf>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -62,11 +72,18 @@ pub struct WorkspaceEntry {
     pub tags: Vec<String>,
 }
 
-/// A remote agent server endpoint declared in `[[remote]]`.
+/// A peer agent server on another machine.
+/// Corresponds to a `[[peer]]` entry in `workspaces.toml`.
+/// Consumed only by the server's startup probe loop — never exposed to LLM.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RemoteEntry {
+pub struct PeerEntry {
+    /// Human-readable alias for this server (used as `@alias` suffix in node names).
     pub name: String,
+    /// WebSocket URL of the remote agent server, e.g. `ws://192.168.1.20:9527`.
     pub url: String,
+    /// Optional per-peer token override (falls back to `[cluster].token`).
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 // ── Capability structs (serialised into the ready frame) ──────────────────────
@@ -175,9 +192,9 @@ pub fn probe_gpus() -> Vec<GpuInfo> {
         .collect()
 }
 
-/// Probe hardware capabilities and build `VirtualNodeInfo` list from workspace
-/// entries.  Returns `(caps, virtual_nodes)`.
-pub fn probe_capabilities(workspaces: &[WorkspaceEntry]) -> (NodeCapabilities, Vec<VirtualNodeInfo>) {
+/// Probe hardware capabilities and build `VirtualNodeInfo` list from local
+/// node entries.  Returns `(caps, virtual_nodes)`.
+pub fn probe_capabilities(nodes: &[NodeEntry]) -> (NodeCapabilities, Vec<VirtualNodeInfo>) {
     let bins = probe_bins(BIN_CANDIDATES);
     let gpus = probe_gpus();
     let cpu_cores = std::thread::available_parallelism()
@@ -194,16 +211,16 @@ pub fn probe_capabilities(workspaces: &[WorkspaceEntry]) -> (NodeCapabilities, V
         bins,
     };
 
-    let virtual_nodes: Vec<VirtualNodeInfo> = workspaces
+    let virtual_nodes: Vec<VirtualNodeInfo> = nodes
         .iter()
-        .map(|w| VirtualNodeInfo {
-            name: w.name.clone(),
-            workdir: w.workdir.display().to_string(),
-            description: w.description.clone(),
+        .filter_map(|n| n.workdir.as_ref().map(|wd| VirtualNodeInfo {
+            name: n.name.clone(),
+            workdir: wd.display().to_string(),
+            description: n.description.clone(),
             isolation: None,
-            sandbox: w.sandbox,
-            tags: w.tags.clone(),
-        })
+            sandbox: n.sandbox,
+            tags: n.tags.clone(),
+        }))
         .collect();
 
     (caps, virtual_nodes)
@@ -263,20 +280,155 @@ pub fn get_route_table() -> Result<Vec<RouteEntry>, ()> {
     ROUTE_TABLE.read().map(|g| g.clone()).map_err(|_| ())
 }
 
+// ── NodeRegistry ──────────────────────────────────────────────────────────────
+//
+// Runtime state of all known nodes: local [[node]] entries (always online) and
+// peer-expanded sub-nodes (online/offline based on probe results).
+// Populated at server startup by registry_init_local() + spawn_probe_loop().
+// Read by build_nodes_json() for the /nodes HTTP endpoint.
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeStatus {
+    Online,
+    Offline,
+}
+
+impl std::fmt::Display for NodeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeStatus::Online  => write!(f, "online"),
+            NodeStatus::Offline => write!(f, "offline"),
+        }
+    }
+}
+
+/// A single entry in the runtime NodeRegistry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryEntry {
+    /// Node name shown to LLM (e.g. "upper-sdk" or "模型训练@gpu-box").
+    pub name: String,
+    /// WebSocket URL to connect to this node.
+    pub url: String,
+    /// None for local nodes; Some(peer_alias) for peer-expanded nodes.
+    #[serde(default)]
+    pub peer_name: Option<String>,
+    pub status: NodeStatus,
+    /// Unix timestamp (seconds) of last successful probe.  None = never.
+    #[serde(default)]
+    pub last_seen_secs: Option<u64>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub sandbox: bool,
+    #[serde(default)]
+    pub description: String,
+}
+
+static NODE_REGISTRY: once_cell::sync::Lazy<std::sync::RwLock<Vec<RegistryEntry>>> =
+    once_cell::sync::Lazy::new(|| std::sync::RwLock::new(Vec::new()));
+
+/// Return current Unix timestamp in seconds (used by server probe code).
+pub fn unix_now_pub() -> Option<u64> {
+    unix_now()
+}
+
+fn unix_now() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Populate the registry with local `[[node]]` entries.
+/// Called once at server startup; local nodes are always Online.
+pub fn registry_init_local(nodes: &[NodeEntry], port: u16) {
+    let entries: Vec<RegistryEntry> = nodes.iter().filter_map(|n| {
+        let workdir = n.workdir.as_ref()?;
+        let enc: String = workdir.display().to_string().chars().flat_map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
+                vec![c]
+            } else {
+                format!("%{:02X}", c as u32).chars().collect()
+            }
+        }).collect();
+        Some(RegistryEntry {
+            name:          n.name.clone(),
+            url:           format!("ws://localhost:{}/?workdir={}", port, enc),
+            peer_name:     None,
+            status:        NodeStatus::Online,
+            last_seen_secs: unix_now(),
+            tags:          n.tags.clone(),
+            sandbox:       n.sandbox,
+            description:   n.description.clone(),
+        })
+    }).collect();
+
+    let mut reg = NODE_REGISTRY.write().unwrap();
+    // Replace local entries (keep peer entries from previous probes).
+    reg.retain(|e| e.peer_name.is_some());
+    reg.extend(entries);
+    // Local nodes first, then peer-expanded nodes.
+    reg.sort_by_key(|e| e.peer_name.is_some());
+}
+
+/// Update the registry with newly-probed sub-nodes for a peer.
+/// Replaces all previous entries for that peer and marks them online.
+pub fn registry_update_peer(peer_name: &str, entries: Vec<RegistryEntry>) {
+    let mut reg = NODE_REGISTRY.write().unwrap();
+    reg.retain(|e| e.peer_name.as_deref() != Some(peer_name));
+    reg.extend(entries);
+}
+
+/// Mark all registry entries for a peer as offline.
+/// If the peer has never been probed, inserts a placeholder so the user can
+/// see that the peer is configured but currently unreachable.
+pub fn registry_mark_peer_offline(peer_name: &str, peer_url: &str) {
+    let mut reg = NODE_REGISTRY.write().unwrap();
+    let has_entries = reg.iter().any(|e| e.peer_name.as_deref() == Some(peer_name));
+    if has_entries {
+        for e in reg.iter_mut() {
+            if e.peer_name.as_deref() == Some(peer_name) {
+                e.status = NodeStatus::Offline;
+            }
+        }
+    } else {
+        // First probe failed — insert a placeholder so users/tools can see it.
+        reg.push(RegistryEntry {
+            name:           format!("(unreachable)@{}", peer_name),
+            url:            peer_url.to_string(),
+            peer_name:      Some(peer_name.to_string()),
+            status:         NodeStatus::Offline,
+            last_seen_secs: None,
+            tags:           vec![],
+            sandbox:        false,
+            description:    format!("peer '{}' is unreachable", peer_name),
+        });
+    }
+}
+
+/// Return a snapshot of the full registry (local + peer-expanded).
+pub fn registry_snapshot() -> Vec<RegistryEntry> {
+    NODE_REGISTRY.read().unwrap().clone()
+}
+
 // ── Helpers on WorkspacesFile ─────────────────────────────────────────────────
 
 impl WorkspacesFile {
-    /// All remote entries: `[[remote]]` first, then legacy keys.
-    pub fn all_remotes(&self) -> Vec<&RemoteEntry> {
-        self.remote.iter()
-            .chain(self.servers_legacy.iter())
-            .chain(self.nodes_legacy.iter())
-            .collect()
+    /// All local nodes declared with `[[node]]`.
+    pub fn all_nodes(&self) -> Vec<NodeEntry> {
+        self.nodes.clone()
     }
 
-    /// Find a remote by name across all keys.
-    pub fn find_remote(&self, name: &str) -> Option<&RemoteEntry> {
-        self.all_remotes().into_iter().find(|r| r.name == name)
+    /// Alias for `all_nodes()` — every `[[node]]` entry is local.
+    pub fn local_nodes(&self) -> Vec<NodeEntry> {
+        self.nodes.clone()
+    }
+
+    /// All peer servers declared with `[[peer]]`.
+    /// These are consumed by the server probe loop only.
+    pub fn all_peers(&self) -> &[PeerEntry] {
+        &self.peers
     }
 
     /// Cluster token, if configured.

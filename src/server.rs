@@ -63,16 +63,27 @@ pub async fn run(
 
     // Load cluster token once at startup.  No token = open server (local use).
     let ws_cfg = crate::workspaces::load(&project_dir);
-    let cluster_token: Option<String> = ws_cfg.cluster.token.clone(); // clone so ws_cfg stays intact
+    let cluster_token: Option<String> = ws_cfg.cluster.token.clone();
     // Keep the full workspaces config behind Arc for the /nodes HTTP endpoint.
     let cached_ws_cfg = Arc::new(ws_cfg);
 
     // Probe capabilities once at startup and cache behind Arc so every probe
     // connection can clone cheaply without re-running nvidia-smi etc.
-    let (caps, virtual_nodes) = crate::workspaces::probe_capabilities(&cached_ws_cfg.workspaces);
+    let (caps, virtual_nodes) = crate::workspaces::probe_capabilities(&cached_ws_cfg.local_nodes());
     let cached_caps    = Arc::new(caps);
     let cached_vnodes  = Arc::new(virtual_nodes);
     let cached_workdir = project_dir.display().to_string();
+
+    // ── Phase 2: NodeRegistry initialisation ─────────────────────────────────
+    // 1. Seed the registry with local [[node]] entries (always online).
+    crate::workspaces::registry_init_local(&cached_ws_cfg.local_nodes(), port);
+    // 2. Spawn background task that probes all [[peer]] entries at startup,
+    //    then retries offline peers every 30s and heartbeats online ones every 120s.
+    spawn_probe_loop(
+        cached_ws_cfg.peers.clone(),
+        cluster_token.clone(),
+        port,
+    );
 
     let addr = format!("{}:{}", host, port);
     let listener = TcpListener::bind(&addr).await?;
@@ -146,7 +157,7 @@ pub async fn run(
             "/nodes" => {
                 // Plain HTTP GET — return all known nodes as JSON.
                 // Token validation already passed above; safe to respond.
-                let body = build_nodes_json(&cached_ws_cfg);
+                let body = build_nodes_json(&cached_ws_cfg, port);
                 tokio::spawn(async move {
                     use tokio::io::AsyncWriteExt;
                     let resp = format!(
@@ -158,13 +169,40 @@ pub async fn run(
                 });
                 continue;
             }
+            "/reprobe" => {
+                // On-demand peer re-probe triggered by call_node when a target is offline.
+                // Query param: ?peer=<peer_name>
+                // Returns updated /nodes JSON after re-probing the specified peer.
+                let peer_name = parse_query_param(&peek_buf[..peek_n], "peer");
+                let peers_cfg = cached_ws_cfg.peers.clone();
+                let tok       = cluster_token.clone();
+                let port_cap  = port;
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let mut s = stream;
+                    if let Some(ref name) = peer_name {
+                        if let Some(peer) = peers_cfg.iter().find(|p| &p.name == name) {
+                            probe_and_update(peer, tok.as_deref(), port_cap).await;
+                        }
+                    }
+                    // Return updated node list.
+                    let body = crate::workspaces::registry_snapshot();
+                    let json = serde_json::json!({ "nodes": body }).to_string();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(), json
+                    );
+                    let _ = s.write_all(resp.as_bytes()).await;
+                });
+                continue;
+            }
             "/agent" | "/" => {
                 // fall through to fork
             }
             other => {
                 tracing::warn!("Unknown path '{}' from {} — rejected", other, peer);
                 use tokio::io::AsyncWriteExt;
-                let body = format!("Unknown path: {other}. Available: /agent (LLM session), /probe (capability query), /nodes (node list)");
+                let body = format!("Unknown path: {other}. Available: /agent (LLM session), /probe (capability query), /nodes (node list), /reprobe (on-demand peer probe)");
                 let resp = format!(
                     "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(), body
@@ -192,7 +230,7 @@ pub async fn run(
         // Serialize the workspaces list so the worker can build the virtual_nodes
         // ready frame without touching the filesystem (which may be unavailable
         // inside the container namespace).
-        let workspaces_json = serde_json::to_string(&cached_ws_cfg.workspaces)
+        let workspaces_json = serde_json::to_string(&cached_ws_cfg.local_nodes())
             .unwrap_or_else(|_| "[]".to_string());
 
         let uid = unsafe { libc::getuid() };
@@ -333,16 +371,33 @@ fn parse_isolation_from_http(bytes: &[u8]) -> Option<IsolationMode> {
 
 /// Extract the `token` query parameter from the raw HTTP Upgrade request bytes.
 fn parse_token_from_http(bytes: &[u8]) -> Option<String> {
+    parse_query_param(bytes, "token")
+}
+
+/// Extract an arbitrary query parameter by name from the raw HTTP request bytes.
+fn parse_query_param(bytes: &[u8], key: &str) -> Option<String> {
     let text = std::str::from_utf8(bytes).ok()?;
     let line = text.lines().next()?;
     let path = line.split_whitespace().nth(1)?;
     let query = path.split_once('?')?.1;
+    let prefix = format!("{}=", key);
     for param in query.split('&') {
-        if let Some(val) = param.strip_prefix("token=") {
+        if let Some(val) = param.strip_prefix(&prefix) {
             return Some(url_decode(val));
         }
     }
     None
+}
+
+/// Percent-encoding for query parameter values.
+fn url_encode(s: &str) -> String {
+    s.chars().flat_map(|c| {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            vec![c]
+        } else {
+            format!("%{:02X}", c as u32).chars().collect()
+        }
+    }).collect()
 }
 
 /// Percent-decoding (`%XX` → byte, `+` → space).
@@ -421,41 +476,201 @@ async fn handle_probe(
 
 /// Build the JSON body for `GET /nodes`.
 ///
-/// Returns all statically configured `[[remote]]` entries merged with any
-/// virtual-node entries that have been dynamically discovered and stored in
-/// the in-process route table (populated by `/probe` calls or `call_node`
-/// `ready` frames).  The combined list lets worker sub-agents resolve node
-/// names and perform tag-based routing without reading the filesystem.
-fn build_nodes_json(ws_cfg: &crate::workspaces::WorkspacesFile) -> String {
-    use crate::workspaces;
-    let mut nodes: Vec<serde_json::Value> = Vec::new();
+/// Returns the NodeRegistry snapshot: local nodes + peer-expanded sub-nodes.
+/// Does NOT include raw [[peer]] gateway entries — those are server-internal.
+fn build_nodes_json(_ws_cfg: &crate::workspaces::WorkspacesFile, _port: u16) -> String {
+    use crate::workspaces::{NodeStatus, registry_snapshot};
+    let entries = registry_snapshot();
 
-    // Static [[remote]] entries from workspaces.toml.
-    for r in ws_cfg.all_remotes() {
-        nodes.push(serde_json::json!({
-            "name":   r.name,
-            "url":    r.url,
-            "source": "static",
-        }));
-    }
-
-    // Dynamic entries from the in-process route table (discovered at runtime).
-    if let Ok(table) = workspaces::get_route_table() {
-        for e in &table {
-            nodes.push(serde_json::json!({
-                "name":        format!("{}/{}", e.server_name, e.node_name),
-                "server_name": e.server_name,
-                "node_name":   e.node_name,
-                "url":         e.server_url,
-                "workdir":     e.workdir,
-                "sandbox":     e.sandbox,
+    let nodes: Vec<serde_json::Value> = entries.iter()
+        // Skip tombstone placeholders (name starts with "(unreachable)@")
+        .filter(|e| !e.name.starts_with("(unreachable)@"))
+        .map(|e| {
+            let mut obj = serde_json::json!({
+                "name":        e.name,
+                "url":         e.url,
+                "status":      e.status.to_string(),
                 "tags":        e.tags,
-                "source":      "route_table",
-            }));
+                "sandbox":     e.sandbox,
+                "description": e.description,
+            });
+            if let Some(ref peer) = e.peer_name {
+                obj["source"]    = serde_json::json!("remote");
+                obj["peer_name"] = serde_json::json!(peer);
+            } else {
+                obj["source"] = serde_json::json!("local");
+            }
+            if let Some(secs) = e.last_seen_secs {
+                obj["last_seen_secs"] = serde_json::json!(secs);
+            }
+            // Offline remote nodes expose the peer name so call_node can trigger re-probe.
+            if matches!(e.status, NodeStatus::Offline) {
+                obj["offline"] = serde_json::json!(true);
+            }
+            obj
+        })
+        .collect();
+
+    // Also include offline placeholder rows so callers know unreachable peers.
+    let placeholders: Vec<serde_json::Value> = entries.iter()
+        .filter(|e| e.name.starts_with("(unreachable)@"))
+        .map(|e| serde_json::json!({
+            "name":         e.name,
+            "peer_name":    e.peer_name,
+            "status":       "offline",
+            "source":       "remote",
+            "description":  e.description,
+        }))
+        .collect();
+
+    let mut all = nodes;
+    all.extend(placeholders);
+    serde_json::json!({ "nodes": all }).to_string()
+}
+
+// ── Peer probe functions ──────────────────────────────────────────────────────
+
+/// Connect to a peer's `/probe` WebSocket, receive the `ready` frame, return
+/// the list of virtual nodes it advertises.  Returns `None` on any error.
+async fn probe_peer_once(
+    peer_url: &str,
+    token: Option<&str>,
+) -> Option<Vec<crate::workspaces::VirtualNodeInfo>> {
+    let base = crate::workspaces::with_path(peer_url, "/probe");
+    let url = match token {
+        Some(tok) => {
+            let sep = if base.contains('?') { '&' } else { '?' };
+            format!("{}{}token={}", base, sep, url_encode(tok))
+        }
+        None => base,
+    };
+
+    let (ws, _) = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(&url),
+    ).await.ok()?.ok()?;
+
+    let (mut write, mut read) = ws.split();
+
+    let msg = tokio::time::timeout(Duration::from_secs(5), read.next())
+        .await.ok()??.ok()?;
+
+    // Politely close after reading the ready frame.
+    let _ = write.close().await;
+
+    match msg {
+        Message::Text(text) => {
+            let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+            if v["type"].as_str() != Some("ready") { return None; }
+            let vnodes: Vec<crate::workspaces::VirtualNodeInfo> =
+                serde_json::from_value(v["data"]["virtual_nodes"].clone()).unwrap_or_default();
+            Some(vnodes)
+        }
+        _ => None,
+    }
+}
+
+/// Probe a peer and update the NodeRegistry accordingly.
+async fn probe_and_update(
+    peer: &crate::workspaces::PeerEntry,
+    cluster_token: Option<&str>,
+    port: u16,
+) {
+    let tok = peer.token.as_deref().or(cluster_token);
+    match probe_peer_once(&peer.url, tok).await {
+        Some(vnodes) => {
+            let base_url = peer.url.trim_end_matches('/').split('?').next().unwrap_or(&peer.url);
+            let entries: Vec<crate::workspaces::RegistryEntry> = vnodes.iter().map(|vn| {
+                let enc: String = vn.workdir.chars().flat_map(|c| {
+                    if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
+                        vec![c]
+                    } else {
+                        format!("%{:02X}", c as u32).chars().collect()
+                    }
+                }).collect();
+                crate::workspaces::RegistryEntry {
+                    name:           format!("{}@{}", vn.name, peer.name),
+                    url:            format!("{}/?workdir={}", base_url, enc),
+                    peer_name:      Some(peer.name.clone()),
+                    status:         crate::workspaces::NodeStatus::Online,
+                    last_seen_secs: crate::workspaces::unix_now_pub(),
+                    tags:           vn.tags.clone(),
+                    sandbox:        vn.sandbox,
+                    description:    vn.description.clone(),
+                }
+            }).collect();
+            let n = entries.len();
+            crate::workspaces::registry_update_peer(&peer.name, entries);
+            tracing::info!("probe: peer '{}' online — {} node(s) expanded", peer.name, n);
+        }
+        None => {
+            crate::workspaces::registry_mark_peer_offline(&peer.name, &peer.url);
+            tracing::warn!("probe: peer '{}' ({}) unreachable", peer.name, peer.url);
         }
     }
+}
 
-    serde_json::json!({ "nodes": nodes }).to_string()
+/// Spawn the background probe loop in a Tokio task.
+///
+/// - On startup: probes all peers concurrently.
+/// - Every 30 s: re-probes `offline` peers.
+/// - Every 120 s: heartbeat-probes `online` peers.
+pub fn spawn_probe_loop(
+    peers: Vec<crate::workspaces::PeerEntry>,
+    cluster_token: Option<String>,
+    port: u16,
+) {
+    if peers.is_empty() { return; }
+    tokio::spawn(async move {
+        // Initial probe — all peers concurrently.
+        let futs: Vec<_> = peers.iter()
+            .map(|p| probe_and_update(p, cluster_token.as_deref(), port))
+            .collect();
+        futures::future::join_all(futs).await;
+
+        // Periodic polls.
+        let mut tick30  = tokio::time::interval(Duration::from_secs(30));
+        let mut tick120 = tokio::time::interval(Duration::from_secs(120));
+        tick30.tick().await;   // consume first immediate tick
+        tick120.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = tick30.tick() => {
+                    // Retry offline peers.
+                    let offline_peers: Vec<_> = {
+                        let snap = crate::workspaces::registry_snapshot();
+                        peers.iter()
+                            .filter(|p| snap.iter().any(|e|
+                                e.peer_name.as_deref() == Some(&p.name) &&
+                                e.status == crate::workspaces::NodeStatus::Offline
+                            ))
+                            .cloned()
+                            .collect()
+                    };
+                    for p in &offline_peers {
+                        probe_and_update(p, cluster_token.as_deref(), port).await;
+                    }
+                }
+                _ = tick120.tick() => {
+                    // Heartbeat online peers.
+                    let online_peers: Vec<_> = {
+                        let snap = crate::workspaces::registry_snapshot();
+                        peers.iter()
+                            .filter(|p| snap.iter().any(|e|
+                                e.peer_name.as_deref() == Some(&p.name) &&
+                                e.status == crate::workspaces::NodeStatus::Online
+                            ))
+                            .cloned()
+                            .collect()
+                    };
+                    for p in &online_peers {
+                        probe_and_update(p, cluster_token.as_deref(), port).await;
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn cleanup_stale_worker_dirs() {
