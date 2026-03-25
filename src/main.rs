@@ -7,6 +7,8 @@ mod context;
 mod diff;
 mod llm;
 mod memory;
+mod mcp_client;
+mod mcp_server;
 mod model_manager;
 mod output;
 mod persistence;
@@ -45,6 +47,9 @@ pub enum RunMode {
     Tui,
     /// Spawned by the server for each connection; handles the agent loop.
     Worker,
+    /// MCP (Model Context Protocol) tool server over stdio JSON-RPC 2.0.
+    /// Exposes all built-in tools to external hosts (Claude Desktop, Cursor, etc.)
+    Mcp,
 }
 
 impl std::str::FromStr for RunMode {
@@ -56,7 +61,8 @@ impl std::str::FromStr for RunMode {
             "server" | "ws" | "websocket" => Ok(RunMode::Server),
             "tui" => Ok(RunMode::Tui),
             "worker" => Ok(RunMode::Worker),
-            other => Err(format!("unknown mode '{}', expected: cli, stdio, server, tui, worker", other)),
+            "mcp" => Ok(RunMode::Mcp),
+            other => Err(format!("unknown mode '{}', expected: cli, stdio, server, tui, worker, mcp", other)),
         }
     }
 }
@@ -69,6 +75,7 @@ impl std::fmt::Display for RunMode {
             RunMode::Server => write!(f, "server"),
             RunMode::Tui => write!(f, "tui"),
             RunMode::Worker => write!(f, "worker"),
+            RunMode::Mcp => write!(f, "mcp"),
         }
     }
 }
@@ -254,11 +261,16 @@ async fn main() -> Result<()> {
         return server::run(config, project_dir, &args.host, args.port, args.isolation).await;
     }
 
+    // MCP server mode: expose tools as a JSON-RPC 2.0 MCP tool server over stdio.
+    if args.mode == RunMode::Mcp {
+        return mcp_server::run(project_dir).await;
+    }
+
     // Build the output backend based on --mode
     let output: Arc<dyn output::AgentOutput> = match args.mode {
         RunMode::Cli => Arc::new(output::CliOutput::new()),
         RunMode::Stdio => Arc::new(output::StdioOutput::new()),
-        RunMode::Server | RunMode::Tui | RunMode::Worker => unreachable!(), // handled above
+        RunMode::Server | RunMode::Tui | RunMode::Worker | RunMode::Mcp => unreachable!(), // handled above
     };
 
     // Run the agent

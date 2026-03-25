@@ -145,6 +145,12 @@ impl Agent {
         self.tool_executor.set_allowed_dir(dir);
     }
 
+    /// Spawn all MCP servers configured in `.agent/mcp.toml` and register
+    /// their tools.  Call once after construction (in CLI / stdio mode).
+    pub async fn load_mcp_tools(&mut self) {
+        self.tool_executor.load_mcp_tools().await;
+    }
+
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);

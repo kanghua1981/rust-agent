@@ -11,7 +11,8 @@
 - **⚡ 执行前背景注入**: approve 计划时可附带背景上下文，直达 Executor 初始 prompt
 - **🛑 执行中实时指导**: Pipeline 运行时按 `Ctrl+\` 随时暂停并向 Executor 注入补充信息
 - **�🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
-- **📡 四种运行模式**: CLI 交互（默认）、**TUI 分屏界面**（ratatui）、JSON-over-stdio 协议、WebSocket 服务器
+- **📡 五种运行模式**: CLI 交互（默认）、**TUI 分屏界面**（ratatui）、JSON-over-stdio 协议、WebSocket 服务器、**MCP 工具服务器**（Claude Desktop / Cursor 直接接入）
+- **🔌 MCP 双向支持**: **作为 MCP 服务器**（`--mode mcp`）向任何 MCP 主机暴露全部内置工具；**作为 MCP 客户端**（`mcp.toml`）自动连接外部 MCP 服务器并将其工具注册到 Agent 工具列表，LLM 透明调用
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
 - **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换
 - **📜 对话持久化**: 支持上下文保持、会话保存与恢复
@@ -353,6 +354,30 @@ cd web-ui
 - 支持彩色输出与 streaming 实时显示
 - 支持鼠标滚轮滚动
 - 自动滚动与手动滚动模式切换
+
+#### MCP 服务器模式（Claude Desktop / Cursor 等接入）
+
+通过 `--mode mcp` 将 Agent 变为一个标准 MCP 工具服务器，外部 MCP 主机（Claude Desktop、Cursor 等）可以直接列举并调用全部内置工具，**无需在这一侧运行任何 LLM**：
+
+```bash
+# 以 MCP 服务器模式启动
+./target/release/agent --mode mcp --workdir /path/to/project
+```
+
+**Claude Desktop 配置示例**（`claude_desktop_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "rust-agent": {
+      "command": "/path/to/agent",
+      "args": ["--mode", "mcp", "--workdir", "/your/project"]
+    }
+  }
+}
+```
+
+支持方法：`initialize` · `tools/list` · `tools/call`（JSON-RPC 2.0 over stdio）。所有工具权限均**自动 approve**，适合作为受信任的本地工具提供者。
 
 ---
 
@@ -942,7 +967,54 @@ src/
 
 ---
 
-## 📋 Plan 模式
+## � MCP（Model Context Protocol）
+
+Agent 同时支持两个方向的 MCP 集成：
+
+### 方向 A：作为 MCP 服务器（`--mode mcp`）
+
+见上文「MCP 服务器模式」章节。
+
+### 方向 B：作为 MCP 客户端（接入外部 MCP 服务器）
+
+通过配置文件连接外部 MCP 服务器，其工具会自动注册到 Agent 工具列表，LLM 可与内置工具一起透明调用。
+
+**配置文件**：`.agent/mcp.toml`（项目级）或 `~/.config/rust_agent/mcp.toml`（用户级），项目级优先并合并。
+
+```toml
+# .agent/mcp.toml
+
+[[server]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[[server]]
+name    = "github"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-github"]
+env     = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_xxx" }
+
+[[server]]
+name    = "my-server"
+command = "/usr/local/bin/my-mcp-server"
+# args 和 env 均为可选
+```
+
+**工具命名规则**：`<server_name>__<tool_name>`，例如 `filesystem__read_file`、`github__search_repositories`。每个字段说明：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | ✅ | 服务器别名，用作工具前缀 |
+| `command` | ✅ | 可执行文件路径（如 `npx`、`/usr/bin/my-mcp-server`） |
+| `args` | ❌ | 命令行参数列表 |
+| `env` | ❌ | 注入到子进程的额外环境变量 |
+
+> Agent 启动时自动拉起所有配置的 MCP 子进程，通过 JSON-RPC 2.0 over stdio 通信。子进程随 Agent 退出而终止。
+
+---
+
+## �📋 Plan 模式
 
 Plan 模式让 Agent 先分析后执行，避免盲目修改代码：
 

@@ -116,6 +116,10 @@ pub async fn run(
     };
     agent.global_session = global_session;
 
+    // Load MCP client tools from .agent/mcp.toml (if present).
+    // Silently skipped when the file doesn't exist or no servers are configured.
+    agent.load_mcp_tools().await;
+
     // Print sandbox status
     if sandbox_enabled {
         let is_overlay = agent.sandbox.is_overlay().await;

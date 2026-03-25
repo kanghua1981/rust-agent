@@ -154,6 +154,18 @@ impl ToolExecutor {
         self.load_script_tools_from(&workdir);
     }
 
+    /// Spawn all configured MCP servers (from `.agent/mcp.toml`) and register
+    /// their tools.  Called once after construction from `Agent::load_mcp_tools`.
+    pub async fn load_mcp_tools(&mut self) {
+        let project_dir = self.project_dir.clone();
+        let mcp_tools = crate::mcp_client::connect_all(&project_dir).await;
+        for tool in mcp_tools {
+            let name = tool.definition().name.clone();
+            tracing::info!("MCP tool registered: {name}");
+            self.tools.insert(name, tool);
+        }
+    }
+
     /// Update the working directory used by all tools.
     pub fn set_project_dir(&mut self, dir: PathBuf) {
         self.project_dir = dir;
