@@ -7,6 +7,7 @@ import type { ConfigPreset } from '../types/agent';
 export const SettingsPanel: React.FC = () => {
   const { 
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset, connectionStatus,
+    clusterToken, setClusterToken,
     presets, addPreset, updatePreset, deletePreset, applyPreset 
   } = useAgentStore();
 
@@ -19,7 +20,8 @@ export const SettingsPanel: React.FC = () => {
   // Current config form state
   const [urlDraft, setUrlDraft] = useState(serverUrl);
   const [dirDraft, setDirDraft] = useState(workdir ?? '');
-  const [modelDraft, setModelDraft] = useState(config.model ?? '');
+  const [tokenDraft, setTokenDraft] = useState(clusterToken);
+  const [modelDraft, setModelDraft] = useState(config.model ?? '');  
 
   // Keep draft in sync with store when workdir changes externally
   // (e.g. applyPreset, or Zustand persist async rehydration on first load)
@@ -45,8 +47,8 @@ export const SettingsPanel: React.FC = () => {
     agentMode: 'auto',
   });
 
-  const handleSandboxToggle = (enabled: boolean) => {
-    setConfig({ sandbox: enabled });
+  const handleIsolationChange = (mode: 'normal' | 'container' | 'sandbox') => {
+    setConfig({ isolation: mode });
   };
 
   const saveCurrentConfig = () => {
@@ -57,6 +59,7 @@ export const SettingsPanel: React.FC = () => {
     if (isConnected && newWorkdir) {
       setWorkdirRemote(newWorkdir);
     }
+    setClusterToken(tokenDraft.trim());
     if (modelDraft.trim()) setConfig({ model: modelDraft.trim() });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -196,6 +199,15 @@ export const SettingsPanel: React.FC = () => {
                 style={inputStyle}
               />
             </Field>
+            <Field label="集群 Token（认证，留空则无需鉴权）">
+              <input
+                type="password"
+                value={tokenDraft}
+                onChange={(e) => setTokenDraft(e.target.value)}
+                placeholder="无 token 则留空"
+                style={inputStyle}
+              />
+            </Field>
           </Section>
 
           <Section title="模型">
@@ -237,21 +249,18 @@ export const SettingsPanel: React.FC = () => {
             </Field>
           </Section>
 
-          <Section title="沙盒模式">
-            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={config.sandbox ?? false}
-                onChange={(e) => handleSandboxToggle(e.target.checked)}
-                style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
-              />
-              <div>
-                <p style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>启用沙盒模式</p>
-                <p style={{ fontSize: '12px', color: 'var(--text3)' }}>
-                  在隔离环境中执行文件操作，支持回滚和提交
-                </p>
-              </div>
-            </label>
+          <Section title="隔离模式">
+            <Field label="隔离模式（连接时生效）">
+              <select
+                value={config.isolation ?? 'container'}
+                onChange={(e) => handleIsolationChange(e.target.value as 'normal' | 'container' | 'sandbox')}
+                style={selectStyle}
+              >
+                <option value="normal">🕑3 直接运行（无容器，完全兼容）</option>
+                <option value="container">🔲 容器模式（namespace 隔离，默认）</option>
+                <option value="sandbox">🔒 沙盒模式（overlayfs 保护，支持回滚）</option>
+              </select>
+            </Field>
           </Section>
 
           <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
@@ -492,8 +501,14 @@ const inputStyle: React.CSSProperties = {
 
 const selectStyle: React.CSSProperties = {
   ...inputStyle,
+  padding: '9px 30px 9px 12px',
   fontFamily: 'inherit',
   cursor: 'pointer',
+  appearance: 'none',
+  WebkitAppearance: 'none',
+  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239499b0' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`,
+  backgroundRepeat: 'no-repeat',
+  backgroundPosition: 'right 10px center',
 };
 
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (

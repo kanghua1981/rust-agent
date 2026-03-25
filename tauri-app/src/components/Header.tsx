@@ -14,8 +14,9 @@ const statusConfig = {
 };
 
 export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) => {
-  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges } = useAgentStore();
+  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges, config } = useAgentStore();
   const cfg = statusConfig[connectionStatus];
+  const isolation = config.isolation ?? 'container';
 
   return (
     <header style={{
@@ -77,7 +78,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
               📂 {workdir}
             </span>
           )}
-          {sandboxBackend !== 'disabled' && (
+          {/* Isolation mode badge */}
+          {isolation === 'sandbox' ? (
             <span style={{
               display: 'inline-flex', alignItems: 'center', gap: '4px',
               padding: '2px 8px',
@@ -88,7 +90,33 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
               color: pendingChanges > 0 ? '#f59e0b' : '#10b981',
               flexShrink: 0,
             }}>
-              🔒 沙盒{pendingChanges > 0 ? ` · ${pendingChanges} 待提交` : ''}
+              🔒 沙筱{pendingChanges > 0 ? ` · ${pendingChanges} 待提交` : ''}
+            </span>
+          ) : isolation === 'container' ? (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              padding: '2px 8px',
+              background: 'rgba(59,130,246,0.12)',
+              border: '1px solid rgba(59,130,246,0.3)',
+              borderRadius: '10px',
+              fontSize: '11px', fontWeight: '500',
+              color: '#3b82f6',
+              flexShrink: 0,
+            }}>
+              🔲 容器
+            </span>
+          ) : (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              padding: '2px 8px',
+              background: 'rgba(107,114,128,0.12)',
+              border: '1px solid rgba(107,114,128,0.3)',
+              borderRadius: '10px',
+              fontSize: '11px', fontWeight: '500',
+              color: '#6b7280',
+              flexShrink: 0,
+            }}>
+              🕑3 无容器
             </span>
           )}
         </div>

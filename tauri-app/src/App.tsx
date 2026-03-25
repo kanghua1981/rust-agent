@@ -7,11 +7,14 @@ import { ToolsPanel } from './components/ToolsPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { SandboxPanel } from './components/SandboxPanel';
+import { NodesPanel } from './components/NodesPanel';
+import { TaskPanelList } from './components/TaskPanelList';
 import { ConnectModal } from './components/ConnectModal';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
+import { useAgentPool } from './hooks/useAgentPool';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -19,6 +22,7 @@ function App() {
 
   const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, loadSession, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback } = useWebSocket();
   const { reset } = useAgentStore();
+  const { dispatchTask } = useAgentPool();
 
   const handleConnect = () => {
     connect();
@@ -52,6 +56,7 @@ function App() {
           onNewSession={newSession}
         />
 
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
           {activeTab === 'chat' && (
             <>
@@ -60,10 +65,11 @@ function App() {
                 onAnswer={(id, answer) => { answerQuestion(answer); useAgentStore.getState().removePendingConfirmation(id); }}
                 onReviewPlan={(id, approved, feedback) => { reviewPlan(approved, feedback); useAgentStore.getState().removePendingConfirmation(id); }}
               />
-              <InputArea onSend={sendUserMessage} onCancel={sendCancel} />
+              <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} />
             </>
           )}
           {activeTab === 'tools' && <ToolsPanel />}
+          {activeTab === 'nodes' && <NodesPanel />}
           {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} />}
           {activeTab === 'settings' && <SettingsPanel />}
           {activeTab === 'sandbox' && (
@@ -75,6 +81,8 @@ function App() {
             />
           )}
         </main>
+        <TaskPanelList />
+        </div>
       </div>
 
       {showConnect && (

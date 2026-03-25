@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { VirtualNodeInfo } from '../types/agent';
 
 interface Props {
   onConnect: () => void;
@@ -7,13 +8,28 @@ interface Props {
 }
 
 export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
-  const { serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig } = useAgentStore();
+  const { serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, nodeList, clusterToken, setClusterToken } = useAgentStore();
   const [url, setUrl] = useState(serverUrl);
   const [dir, setDir] = useState(workdir ?? '');
+  const [token, setToken] = useState(clusterToken);
+  const [selectedNode, setSelectedNode] = useState<string>('');
+
+  const handleNodeSelect = (nodeName: string) => {
+    setSelectedNode(nodeName);
+    if (nodeName === '') return;
+    const node: VirtualNodeInfo | undefined = nodeList.find(n => n.name === nodeName);
+    if (node) {
+      setDir(node.workdir);
+      // prefer new isolation field; fall back to legacy sandbox boolean
+      const iso = node.isolation ?? (node.sandbox ? 'sandbox' : 'container');
+      setConfig({ isolation: iso });
+    }
+  };
 
   const handleConnect = () => {
     setServerUrl(url.trim() || 'ws://localhost:9527');
     if (dir.trim()) setWorkdir(dir.trim());
+    setClusterToken(token.trim());
     onConnect();
     onClose();
   };
@@ -71,11 +87,66 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
 
           <div>
             <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>
+              集群 Token（可选，服务器开启认证时需要）
+            </label>
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
+              placeholder="无 token 则留空"
+              style={{
+                width: '100%', padding: '9px 12px',
+                background: 'var(--bg3)', border: '1px solid var(--border)',
+                borderRadius: '8px', color: 'var(--text)',
+                outline: 'none', fontFamily: 'monospace', fontSize: '13px',
+              }}
+            />
+          </div>
+
+          {/* Node selector — only shown when nodeList is populated from last connection */}
+          {nodeList.length > 0 && (
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>
+                节点（来自上次连接）
+              </label>
+              <select
+                value={selectedNode}
+                onChange={(e) => handleNodeSelect(e.target.value)}
+                style={{
+                  width: '100%', padding: '9px 30px 9px 12px',
+                  background: `var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239499b0' d='M6 8L1 3h10z'/%3E%3C/svg%3E") no-repeat right 10px center`,
+                  border: '1px solid var(--border)',
+                  borderRadius: '8px', color: 'var(--text)',
+                  outline: 'none', fontSize: '13px', cursor: 'pointer',
+                  appearance: 'none', WebkitAppearance: 'none',
+                }}
+              >
+                <option value=''>── 物理默认（自定义工作目录）──</option>
+                {nodeList.map(n => (
+                  <option key={n.name} value={n.name}>
+                    {n.name}
+                    {n.tags.length > 0 ? `  [${n.tags.join(', ')}]` : ''}
+                    {(n.isolation === 'sandbox' || (!n.isolation && n.sandbox)) ? '  🔒' : n.isolation === 'normal' ? '  🔓' : '  🔲'}
+                  </option>
+                ))}
+              </select>
+              {selectedNode && (() => {
+                const node = nodeList.find(n => n.name === selectedNode);
+                return node?.description ? (
+                  <p style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '4px' }}>{node.description}</p>
+                ) : null;
+              })()}
+            </div>
+          )}
+
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>
               工作目录（可选）
             </label>
             <input
               value={dir}
-              onChange={(e) => setDir(e.target.value)}
+              onChange={(e) => { setDir(e.target.value); setSelectedNode(''); }}
               placeholder="/path/to/project"
               style={{
                 width: '100%', padding: '9px 12px',
@@ -96,20 +167,32 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
             <span style={{ fontSize: '13px', color: 'var(--text2)' }}>自动确认工具调用（跳过每次确认弹窗）</span>
           </label>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={!!config.sandbox}
-              onChange={(e) => setConfig({ sandbox: e.target.checked })}
-              style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
-            />
-            <div>
-              <span style={{ fontSize: '13px', color: 'var(--text2)' }}>启用沙盒模式</span>
-              <p style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>
-                在隔离环境中执行文件操作，支持回滚和提交（需服务器支持 overlay）
-              </p>
-            </div>
-          </label>
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>
+              隔离模式
+            </label>
+            <select
+              value={config.isolation ?? 'container'}
+              onChange={(e) => setConfig({ isolation: e.target.value as 'normal' | 'container' | 'sandbox' })}
+              style={{
+                width: '100%', padding: '9px 30px 9px 12px',
+                background: `var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239499b0' d='M6 8L1 3h10z'/%3E%3C/svg%3E") no-repeat right 10px center`,
+                border: '1px solid var(--border)',
+                borderRadius: '8px', color: 'var(--text)',
+                outline: 'none', fontSize: '13px', cursor: 'pointer',
+                appearance: 'none', WebkitAppearance: 'none',
+              }}
+            >
+              <option value="normal">🕑3 直接运行（无容器，完全兼容）</option>
+              <option value="container">🔲 容器模式（namespace 隔离，默认）</option>
+              <option value="sandbox">🔒 沙筱模式（overlayfs 保护，支持回滚）</option>
+            </select>
+            <p style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '4px' }}>
+              {(config.isolation ?? 'container') === 'normal' && '直接在宿主运行，工具可访问全部路径'}
+              {(config.isolation ?? 'container') === 'container' && '进程视图隔离，写操作直接落到项目文件'}
+              {(config.isolation ?? 'container') === 'sandbox' && '写操作落到 tmpfs upper 层，支持 /rollback 和 /commit'}
+            </p>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>

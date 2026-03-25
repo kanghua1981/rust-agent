@@ -33,14 +33,14 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
 
   // Auto-fetch when tab becomes active (sandbox state or connection changes)
   useEffect(() => {
-    if (connectionStatus === 'connected' && config.sandbox && sandboxBackend !== 'disabled') {
+    if (connectionStatus === 'connected' && config.isolation === 'sandbox' && sandboxBackend !== 'disabled') {
       onSandboxListChanges();
     }
-  }, [connectionStatus, config.sandbox, sandboxBackend]);
+  }, [connectionStatus, config.isolation, sandboxBackend]);
 
   // Auto-fetch when agent finishes processing (files may have been written)
   useEffect(() => {
-    if (!isProcessing && connectionStatus === 'connected' && config.sandbox && sandboxBackend !== 'disabled') {
+    if (!isProcessing && connectionStatus === 'connected' && config.isolation === 'sandbox' && sandboxBackend !== 'disabled') {
       onSandboxListChanges();
     }
   }, [isProcessing]);
@@ -59,7 +59,7 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
     setConfirmAction(null);
   };
 
-  const isDisabled = sandboxBackend === 'disabled' || !config.sandbox;
+  const isDisabled = sandboxBackend === 'disabled' || config.isolation !== 'sandbox';
 
   if (connectionStatus !== 'connected') {
     return (

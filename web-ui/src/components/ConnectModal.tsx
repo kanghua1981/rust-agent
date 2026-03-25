@@ -114,10 +114,12 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
                 value={selectedNode}
                 onChange={(e) => handleNodeSelect(e.target.value)}
                 style={{
-                  width: '100%', padding: '9px 12px',
-                  background: 'var(--bg3)', border: '1px solid var(--border)',
+                  width: '100%', padding: '9px 30px 9px 12px',
+                  background: `var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239499b0' d='M6 8L1 3h10z'/%3E%3C/svg%3E") no-repeat right 10px center`,
+                  border: '1px solid var(--border)',
                   borderRadius: '8px', color: 'var(--text)',
                   outline: 'none', fontSize: '13px', cursor: 'pointer',
+                  appearance: 'none', WebkitAppearance: 'none',
                 }}
               >
                 <option value=''>── 物理默认（自定义工作目录）──</option>
@@ -173,10 +175,12 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
               value={config.isolation ?? 'container'}
               onChange={(e) => setConfig({ isolation: e.target.value as 'normal' | 'container' | 'sandbox' })}
               style={{
-                width: '100%', padding: '9px 12px',
-                background: 'var(--bg3)', border: '1px solid var(--border)',
+                width: '100%', padding: '9px 30px 9px 12px',
+                background: `var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239499b0' d='M6 8L1 3h10z'/%3E%3C/svg%3E") no-repeat right 10px center`,
+                border: '1px solid var(--border)',
                 borderRadius: '8px', color: 'var(--text)',
                 outline: 'none', fontSize: '13px', cursor: 'pointer',
+                appearance: 'none', WebkitAppearance: 'none',
               }}
             >
               <option value="normal">🕑3 直接运行（无容器，完全兼容）</option>
