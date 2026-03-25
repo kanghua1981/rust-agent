@@ -391,11 +391,11 @@ fn parse_query_param(bytes: &[u8], key: &str) -> Option<String> {
 
 /// Percent-encoding for query parameter values.
 fn url_encode(s: &str) -> String {
-    s.chars().flat_map(|c| {
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
-            vec![c]
+    s.bytes().flat_map(|b| {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            vec![b as char]
         } else {
-            format!("%{:02X}", c as u32).chars().collect()
+            format!("%{:02X}", b).chars().collect()
         }
     }).collect()
 }
@@ -491,8 +491,10 @@ fn build_nodes_json(_ws_cfg: &crate::workspaces::WorkspacesFile, _port: u16) -> 
                 "url":         e.url,
                 "status":      e.status.to_string(),
                 "tags":        e.tags,
+                "isolation":   e.isolation,
                 "sandbox":     e.sandbox,
                 "description": e.description,
+                "workdir":     e.workdir,
             });
             if let Some(ref peer) = e.peer_name {
                 obj["source"]    = serde_json::json!("remote");
@@ -581,11 +583,11 @@ async fn probe_and_update(
         Some(vnodes) => {
             let base_url = peer.url.trim_end_matches('/').split('?').next().unwrap_or(&peer.url);
             let entries: Vec<crate::workspaces::RegistryEntry> = vnodes.iter().map(|vn| {
-                let enc: String = vn.workdir.chars().flat_map(|c| {
-                    if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
-                        vec![c]
+                let enc: String = vn.workdir.bytes().flat_map(|b| {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
+                        vec![b as char]
                     } else {
-                        format!("%{:02X}", c as u32).chars().collect()
+                        format!("%{:02X}", b).chars().collect()
                     }
                 }).collect();
                 crate::workspaces::RegistryEntry {
@@ -595,8 +597,10 @@ async fn probe_and_update(
                     status:         crate::workspaces::NodeStatus::Online,
                     last_seen_secs: crate::workspaces::unix_now_pub(),
                     tags:           vn.tags.clone(),
-                    sandbox:        vn.sandbox,
+                    isolation:      vn.isolation.clone(),
+                    sandbox:        vn.sandbox || matches!(vn.isolation.as_deref(), Some("sandbox")),
                     description:    vn.description.clone(),
+                    workdir:        Some(vn.workdir.clone()),
                 }
             }).collect();
             let n = entries.len();

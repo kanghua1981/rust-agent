@@ -175,11 +175,11 @@ impl Tool for ListNodesTool {
 }
 
 fn urlenc(s: &str) -> String {
-    s.chars().flat_map(|c| {
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
-            vec![c]
+    s.bytes().flat_map(|b| {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            vec![b as char]
         } else {
-            format!("%{:02X}", c as u32).chars().collect()
+            format!("%{:02X}", b).chars().collect()
         }
     }).collect()
 }

@@ -6,10 +6,10 @@
 //!
 //! # [[node]] — a local callable node on THIS machine (workdir required)
 //! [[node]]
-//! name    = "firmware-bk7236"
-//! workdir = "/home/user/firmware/bk7236"
-//! sandbox = true
-//! tags    = ["embedded", "bk7236"]
+//! name      = "firmware-bk7236"
+//! workdir   = "/home/user/firmware/bk7236"
+//! isolation = "sandbox"   # "normal" | "container" | "sandbox"
+//! tags      = ["embedded", "bk7236"]
 //!
 //! # [[peer]] — a remote agent server on ANOTHER machine.
 //! #   Visible only to the server process during startup probe.
@@ -66,6 +66,12 @@ pub struct NodeEntry {
     pub workdir: Option<PathBuf>,
     #[serde(default)]
     pub description: String,
+    /// Preferred: "normal" | "container" | "sandbox".
+    /// When set, takes precedence over the legacy `sandbox` bool.
+    #[serde(default)]
+    pub isolation: Option<String>,
+    /// Legacy shorthand — `sandbox = true` is equivalent to `isolation = "sandbox"`.
+    /// Ignored when `isolation` is set explicitly.
     #[serde(default)]
     pub sandbox: bool,
     #[serde(default)]
@@ -213,13 +219,21 @@ pub fn probe_capabilities(nodes: &[NodeEntry]) -> (NodeCapabilities, Vec<Virtual
 
     let virtual_nodes: Vec<VirtualNodeInfo> = nodes
         .iter()
-        .filter_map(|n| n.workdir.as_ref().map(|wd| VirtualNodeInfo {
-            name: n.name.clone(),
-            workdir: wd.display().to_string(),
-            description: n.description.clone(),
-            isolation: None,
-            sandbox: n.sandbox,
-            tags: n.tags.clone(),
+        .filter_map(|n| n.workdir.as_ref().map(|wd| {
+            // Resolve isolation: explicit field > legacy sandbox bool > None (server default)
+            let isolation = match n.isolation.as_deref() {
+                Some(m) => Some(m.to_string()),
+                None if n.sandbox => Some("sandbox".to_string()),
+                _ => None,
+            };
+            VirtualNodeInfo {
+                name: n.name.clone(),
+                workdir: wd.display().to_string(),
+                description: n.description.clone(),
+                isolation,
+                sandbox: n.sandbox,
+                tags: n.tags.clone(),
+            }
         }))
         .collect();
 
@@ -319,10 +333,17 @@ pub struct RegistryEntry {
     pub last_seen_secs: Option<u64>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Isolation mode: "normal" | "container" | "sandbox".
+    #[serde(default)]
+    pub isolation: Option<String>,
+    /// Legacy compat — derived from `isolation` on construction.
     #[serde(default)]
     pub sandbox: bool,
     #[serde(default)]
     pub description: String,
+    /// Absolute working directory for this node (used by call_node to set ?workdir= param).
+    #[serde(default)]
+    pub workdir: Option<String>,
 }
 
 static NODE_REGISTRY: once_cell::sync::Lazy<std::sync::RwLock<Vec<RegistryEntry>>> =
@@ -345,11 +366,11 @@ fn unix_now() -> Option<u64> {
 pub fn registry_init_local(nodes: &[NodeEntry], port: u16) {
     let entries: Vec<RegistryEntry> = nodes.iter().filter_map(|n| {
         let workdir = n.workdir.as_ref()?;
-        let enc: String = workdir.display().to_string().chars().flat_map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
-                vec![c]
+        let enc: String = workdir.display().to_string().bytes().flat_map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
+                vec![b as char]
             } else {
-                format!("%{:02X}", c as u32).chars().collect()
+                format!("%{:02X}", b).chars().collect()
             }
         }).collect();
         Some(RegistryEntry {
@@ -359,8 +380,14 @@ pub fn registry_init_local(nodes: &[NodeEntry], port: u16) {
             status:        NodeStatus::Online,
             last_seen_secs: unix_now(),
             tags:          n.tags.clone(),
-            sandbox:       n.sandbox,
+            isolation:     match n.isolation.as_deref() {
+                               Some(m) => Some(m.to_string()),
+                               None if n.sandbox => Some("sandbox".to_string()),
+                               _ => None,
+                           },
+            sandbox:       n.sandbox || matches!(n.isolation.as_deref(), Some("sandbox")),
             description:   n.description.clone(),
+            workdir:       Some(workdir.display().to_string()),
         })
     }).collect();
 
@@ -401,8 +428,10 @@ pub fn registry_mark_peer_offline(peer_name: &str, peer_url: &str) {
             status:         NodeStatus::Offline,
             last_seen_secs: None,
             tags:           vec![],
+            isolation:      None,
             sandbox:        false,
             description:    format!("peer '{}' is unreachable", peer_name),
+            workdir:        None,
         });
     }
 }

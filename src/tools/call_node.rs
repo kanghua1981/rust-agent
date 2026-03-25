@@ -94,11 +94,11 @@ fn build_url(base: &str, workdir: Option<&str>, isolation: Option<&str>, token: 
 }
 
 fn url_encode(s: &str) -> String {
-    s.chars().flat_map(|c| {
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
-            vec![c]
+    s.bytes().flat_map(|b| {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
+            vec![b as char]
         } else {
-            format!("%{:02X}", c as u32).chars().collect()
+            format!("%{:02X}", b).chars().collect()
         }
     }).collect()
 }
@@ -114,6 +114,7 @@ enum NodeEvent {
     ToolUse { name: String, input: Value },
     ToolResult { name: String, output: String },
     ConfirmRequest { action: String, details: Option<String> },
+    AskUser(String),
     Done(String),
     Error(String),
     Ready {
@@ -168,6 +169,10 @@ fn parse_event(ev: &Value) -> NodeEvent {
                 ev["data"]["details"].as_str().map(|s| s.to_string())
             };
             NodeEvent::ConfirmRequest { action, details }
+        }
+        Some("ask_user") => {
+            let question = ev["data"]["question"].as_str().unwrap_or("").to_string();
+            NodeEvent::AskUser(question)
         }
         Some("done") | Some("final_response") => {
             let text = ev["data"]["text"].as_str().or_else(|| ev["text"].as_str()).unwrap_or("").to_string();
@@ -616,6 +621,17 @@ impl Tool for CallNodeTool {
                                     let response = json!({
                                         "type": "confirm_response",
                                         "data": { "approved": approved }
+                                    });
+                                    let _ = write.send(Message::Text(response.to_string().into())).await;
+                                }
+                                NodeEvent::AskUser(question) => {
+                                    let output = self.output.clone();
+                                    let answer = tokio::task::spawn_blocking(move || {
+                                        output.ask_user(&question)
+                                    }).await.unwrap_or_default();
+                                    let response = json!({
+                                        "type": "ask_user_response",
+                                        "data": { "answer": answer }
                                     });
                                     let _ = write.send(Message::Text(response.to_string().into())).await;
                                 }
