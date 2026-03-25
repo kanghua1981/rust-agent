@@ -379,83 +379,13 @@ pub fn print_context_status(estimated: usize, max: usize, usage_percent: f32, ms
 /// Print help
 pub fn print_help() {
     println!("\n{}", "Available Commands:".bright_cyan().bold());
-    println!("  {}     - Show this help message", "/help".bright_white());
-    println!(
-        "  {}    - Clear conversation history",
-        "/clear".bright_white()
-    );
-    println!(
-        "  {}    - Show token usage statistics",
-        "/usage".bright_white()
-    );
-    println!(
-        "  {}  - Show context window status",
-        "/context".bright_white()
-    );
-    println!(
-        "  {}     - Save current session",
-        "/save".bright_white()
-    );
-    println!(
-        "  {} - List saved sessions",
-        "/sessions".bright_white()
-    );
-    println!(
-        "  {}   - Skip all confirmations",
-        "/yesall".bright_white()
-    );
-    println!(
-        "  {}  - Re-enable confirmations",
-        "/confirm".bright_white()
-    );
-    println!(
-        "  {}   - List loaded project skills",
-        "/skills".bright_white()
-    );
-    println!(
-        "  {}    - Probe remote agent nodes (workspaces.toml [[remote]])",
-        "/nodes".bright_white()
-    );
-    println!(
-        "  {}   - Show persistent memory",
-        "/memory".bright_white()
-    );
-    println!(
-        "  {}    - List / switch / manage models",
-        "/model".bright_white()
-    );
-    println!(
-        "  {}     - Set execution mode: simple/plan/pipeline/auto",
-        "/mode".bright_white()
-    );
-    println!(
-        "  {}  - View or generate project summary",
-        "/summary".bright_white()
-    );
-    println!(
-        "  {} - Plan before executing (plan/run/show/clear)",
-        "/plan".bright_white()
-    );
-    println!(
-        "  {} - Show sandbox-tracked file changes",
-        "/changes".bright_white()
-    );
-    println!(
-        "  {} - Undo all file changes (sandbox mode)",
-        "/rollback".bright_white()
-    );
-    println!(
-        "  {}   - Accept all changes (sandbox mode)",
-        "/commit".bright_white()
-    );
-    println!(
-        "  {} - Export conversation to Markdown",
-        "/export [file]".bright_white()
-    );
-    println!(
-        "  {}     - Exit the agent",
-        "/quit".bright_white()
-    );
+    for cmd in crate::commands::ALL_COMMANDS {
+        println!(
+            "  {:<30} - {}",
+            cmd.label().bright_white().to_string(),
+            cmd.description,
+        );
+    }
     println!();
     println!("{}", "CLI Flags:".bright_cyan().bold());
     println!(

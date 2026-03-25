@@ -1456,6 +1456,19 @@ async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
     result
 }
 
+/// Percent-encode a token value for use as a URL query-parameter.
+fn probe_url_encode(s: &str) -> String {
+    s.bytes()
+        .flat_map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                vec![b as char]
+            } else {
+                format!("%{:02X}", b).chars().collect()
+            }
+        })
+        .collect()
+}
+
 // ── /nodes command ────────────────────────────────────────────────────────────
 
 /// Probe every `[[remote]]` entry in workspaces.toml, print hierarchical status
@@ -1467,7 +1480,8 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
     use tokio_tungstenite::tungstenite::Message;
 
     let cfg = crate::workspaces::load(project_dir);
-    let remotes = cfg.all_peers();
+    let remotes = cfg.all_peers().to_vec();
+    let cluster_tok = cfg.cluster.token.clone();
 
     if remotes.is_empty() {
         println!(
@@ -1484,14 +1498,18 @@ async fn handle_nodes_command(project_dir: &std::path::Path) {
 
     println!("\n{}", "📡  Probing remote nodes...".bright_cyan());
 
-    for remote in remotes {
+    for remote in &remotes {
         // Use /probe path so the server handles this inline (no worker fork).
         let remote_url = remote.url.as_str();
         let probe_base = crate::workspaces::with_path(remote_url, "/probe");
-        let url = if probe_base.contains('?') {
-            format!("{}&discover=1", probe_base)
-        } else {
-            format!("{}?discover=1", probe_base)
+        // Resolve auth token: peer-level overrides cluster-level.
+        let tok = remote.token.as_deref().or(cluster_tok.as_deref());
+        let url = {
+            let sep = if probe_base.contains('?') { '&' } else { '?' };
+            match tok {
+                Some(t) => format!("{}{}discover=1&token={}", probe_base, sep, probe_url_encode(t)),
+                None    => format!("{}{}discover=1", probe_base, sep),
+            }
         };
 
         let connect_result = tokio::time::timeout(

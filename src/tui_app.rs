@@ -575,32 +575,19 @@ impl TuiApp {
             }
             "/help" | "/h" => {
                 let head = |t: &str| Line::from(vec![Span::styled(t.to_string(), b(Color::Cyan))]);
+                self.push_line(head("── Available Commands ─────────────────────────────────────────"));
+                for cmd in crate::commands::ALL_COMMANDS {
+                    let label = cmd.label();
+                    self.push_line(Line::from(vec![
+                        Span::styled(format!("  {:26}", label), s(Color::White)),
+                        Span::styled(cmd.description.to_string(), s(Color::DarkGray)),
+                    ]));
+                }
+                self.push_line(head("── Keyboard shortcuts ─────────────────────────────────────────"));
                 let item = |label: &'static str, desc: &'static str| Line::from(vec![
-                    Span::styled(format!("  {:22}", label), s(Color::White)),
+                    Span::styled(format!("  {:26}", label), s(Color::White)),
                     Span::styled(desc, s(Color::DarkGray)),
                 ]);
-                self.push_line(head("── Available Commands ─────────────────────────────────────────"));
-                self.push_line(item("/help",         "Show this help (instant, even while busy)"));
-                self.push_line(item("/clear",        "Clear output"));
-                self.push_line(item("/usage",        "Token usage statistics"));
-                self.push_line(item("/context",      "Context window status"));
-                self.push_line(item("/memory",       "Show agent memory"));
-                self.push_line(item("/skills",       "List loaded skills"));
-                self.push_line(item("/model",        "List / switch models"));
-                self.push_line(item("/mode",         "Set execution mode: simple/plan/pipeline/auto"));
-                self.push_line(item("/save",         "Save current session"));
-                self.push_line(item("/sessions",     "List saved sessions"));
-                self.push_line(item("/yesall",       "Auto-approve all operations"));
-                self.push_line(item("/confirm",      "Re-enable confirmations"));
-                self.push_line(item("/summary",      "Generate project summary"));
-                self.push_line(item("/plan <task>",  "Step 1: explore & plan (read-only)"));
-                self.push_line(item("/plan run",     "Step 2: execute the pending plan"));
-                self.push_line(item("/rollback",     "Rollback sandbox changes"));
-                self.push_line(item("/commit",       "Commit sandbox changes"));
-                self.push_line(item("/changes",      "Show sandbox diff"));
-                self.push_line(item("/export [file]", "Export chat to Markdown file"));
-                self.push_line(item("/quit",         "Exit the TUI"));
-                self.push_line(head("── Keyboard shortcuts ─────────────────────────────────────────"));
                 self.push_line(item("PgUp / PgDn",  "Scroll output"));
                 self.push_line(item("Mouse wheel",   "Scroll output"));
                 self.push_line(item("↑ / ↓",        "Command history"));
@@ -969,32 +956,19 @@ async fn handle_tui_slash(
 
         "/help" | "/h" => {
             head!("── Available Commands ─────────────────────────────────────────");
-            item!("/help", "Show this help");
-            item!("/clear", "Clear conversation and output");
-            item!("/usage", "Show token usage");
-            item!("/context", "Show context window status");
-            item!("/memory", "Show agent memory");
-            item!("/skills", "List loaded skills");
-            item!("/model", "List / switch models");
-            item!("/mode", "Set execution mode: simple/plan/pipeline/auto");
-            item!("/save", "Save current session");
-            item!("/sessions", "List saved sessions");
-            item!("/yesall", "Auto-approve all operations");
-            item!("/confirm", "Re-enable confirmations");
-            item!("/summary", "Generate project summary");
-            item!("/plan <task>", "Step 1: explore & plan (read-only, no files changed)");
-            item!("/plan run", "Step 2: execute the pending plan (modifies files)");
-            item!("/rollback", "Rollback sandbox changes");
-            item!("/commit", "Commit sandbox changes");
-            item!("/changes", "Show sandbox diff");
-            item!("/export [file]", "Export chat to Markdown file");
-            item!("/quit", "Exit the TUI");
+            for cmd in crate::commands::ALL_COMMANDS {
+                let label = cmd.label();
+                line!(vec![
+                    Span::styled(format!("  {:26}", label), s(Color::White)),
+                    Span::styled(cmd.description.to_string(), s(Color::DarkGray)),
+                ]);
+            }
             head!("── Keyboard shortcuts ─────────────────────────────────────────");
             item!("PgUp / PgDn", "Scroll output");
             item!("Mouse wheel", "Scroll output");
-            item!("↑ / ↓", "Command history");
-            item!("Ctrl-C", "Interrupt agent");
-            item!("Ctrl-Q", "Quit");
+            item!("↑ / ↓",      "Command history");
+            item!("Ctrl-C",     "Interrupt agent");
+            item!("Ctrl-Q",     "Quit");
         }
 
         "/clear" => {
@@ -1110,6 +1084,133 @@ async fn handle_tui_slash(
         "/confirm" => {
             crate::confirm::set_auto_approve(false);
             line!(vec![Span::styled("🔒 Confirmations re-enabled.", s(Color::Cyan))]);
+        }
+
+        "/nodes" => {
+            use futures::{SinkExt, StreamExt};
+            use tokio_tungstenite::connect_async;
+            use tokio_tungstenite::tungstenite::Message;
+
+            let cfg     = crate::workspaces::load(&agent.project_dir);
+            let remotes = cfg.all_peers().to_vec();
+            let cluster_tok = cfg.cluster.token.clone();
+
+            if remotes.is_empty() {
+                line!(vec![Span::styled(
+                    "📡  No [[peer]] entries in workspaces.toml.",
+                    s(Color::Yellow),
+                )]);
+                line!(vec![Span::raw(
+                    "  Add entries to .agent/workspaces.toml or ~/.config/rust_agent/workspaces.toml"
+                )]);
+            } else {
+                head!("── Remote Nodes ────────────────────────────────────────────────");
+                for remote in &remotes {
+                    let remote_url = remote.url.as_str();
+                    let probe_base = crate::workspaces::with_path(remote_url, "/probe");
+                    let tok = remote.token.as_deref().or(cluster_tok.as_deref());
+                    let url = {
+                        let sep = if probe_base.contains('?') { '&' } else { '?' };
+                        match tok {
+                            Some(t) => format!("{}{}discover=1&token={}", probe_base, sep,
+                                               tui_probe_url_encode(t)),
+                            None    => format!("{}{}discover=1", probe_base, sep),
+                        }
+                    };
+
+                    let connect_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        connect_async(&url),
+                    ).await;
+
+                    match connect_result {
+                        Ok(Ok((ws_stream, _))) => {
+                            let (mut write, mut read) = ws_stream.split();
+                            let ready_result = tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                async {
+                                    while let Some(msg) = read.next().await {
+                                        if let Ok(Message::Text(txt)) = msg {
+                                            if let Ok(ev) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                                if ev["type"] == "ready" { return Some(ev); }
+                                            }
+                                        }
+                                    }
+                                    None
+                                },
+                            ).await;
+                            let _ = write.send(Message::Close(None)).await;
+
+                            match ready_result {
+                                Ok(Some(ref ev)) => {
+                                    let workdir = ev["data"]["workdir"].as_str().unwrap_or("(default)");
+                                    let sb_raw  = ev["data"]["sandbox"].as_bool().unwrap_or(false);
+                                    let sb_str  = if sb_raw { "on " } else { "off" };
+                                    let caps_line = if ev["data"]["caps"].is_object() {
+                                        let c = &ev["data"]["caps"];
+                                        format!("{}/{}  CPU:{} cores  RAM:{} GiB",
+                                            c["os"].as_str().unwrap_or("?"),
+                                            c["arch"].as_str().unwrap_or("?"),
+                                            c["cpu_cores"].as_u64().unwrap_or(0),
+                                            c["ram_gb"].as_u64().unwrap_or(0))
+                                    } else { String::new() };
+                                    let virtual_nodes: Vec<crate::workspaces::VirtualNodeInfo> =
+                                        ev["data"]["virtual_nodes"].as_array()
+                                            .map(|arr| arr.iter()
+                                                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                                                .collect())
+                                            .unwrap_or_default();
+
+                                    // Update global route table.
+                                    if !virtual_nodes.is_empty() {
+                                        let base = remote_url.splitn(2, '?').next().unwrap_or(remote_url);
+                                        crate::workspaces::update_route_table(&remote.name, base, &virtual_nodes);
+                                    }
+
+                                    line!(vec![
+                                        Span::styled("✅ ", s(Color::Green)),
+                                        Span::styled(remote.name.clone(), b(Color::White)),
+                                        Span::raw(format!("  sandbox:{}  {}", sb_str, workdir)),
+                                    ]);
+                                    if !caps_line.is_empty() {
+                                        line!(vec![Span::styled(
+                                            format!("   {}", caps_line), s(Color::DarkGray)
+                                        )]);
+                                    }
+                                    if !virtual_nodes.is_empty() {
+                                        line!(vec![Span::styled("   Virtual nodes:", s(Color::Cyan))]);
+                                        let last = virtual_nodes.len() - 1;
+                                        for (i, vn) in virtual_nodes.iter().enumerate() {
+                                            let prefix = if i == last { "└──" } else { "├──" };
+                                            let sb = if vn.sandbox { "sandbox:on " } else { "sandbox:off" };
+                                            let tags = if vn.tags.is_empty() { String::new() }
+                                                       else { format!("  [{}]", vn.tags.join(", ")) };
+                                            line!(vec![Span::raw(format!(
+                                                "   {} {}  {}  {}{}",
+                                                prefix, vn.name, sb, vn.workdir, tags
+                                            ))]);
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    line!(vec![
+                                        Span::styled("✅ ", s(Color::Green)),
+                                        Span::styled(remote.name.clone(), b(Color::White)),
+                                        Span::styled("  online (no ready data)", s(Color::Yellow)),
+                                    ]);
+                                }
+                            }
+                        }
+                        _ => {
+                            line!(vec![
+                                Span::styled("❌ ", s(Color::Red)),
+                                Span::styled(remote.name.clone(), b(Color::White)),
+                                Span::styled("  offline", s(Color::Red)),
+                            ]);
+                        }
+                    }
+                }
+            }
         }
 
         _ if input == "/summary" || input.starts_with("/summary ") => {
@@ -1603,6 +1704,19 @@ async fn handle_tui_slash(
         }
     }
     false
+}
+
+/// Percent-encode a token for use as a URL query parameter in probe requests.
+fn tui_probe_url_encode(s: &str) -> String {
+    s.bytes()
+        .flat_map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                vec![b as char]
+            } else {
+                format!("%{:02X}", b).chars().collect()
+            }
+        })
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
