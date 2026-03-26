@@ -129,24 +129,29 @@ pub fn load_config(project_dir: &Path) -> McpConfig {
 
 // ── Transport abstraction ─────────────────────────────────────────────────────
 
-/// Unified interface over stdio and HTTP+SSE transports.
+/// Unified interface over stdio, legacy HTTP+SSE, and new Streamable HTTP transports.
 enum McpTransport {
     Stdio(McpConnection),
     Http(McpHttpConnection),
+    /// MCP 2025 "Streamable HTTP" transport — single endpoint, POST returns response
+    /// directly in the HTTP response body (JSON or inline SSE stream).
+    StreamableHttp(McpStreamableHttpConnection),
 }
 
 impl McpTransport {
     async fn list_tools(&mut self) -> Result<Vec<Value>> {
         match self {
-            Self::Stdio(c) => c.list_tools().await,
-            Self::Http(c)  => c.list_tools().await,
+            Self::Stdio(c)          => c.list_tools().await,
+            Self::Http(c)           => c.list_tools().await,
+            Self::StreamableHttp(c) => c.list_tools().await,
         }
     }
 
     async fn call_tool(&mut self, name: &str, arguments: &Value) -> Result<(String, bool)> {
         match self {
-            Self::Stdio(c) => c.call_tool(name, arguments).await,
-            Self::Http(c)  => c.call_tool(name, arguments).await,
+            Self::Stdio(c)          => c.call_tool(name, arguments).await,
+            Self::Http(c)           => c.call_tool(name, arguments).await,
+            Self::StreamableHttp(c) => c.call_tool(name, arguments).await,
         }
     }
 }
@@ -601,7 +606,223 @@ impl Tool for McpClientTool {
     }
 }
 
+// ── MCP 2025 Streamable HTTP transport ───────────────────────────────────────
+//
+// Spec: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
+//
+// A single HTTP endpoint (e.g. `/mcp`) handles both directions:
+//   POST <endpoint>  Content-Type: application/json
+//                    Accept: application/json, text/event-stream
+//     → 200 application/json        — direct JSON-RPC response
+//     → 200 text/event-stream       — inline SSE stream (one or more events)
+//
+// Session management: on the `initialize` response the server may return an
+// `Mcp-Session-Id` header; subsequent requests must echo it back.
+//
+// Auto-detection in `connect_server()`:
+//   1. POST the `initialize` request to the URL as-is.
+//   2. If the server responds with 200 → Streamable HTTP (this struct).
+//   3. If the server responds with 404 / 405 → fall back to legacy HTTP+SSE.
+
+struct McpStreamableHttpConnection {
+    endpoint: String,
+    http: reqwest::Client,
+    session_id: Option<String>,
+    next_id: u64,
+}
+
+impl McpStreamableHttpConnection {
+    /// Try to connect using the Streamable HTTP transport.
+    ///
+    /// Returns `Ok(conn)` if the server speaks the new protocol,
+    /// `Err(..)` if the server returned 404/405 (caller should try legacy SSE).
+    async fn connect(entry: &McpServerEntry, url: &str) -> Result<Self> {
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (k, v) in &entry.headers {
+            let name  = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                .with_context(|| format!("invalid MCP header name: {}", k))?;
+            let value = reqwest::header::HeaderValue::from_str(v)
+                .with_context(|| format!("invalid MCP header value for '{}'", k))?;
+            header_map.insert(name, value);
+        }
+        let http = reqwest::Client::builder()
+            .default_headers(header_map)
+            .build()
+            .context("failed to build HTTP client")?;
+
+        let mut conn = McpStreamableHttpConnection {
+            endpoint: url.trim_end_matches('/').to_string(),
+            http,
+            session_id: None,
+            next_id: 1,
+        };
+
+        let id = conn.next_id();
+        let init_req = json!({
+            "jsonrpc": "2.0", "id": id, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "rust-agent", "version": env!("CARGO_PKG_VERSION") }
+            }
+        });
+
+        let resp = conn.post_raw(&init_req).await?;
+        let status = resp.status();
+
+        // 404 / 405 → server doesn't speak this protocol; signal caller to fall back.
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            bail!("__fallback__: server returned {}", status);
+        }
+        if !status.is_success() {
+            bail!("Streamable HTTP initialize failed with status {}", status);
+        }
+
+        // Extract optional session id.
+        if let Some(sid) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+            conn.session_id = Some(sid.to_string());
+        }
+
+        let result = conn.read_response_body(resp).await?;
+        if result.get("error").is_some() {
+            bail!("MCP initialize error: {}", result["error"]);
+        }
+
+        // Confirmed notification.
+        let _ = conn.post_raw(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).await;
+
+        Ok(conn)
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// POST a JSON-RPC message and return the raw response (status + headers + body).
+    async fn post_raw(&self, msg: &Value) -> Result<reqwest::Response> {
+        let mut req = self.http
+            .post(&self.endpoint)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .json(msg);
+        if let Some(ref sid) = self.session_id {
+            req = req.header("Mcp-Session-Id", sid.as_str());
+        }
+        req.send().await.context("MCP HTTP POST failed")
+    }
+
+    /// Read the response body and extract the first JSON-RPC response object.
+    ///
+    /// The server may respond with:
+    ///   - `application/json`   → body is the response directly.
+    ///   - `text/event-stream`  → one or more `data: <json>` lines; we return
+    ///                            the first object that has an `id` field (the
+    ///                            actual response), ignoring pure notifications.
+    async fn read_response_body(&self, resp: reqwest::Response) -> Result<Value> {
+        let ct = resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+
+        if ct.contains("text/event-stream") {
+            // Parse the inline SSE stream and return the first response message.
+            let text = resp.text().await.context("reading SSE response body")?;
+            for line in text.lines() {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" { continue; }
+                    if let Ok(v) = serde_json::from_str::<Value>(data) {
+                        // Return the first message that looks like a JSON-RPC response.
+                        if v.get("id").is_some() || v.get("result").is_some() || v.get("error").is_some() {
+                            return Ok(v);
+                        }
+                    }
+                }
+            }
+            bail!("no JSON-RPC response found in SSE stream");
+        } else {
+            // Direct JSON response.
+            resp.json::<Value>().await.context("reading JSON response body")
+        }
+    }
+
+    /// POST a request and return the JSON-RPC response value.
+    async fn send_and_recv(&mut self, req: &Value) -> Result<Value> {
+        let resp = self.post_raw(req).await?;
+        if !resp.status().is_success() {
+            bail!("MCP HTTP POST returned {}", resp.status());
+        }
+        self.read_response_body(resp).await
+    }
+
+    async fn list_tools(&mut self) -> Result<Vec<Value>> {
+        let id  = self.next_id();
+        let req = json!({ "jsonrpc": "2.0", "id": id, "method": "tools/list" });
+        let resp = self.send_and_recv(&req).await?;
+        if let Some(err) = resp.get("error") { bail!("tools/list error: {}", err); }
+        Ok(resp["result"]["tools"].as_array().cloned().unwrap_or_default())
+    }
+
+    async fn call_tool(&mut self, name: &str, arguments: &Value) -> Result<(String, bool)> {
+        let id  = self.next_id();
+        let req = json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments }
+        });
+        let resp = self.send_and_recv(&req).await?;
+        if let Some(err) = resp.get("error") {
+            return Ok((format!("MCP error: {}", err), true));
+        }
+        let is_error = resp["result"]["isError"].as_bool().unwrap_or(false);
+        let text = resp["result"]["content"]
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .filter_map(|b| if b["type"] == "text" { b["text"].as_str().map(|s| s.to_string()) } else { None })
+                    .reduce(|a, b| a + "\n" + &b)
+            })
+            .unwrap_or_default();
+        Ok((text, is_error))
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
+
+/// Connect to a list of MCP server entries provided directly (no config file read).
+///
+/// Returns `(tools, errors)` — tools ready to register, plus human-readable
+/// error strings for any servers that failed to connect (so the caller can
+/// report them back to the client without aborting the others).
+pub async fn connect_from_entries(
+    entries: &[McpServerEntry],
+) -> (Vec<Box<dyn Tool + Send + Sync>>, Vec<String>) {
+    let mut tools: Vec<Box<dyn Tool + Send + Sync>> = vec![];
+    let mut errors: Vec<String> = vec![];
+
+    for entry in entries {
+        match connect_server(entry).await {
+            Ok(server_tools) => {
+                tracing::info!(
+                    "MCP client: connected to '{}', {} tool(s) registered",
+                    entry.name,
+                    server_tools.len()
+                );
+                tools.extend(server_tools);
+            }
+            Err(e) => {
+                let msg = format!("server '{}': {:#}", entry.name, e);
+                tracing::warn!("MCP client: skipping {}", msg);
+                eprintln!("[mcp] skipping {}", msg);
+                errors.push(msg);
+            }
+        }
+    }
+
+    (tools, errors)
+}
 
 /// Spawn all configured MCP servers, complete handshakes, list their tools,
 /// and return a flat `Vec<Box<dyn Tool>>` ready to register in `ToolExecutor`.
@@ -641,14 +862,45 @@ async fn connect_server(
 ) -> Result<Vec<Box<dyn Tool + Send + Sync>>> {
     // Dispatch to the appropriate transport.
     let transport: McpTransport = if let Some(base_url) = &entry.url {
-        // HTTP + SSE transport.
-        let conn = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            McpHttpConnection::connect(entry, base_url),
-        )
-        .await
-        .with_context(|| format!("timed out connecting to MCP server '{}'", entry.name))??;
-        McpTransport::Http(conn)
+        // ── HTTP transport: auto-detect protocol version ──────────────────
+        //
+        // 1. Try new "Streamable HTTP" (MCP 2025): POST initialize directly to
+        //    the configured URL.  If the server responds 200 → use this.
+        // 2. If the server returns 404 / 405 → the URL is likely a base URL for
+        //    the legacy HTTP+SSE protocol; connect to <base>/sse instead.
+        let url_clean = base_url.trim_end_matches('/');
+
+        // Only attempt Streamable HTTP if the URL does NOT already look like a
+        // legacy SSE endpoint (i.e., doesn't end in /sse or /messages).
+        let skip_streamable = url_clean.ends_with("/sse") || url_clean.ends_with("/messages");
+
+        if !skip_streamable {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                McpStreamableHttpConnection::connect(entry, url_clean),
+            ).await {
+                Ok(Ok(conn)) => {
+                    tracing::info!(
+                        "MCP server '{}': using Streamable HTTP transport (2025)",
+                        entry.name
+                    );
+                    McpTransport::StreamableHttp(conn)
+                }
+                Ok(Err(e)) if e.to_string().starts_with("__fallback__") => {
+                    // Server explicitly rejected with 404/405 → fall through to legacy SSE.
+                    tracing::debug!(
+                        "MCP server '{}': Streamable HTTP not supported, falling back to legacy SSE",
+                        entry.name
+                    );
+                    connect_legacy_sse(entry, url_clean).await?
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => bail!("timed out connecting to MCP server '{}' (Streamable HTTP)", entry.name),
+            }
+        } else {
+            // URL explicitly points to /sse — use legacy protocol directly.
+            connect_legacy_sse(entry, url_clean).await?
+        }
     } else {
         // stdio transport.
         if entry.command.is_empty() {
@@ -691,4 +943,16 @@ async fn connect_server(
         .collect();
 
     Ok(tools)
+}
+
+/// Connect using the legacy HTTP+SSE transport (MCP pre-2025).
+async fn connect_legacy_sse(entry: &McpServerEntry, url_clean: &str) -> Result<McpTransport> {
+    let conn = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        McpHttpConnection::connect(entry, url_clean),
+    )
+    .await
+    .with_context(|| format!("timed out connecting to MCP server '{}' (legacy SSE)", entry.name))??;
+    tracing::info!("MCP server '{}': using legacy HTTP+SSE transport", entry.name);
+    Ok(McpTransport::Http(conn))
 }

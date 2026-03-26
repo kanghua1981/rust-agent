@@ -166,6 +166,62 @@ impl ToolExecutor {
         }
     }
 
+    /// Connect to a list of MCP server entries supplied at runtime (e.g. from
+    /// a `load_mcp` WebSocket message) and register their tools.
+    ///
+    /// Returns `(loaded_tool_names, error_strings)`.  Existing tools with
+    /// conflicting names are **overwritten** so the client can reload a server
+    /// with updated credentials without needing to reconnect.
+    pub async fn load_mcp_from_entries(
+        &mut self,
+        entries: &[crate::mcp_client::McpServerEntry],
+    ) -> (Vec<String>, Vec<String>) {
+        let (mcp_tools, errors) =
+            crate::mcp_client::connect_from_entries(entries).await;
+        let mut loaded = Vec::new();
+        for tool in mcp_tools {
+            let name = tool.definition().name.clone();
+            tracing::info!("MCP tool registered (dynamic): {name}");
+            loaded.push(name.clone());
+            self.tools.insert(name, tool);
+        }
+        (loaded, errors)
+    }
+
+    /// Remove all tools whose name starts with `<prefix>__`.
+    ///
+    /// Used to unload a specific MCP server without tearing down the whole
+    /// connection.  Returns the names of the tools that were removed.
+    pub fn unload_mcp_by_prefix(&mut self, prefix: &str) -> Vec<String> {
+        let full_prefix = format!("{}__", prefix);
+        let to_remove: Vec<String> = self
+            .tools
+            .keys()
+            .filter(|k| k.starts_with(&full_prefix))
+            .cloned()
+            .collect();
+        for key in &to_remove {
+            self.tools.remove(key);
+        }
+        to_remove
+    }
+
+    /// Return `(name, description)` pairs for all currently-registered MCP
+    /// tools (i.e. those whose name contains `__`, the server-prefix separator).
+    pub fn list_mcp_tools(&self) -> Vec<(String, String)> {
+        let mut items: Vec<(String, String)> = self
+            .tools
+            .iter()
+            .filter(|(k, _)| k.contains("__"))
+            .map(|(_, t)| {
+                let def = t.definition();
+                (def.name.clone(), def.description.clone())
+            })
+            .collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        items
+    }
+
     /// Update the working directory used by all tools.
     pub fn set_project_dir(&mut self, dir: PathBuf) {
         self.project_dir = dir;

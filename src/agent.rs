@@ -151,6 +151,27 @@ impl Agent {
         self.tool_executor.load_mcp_tools().await;
     }
 
+    /// Connect to the supplied MCP server entries and register their tools.
+    /// Used by server/worker mode where the client sends a `load_mcp` message.
+    /// Returns `(loaded_tool_names, error_strings)`.
+    pub async fn load_mcp_from_entries(
+        &mut self,
+        entries: &[crate::mcp_client::McpServerEntry],
+    ) -> (Vec<String>, Vec<String>) {
+        self.tool_executor.load_mcp_from_entries(entries).await
+    }
+
+    /// Unload all tools belonging to the MCP server identified by `prefix`.
+    /// Returns the names of the removed tools.
+    pub fn unload_mcp(&mut self, prefix: &str) -> Vec<String> {
+        self.tool_executor.unload_mcp_by_prefix(prefix)
+    }
+
+    /// Return `(name, description)` pairs for all currently-loaded MCP tools.
+    pub fn list_mcp_tools(&self) -> Vec<(String, String)> {
+        self.tool_executor.list_mcp_tools()
+    }
+
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);

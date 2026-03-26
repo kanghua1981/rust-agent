@@ -341,6 +341,13 @@ enum ControlCmd {
     SandboxCommit,
     SandboxCommitFile(String),
     SandboxRollback,
+    /// Connect to the supplied MCP servers and register their tools.
+    /// Entries are supplied by the client at runtime (may include secrets).
+    LoadMcp(Vec<crate::mcp_client::McpServerEntry>),
+    /// Unload all tools registered under the given MCP server prefix.
+    UnloadMcp(String),
+    /// List all currently-loaded MCP tool names.
+    ListMcpTools,
 }
 
 async fn handle_control_cmd(
@@ -474,6 +481,33 @@ async fn handle_control_cmd(
                 "enabled": !agent.sandbox.is_disabled,
                 "backend": agent.sandbox.backend_label_sync(),
                 "pending_changes": 0,
+            }));
+        }
+
+        ControlCmd::LoadMcp(entries) => {
+            let (loaded, errors) = agent.load_mcp_from_entries(&entries).await;
+            ws_output.emit_public("mcp_loaded", serde_json::json!({
+                "tools": loaded,
+                "errors": errors,
+            }));
+        }
+
+        ControlCmd::UnloadMcp(prefix) => {
+            let removed = agent.unload_mcp(&prefix);
+            ws_output.emit_public("mcp_unloaded", serde_json::json!({
+                "prefix": prefix,
+                "removed": removed,
+            }));
+        }
+
+        ControlCmd::ListMcpTools => {
+            let tools: Vec<serde_json::Value> = agent
+                .list_mcp_tools()
+                .into_iter()
+                .map(|(name, description)| serde_json::json!({ "name": name, "description": description }))
+                .collect();
+            ws_output.emit_public("mcp_tools_list", serde_json::json!({
+                "tools": tools,
             }));
         }
     }
@@ -627,6 +661,51 @@ fn dispatch_ws_message(
             }
         }
         "sandbox_rollback"     => { let _ = ctrl_tx.send(ControlCmd::SandboxRollback); }
+
+        // ── MCP dynamic loading ───────────────────────────────────────────────
+        // Message format:
+        //   { "type": "load_mcp",
+        //     "data": { "servers": [ { "name": "github", "command": "npx",
+        //                             "args": [...], "env": { "TOKEN": "..." } },
+        //                           { "name": "remote", "url": "http://...",
+        //                             "headers": { "Authorization": "Bearer ..." } } ] } }
+        "load_mcp" => {
+            let servers_val = msg.get("data")
+                .and_then(|d| d.get("servers"))
+                .cloned()
+                .unwrap_or(serde_json::json!([]));
+            match serde_json::from_value::<Vec<crate::mcp_client::McpServerEntry>>(servers_val) {
+                Ok(entries) if !entries.is_empty() => {
+                    let _ = ctrl_tx.send(ControlCmd::LoadMcp(entries));
+                }
+                Ok(_) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": "load_mcp: 'data.servers' is empty or missing"
+                    }));
+                }
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("load_mcp: failed to parse servers: {}", e)
+                    }));
+                }
+            }
+        }
+
+        // Message format:
+        //   { "type": "unload_mcp", "data": { "prefix": "github" } }
+        "unload_mcp" => {
+            if let Some(prefix) = msg.get("data").and_then(|d| d.get("prefix")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::UnloadMcp(prefix.to_string()));
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "unload_mcp: missing 'data.prefix'"
+                }));
+            }
+        }
+
+        // Message format:
+        //   { "type": "list_mcp_tools" }
+        "list_mcp_tools" => { let _ = ctrl_tx.send(ControlCmd::ListMcpTools); }
 
         "cancel" => {
             crate::agent::request_interrupt();
