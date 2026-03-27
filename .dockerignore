@@ -1,0 +1,32 @@
+# Build artifacts — largest directories, exclude first
+target/
+
+# Git metadata
+.git/
+.gitignore
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Frontend sub-projects (not needed for the backend image)
+tauri-app/
+web-ui/
+vscode-extension/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets — never bake these into the image
+.env
+.env.*
+*.key
+*.pem
+
+# OS noise
+.DS_Store
+Thumbs.db

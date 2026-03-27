@@ -1,0 +1,24 @@
+# ~/.config/rust_agent/mcp.toml
+#
+# MCP server definitions baked into the image.
+# Only put servers here that require NO private credentials.
+# Servers requiring API keys / tokens should be loaded at runtime by the
+# frontend via the `load_mcp` WebSocket message — those credentials are
+# never stored on disk.
+#
+# ── stdio transport (local subprocess) ───────────────────────────────────────
+# Requires nodejs/npm installed in the image or on the host.
+# Not included by default — add to Dockerfile if needed.
+#
+# [[server]]
+# name    = "filesystem"
+# command = "npx"
+# args    = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+#
+# ── HTTP / Streamable-HTTP transport (remote server) ─────────────────────────
+# The client auto-detects the protocol version (MCP 2025 Streamable HTTP or
+# legacy HTTP+SSE).  No configuration change is needed when the server upgrades.
+#
+# [[server]]
+# name = "my-internal-tools"
+# url  = "http://host.docker.internal:8765"

@@ -1,0 +1,76 @@
+services:
+  agent:
+    image: rust-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rust-agent
+
+    # ── Startup command ──────────────────────────────────────────────────────
+    # Overrides the Dockerfile CMD.  Remove the '#' to customize.
+    # Default (from Dockerfile): --mode server --host 0.0.0.0 --port 9527
+    # command: ["--mode", "server", "--host", "0.0.0.0", "--port", "9527"]
+    #
+    # Other examples:
+    #   Specify model:      ["--mode", "server", "--port", "9527", "--model", "claude-opus-4-5"]
+    #   Enable verbose log: ["--mode", "server", "--port", "9527", "--verbose"]
+    #   Change isolation:   ["--mode", "server", "--port", "9527", "--isolation", "sandbox"]
+
+    # ── Ports ────────────────────────────────────────────────────────────────
+    ports:
+      - "9527:9527"   # WebSocket server
+
+    # ── Environment variables ────────────────────────────────────────────────
+    # API keys — supply via a .env file next to this compose file (never commit it).
+    # Copy .env.example to .env and fill in your keys.
+    environment:
+      # LLM provider selection (anthropic / openai / compatible)
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+
+      # API keys (at least one must be set)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY:    ${OPENAI_API_KEY:-}
+
+      # Optional: custom base URL for compatible providers (e.g. Ollama, vLLM)
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+
+      # Optional: cluster token — require clients to authenticate
+      # AGENT_CLUSTER_TOKEN: ${AGENT_CLUSTER_TOKEN:-}
+
+    # ── Volumes ──────────────────────────────────────────────────────────────
+    volumes:
+      # Project directory — mount your code repo here.
+      # The agent will use this as the default working directory.
+      - ${PROJECT_DIR:-./workspace}:/workspace
+
+      # Optional: override the entire agent config directory.
+      # - ./my-agent-config:/root/.config/rust_agent
+
+      # ── Fine-grained overrides (pick what you need) ──────────────────────
+      # Global system prompt (appended to default; start with "# OVERRIDE" to replace).
+      # - ./config/system_prompt.md:/root/.config/rust_agent/system_prompt.md:ro
+
+      # Custom models / MCP config.
+      # - ./config/models.toml:/root/.config/rust_agent/models.toml:ro
+      # - ./config/mcp.toml:/root/.config/rust_agent/mcp.toml:ro
+
+    # ── Runtime ──────────────────────────────────────────────────────────────
+    restart: unless-stopped
+
+    # Sandbox / container isolation requires these capabilities when using
+    # the built-in overlayfs sandbox mode.  Remove if not using --sandbox.
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+
+    # ── Health check ─────────────────────────────────────────────────────────
+    # The /probe WebSocket endpoint returns a ready frame immediately.
+    healthcheck:
+      test: ["CMD", "sh", "-c",
+             "echo '{\"type\":\"ping\"}' | timeout 2 \
+              nc -q1 localhost 9527 || exit 1"]
+      interval: 30s
+      timeout:  5s
+      retries:  3
+      start_period: 10s
