@@ -922,7 +922,7 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ### 无需确认的操作
 
-`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`read_ebook`、`think`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services` — 所有只读工具不需要确认。
+`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`think`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services` — 所有只读工具不需要确认。
 
 ---
 
@@ -1259,7 +1259,6 @@ url  = "ws://raspberrypi.local:9527"
 | `list_directory` | 📂 | 列出目录内容 | ❌ |
 | `think` | 💭 | 内部推理（无副作用） | ❌ |
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
-| `read_ebook` | 📕 | 电子书读取（MOBI/EPUB/AZW3） | ❌ |
 | `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
 | `call_node` | 🤖 | 委派任务给其他 Agent 节点（按名/URL/标签路由），manager 专用 | ✅ |
 | `list_nodes` | 📶 | 列出当前可用的 Agent 节点（含在线状态），manager 专用 | ❌ |
@@ -1278,7 +1277,6 @@ url  = "ws://raspberrypi.local:9527"
 | 工具 | 后端 | 安装方式 |
 |------|------|----------|
 | `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |
-| `read_ebook` | ebook-convert → pandoc | `apt install calibre` / `apt install pandoc` |
 | `browser` | Chrome / Chromium（headless CDP） | `apt install chromium` / `snap install chromium` |
 
 ---

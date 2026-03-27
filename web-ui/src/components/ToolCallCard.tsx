@@ -4,7 +4,7 @@ import { ToolCall } from '../types/agent';
 const toolIcons: Record<string, string> = {
   read_file: '📖', write_file: '✏️', edit_file: '✏️', multi_edit_file: '✏️',
   run_command: '🔨', list_dir: '📂', search: '🔍', think: '🤔',
-  batch_read: '📚', browser: '🌐', read_pdf: '📄', read_ebook: '📕',
+  batch_read: '📚', browser: '🌐', read_pdf: '📄',
 };
 
 const statusStyles: Record<string, { bg: string; color: string; border: string; label: string }> = {

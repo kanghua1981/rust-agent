@@ -726,7 +726,7 @@ Agent 在执行以下操作前会要求确认：
 
 也可以通过 `--yes` 启动参数或 `/yesall` 命令全局跳过。auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什么。
 
-只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`read_pdf`、`read_ebook`、`think`、`file_search`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services`）不需要确认。
+只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`read_pdf`、`think`、`file_search`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services`）不需要确认。
 
 ---
 
@@ -891,7 +891,6 @@ src/
     ├── list_dir.rs        # 📂 列出目录内容（含文件大小、权限）
     ├── think.rs           # 💭 内部推理（无副作用，不消耗工具配额）
     ├── read_pdf.rs        # 📄 PDF 文本提取（marker / pdftotext / mutool）
-    ├── read_ebook.rs      # 📕 电子书读取（Calibre ebook-convert / pandoc）
     ├── browser.rs         # 🌐 浏览器自动化（Chrome DevTools Protocol）
     ├── call_node.rs       # 🤖 Agent 任务委派（名称/URL/标签路由，manager 专用）
     ├── list_nodes.rs      # 📶 查看可用 Agent 节点（含在线状态，manager 专用）
@@ -944,7 +943,6 @@ src/
 | `list_directory` | 📂 | 列出目录内容（含大小/权限） | ❌ |
 | `think` | 💭 | 内部推理，无副作用 | ❌ |
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
-| `read_ebook` | 📕 | 电子书读取（MOBI/EPUB/AZW3 等） | ❌ |
 | `call_node` | 🤖 | 委派任务给其他 Agent 节点（按名/URL/标签路由） | ✅ |
 | `list_nodes` | 📶 | 列出当前可用的 Agent 节点 | ❌ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
@@ -963,7 +961,6 @@ src/
 | 工具 | 后端 | 安装方式 |
 |------|------|----------|
 | `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |
-| `read_ebook` | ebook-convert → pandoc | `apt install calibre` / `apt install pandoc` |
 
 ---
 

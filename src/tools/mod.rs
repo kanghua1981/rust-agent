@@ -8,7 +8,6 @@ pub mod list_dir;
 pub mod batch_read;
 pub mod think;
 pub mod read_pdf;
-pub mod read_ebook;
 pub mod load_skill;
 pub mod create_skill;
 pub mod call_node;
@@ -96,7 +95,6 @@ impl ToolExecutor {
         executor.register(Box::new(batch_read::BatchReadFilesTool));
         executor.register(Box::new(think::ThinkTool));
         executor.register(Box::new(read_pdf::ReadPdfTool));
-        executor.register(Box::new(read_ebook::ReadEbookTool));
         executor.register(Box::new(load_skill::LoadSkillTool));
         executor.register(Box::new(create_skill::CreateSkillTool));
         executor.register(Box::new(browser::BrowserTool::new()));
@@ -252,7 +250,6 @@ impl ToolExecutor {
             "grep_search",
             "file_search",
             "think",
-            "read_ebook",
             "load_skill",
             "run_command",
             "browser",

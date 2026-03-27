@@ -89,8 +89,6 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
         "list_directory" => "📂",
         "read_pdf" => "📄",
         "think" => "💭",
-        "fetch_url" => "🌐",
-        "read_ebook" => "📕",
         "load_skill" => "🎓",
         "create_skill" => "📝",
         _ => "🔨",
@@ -209,16 +207,6 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
             if let Some(thought) = input.get("thought").and_then(|v| v.as_str()) {
                 let preview = truncate_str(thought, 100);
                 println!("   {}", preview.dimmed());
-            }
-        }
-        "fetch_url" => {
-            if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
-                println!("   {} {}", "URL:".dimmed(), url.bright_white());
-            }
-        }
-        "read_ebook" => {
-            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                println!("   {} {}", "Path:".dimmed(), path.bright_white());
             }
         }
         "load_skill" => {

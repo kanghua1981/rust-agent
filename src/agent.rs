@@ -1148,12 +1148,6 @@ Summary:"#,
             "think" => {
                 // No memory update for think — it's internal reasoning
             }
-            "read_ebook" => {
-                if !path.is_empty() {
-                    self.memory.touch_file(path, "read (ebook)");
-                    self.memory.log_action(&format!("read ebook {}", path));
-                }
-            }
             _ => {}
         }
 
