@@ -11,12 +11,19 @@ pub enum Role {
     System,
 }
 
-/// A content block in a message (text or tool use/result)
+/// A content block in a message (text, image, or tool use/result)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+
+    #[serde(rename = "image")]
+    Image {
+        source: ImageSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
 
     #[serde(rename = "tool_use")]
     ToolUse {
@@ -39,6 +46,17 @@ pub enum ContentBlock {
     /// when building Anthropic-format messages.
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
+}
+
+/// Source of an image content block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ImageSource {
+    #[serde(rename = "base64")]
+    Base64 {
+        media_type: String,
+        data: String,
+    },
 }
 
 /// A single message in the conversation
@@ -93,6 +111,13 @@ impl Message {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Check if this message contains image content
+    pub fn has_images(&self) -> bool {
+        self.content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. }))
     }
 
     /// Check if this message contains tool use requests

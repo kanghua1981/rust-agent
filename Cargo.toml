@@ -81,5 +81,8 @@ tokio-tungstenite = "0.24"
 # Text diffing (used by sandbox to show overlay changes)
 similar = "2"
 
+# Base64 encoding for image upload
+base64 = "0.21"
+
 # Browser automation with CDP
 chromiumoxide = "0.9.1"

@@ -4,7 +4,7 @@
 //! automatically truncates or summarizes when approaching the
 //! model's context window limit.
 
-use crate::conversation::{ContentBlock, Conversation, Message};
+use crate::conversation::{ContentBlock, Conversation, ImageSource, Message};
 
 /// Estimated max context tokens for different models
 pub fn max_context_tokens(model: &str) -> usize {
@@ -66,6 +66,17 @@ fn estimate_message_tokens(msg: &Message) -> usize {
         .iter()
         .map(|block| match block {
             ContentBlock::Text { text } => estimate_tokens(text),
+            ContentBlock::Image { source, .. } => {
+                // Estimate tokens for image based on base64 data size
+                // For OpenAI vision models, each image token represents a 512x512 tile
+                // We'll use a rough estimate: 85 tokens per 1000 base64 characters
+                match source {
+                    ImageSource::Base64 { data, .. } => {
+                        // Rough estimate: 85 tokens per 1000 base64 chars
+                        (data.len() * 85 / 1000).max(1)
+                    }
+                }
+            }
             ContentBlock::ToolUse { name, input, .. } => {
                 estimate_tokens(name) + estimate_tokens(&input.to_string())
             }
@@ -279,6 +290,9 @@ pub fn build_truncation_context(messages: &[Message]) -> String {
                 }
                 ContentBlock::Thinking { .. } => {
                     // Skip thinking blocks in context summary (they can be very long)
+                }
+                ContentBlock::Image { .. } => {
+                    parts.push(format!("[Msg {}] {}: [Image content]", i + 1, role));
                 }
             }
         }

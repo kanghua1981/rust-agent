@@ -2,11 +2,11 @@
 //! context window management, and operation confirmation.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 /// Set by the Ctrl-C handler; checked between tool calls so the agent
 /// can stop cleanly without leaving the conversation in an invalid state.
 static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -42,7 +42,7 @@ pub fn is_guidance_requested() -> bool {
 use crate::config::{Config, Provider};
 use crate::confirm::ConfirmAction;
 use crate::context;
-use crate::conversation::{ContentBlock, Conversation, Message};
+use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
 use crate::llm::{self, LlmClient};
 use crate::memory::Memory;
 use crate::model_manager;
@@ -262,6 +262,34 @@ impl Agent {
         }
         
         agent
+    }
+
+    /// Read an image file and convert it to base64 format
+    fn read_image_to_base64(&self, path: &Path) -> anyhow::Result<(String, String)> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        
+        // Read file
+        let data = std::fs::read(path)
+            .with_context(|| format!("Failed to read image file: {}", path.display()))?;
+
+        // Detect MIME type from file extension
+        let mime_type = match path.extension().and_then(|ext: &std::ffi::OsStr| ext.to_str()) {
+            Some(ext) => match ext.to_lowercase().as_str() {
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                "tiff" | "tif" => "image/tiff",
+                _ => anyhow::bail!("Unsupported image format: {}", ext),
+            },
+            None => anyhow::bail!("File has no extension: {}", path.display()),
+        };
+
+        // Encode to base64
+        let base64_data = STANDARD.encode(&data);
+
+        Ok((mime_type.to_string(), base64_data))
     }
 
     /// Get or create a session ID for persistence
@@ -837,6 +865,43 @@ impl Agent {
 
                 // Record to persistent memory
                 self.record_tool_to_memory(&tool_name, &tool_input, &result);
+
+                // Special handling for upload_image tool
+                if tool_name == "upload_image" && !result.is_error {
+                    // Try to extract image path from tool input
+                    if let Some(path_value) = tool_input.get("path") {
+                        if let Some(path_str) = path_value.as_str() {
+                            // Resolve path relative to project directory
+                            let path = if path_str.starts_with('/') {
+                                std::path::Path::new(path_str).to_path_buf()
+                            } else {
+                                self.project_dir.join(path_str)
+                            };
+                            
+                            // Try to read and encode the image
+                            if let Ok((mime_type, base64_data)) = self.read_image_to_base64(&path) {
+                                // Create an Image content block
+                                let image_block = ContentBlock::Image {
+                                    source: ImageSource::Base64 {
+                                        media_type: mime_type,
+                                        data: base64_data,
+                                    },
+                                    mime_type: None,
+                                };
+                                
+                                // Create a message with the image
+                                let image_message = Message {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: Role::User,
+                                    content: vec![image_block],
+                                };
+                                
+                                // Add the image message to conversation
+                                self.conversation.add_message(image_message);
+                            }
+                        }
+                    }
+                }
 
                 // Add tool result to conversation
                 self.conversation.add_message(Message::tool_result(

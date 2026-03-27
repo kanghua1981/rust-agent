@@ -100,27 +100,75 @@ impl OpenAIClient {
         for msg in &conversation.messages {
             match msg.role {
                 crate::conversation::Role::User => {
-                    // Check for tool results
-                    for block in &msg.content {
-                        match block {
-                            ContentBlock::Text { text } => {
-                                messages.push(serde_json::json!({
-                                    "role": "user",
-                                    "content": text,
-                                }));
+                    // Check if message contains images
+                    if msg.has_images() {
+                        // For messages with images, we need to build a content array
+                        let mut content = Vec::new();
+                        
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    content.push(serde_json::json!({
+                                        "type": "text",
+                                        "text": text,
+                                    }));
+                                }
+                                ContentBlock::Image { source, mime_type: _ } => {
+                                    match source {
+                                        crate::conversation::ImageSource::Base64 { media_type, data } => {
+                                            content.push(serde_json::json!({
+                                                "type": "image_url",
+                                                "image_url": {
+                                                    "url": format!("data:{};base64,{}", media_type, data),
+                                                }
+                                            }));
+                                        }
+                                    }
+                                }
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content: tool_content,
+                                    ..
+                                } => {
+                                    messages.push(serde_json::json!({
+                                        "role": "tool",
+                                        "tool_call_id": tool_use_id,
+                                        "content": tool_content,
+                                    }));
+                                }
+                                _ => {}
                             }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                ..
-                            } => {
-                                messages.push(serde_json::json!({
-                                    "role": "tool",
-                                    "tool_call_id": tool_use_id,
-                                    "content": content,
-                                }));
+                        }
+                        
+                        if !content.is_empty() {
+                            messages.push(serde_json::json!({
+                                "role": "user",
+                                "content": content,
+                            }));
+                        }
+                    } else {
+                        // For text-only messages, handle as before
+                        for block in &msg.content {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    messages.push(serde_json::json!({
+                                        "role": "user",
+                                        "content": text,
+                                    }));
+                                }
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    ..
+                                } => {
+                                    messages.push(serde_json::json!({
+                                        "role": "tool",
+                                        "tool_call_id": tool_use_id,
+                                        "content": content,
+                                    }));
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 }
