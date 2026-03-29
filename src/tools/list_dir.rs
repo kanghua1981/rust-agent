@@ -37,38 +37,35 @@ impl Tool for ListDirTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let path = resolve_path(path, project_dir);
+        let path = resolve_path_old(path, project_dir);
 
-        if !path.exists() {
-            return ToolResult::error(format!("Directory '{}' does not exist", path.display()));
-        }
+        self.list_dir_internal(&path, recursive).await
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let path = input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
+        let recursive = input
+            .get("recursive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        if !path.is_dir() {
-            return ToolResult::error(format!("'{}' is not a directory", path.display()));
-        }
-
-        let max_depth = if recursive { 3 } else { 1 };
-        let mut entries = Vec::new();
-
-        if let Err(e) = list_dir_recursive(&path, &path, 0, max_depth, &mut entries).await {
+        // Check if path is allowed (for sandbox mode)
+        if !path_manager.is_path_allowed(path) {
             return ToolResult::error(format!(
-                "Failed to list directory '{}': {}",
-                path.display(),
-                e
+                "Access denied: '{}' is outside the allowed directory.",
+                path
             ));
         }
 
-        if entries.is_empty() {
-            return ToolResult::success(format!("Directory '{}' is empty", path.display()));
-        }
-
-        let result = format!(
-            "Contents of '{}':\n\n{}",
-            path.display(),
-            entries.join("\n")
-        );
-
-        ToolResult::success(result)
+        let resolved_path = path_manager.resolve(path);
+        self.list_dir_internal(&resolved_path, recursive).await
     }
 }
 
@@ -147,7 +144,43 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
+impl ListDirTool {
+    async fn list_dir_internal(&self, path: &Path, recursive: bool) -> ToolResult {
+        if !path.exists() {
+            return ToolResult::error(format!("Directory '{}' does not exist", path.display()));
+        }
+
+        if !path.is_dir() {
+            return ToolResult::error(format!("'{}' is not a directory", path.display()));
+        }
+
+        let max_depth = if recursive { 3 } else { 1 };
+        let mut entries = Vec::new();
+
+        if let Err(e) = list_dir_recursive(path, path, 0, max_depth, &mut entries).await {
+            return ToolResult::error(format!(
+                "Failed to list directory '{}': {}",
+                path.display(),
+                e
+            ));
+        }
+
+        if entries.is_empty() {
+            return ToolResult::success(format!("Directory '{}' is empty", path.display()));
+        }
+
+        let result = format!(
+            "Contents of '{}':\n\n{}",
+            path.display(),
+            entries.join("\n")
+        );
+
+        ToolResult::success(result)
+    }
+}
+
+// Keep old resolve_path for backward compatibility
+fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()

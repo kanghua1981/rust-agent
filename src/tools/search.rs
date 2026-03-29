@@ -6,6 +6,9 @@ use tokio::process::Command;
 /// Tool for searching file contents using grep/ripgrep
 pub struct GrepSearchTool;
 
+/// Tool for finding files by name/pattern
+pub struct FileSearchTool;
+
 #[async_trait::async_trait]
 impl Tool for GrepSearchTool {
     fn definition(&self) -> ToolDefinition {
@@ -62,6 +65,59 @@ impl Tool for GrepSearchTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(50) as usize;
 
+        self.grep_search_internal(pattern, search_path, include, case_sensitive, max_results, project_dir).await
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing required parameter: pattern"),
+        };
+
+        let search_path = input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
+
+        let include = input.get("include").and_then(|v| v.as_str());
+        let case_sensitive = input
+            .get("case_sensitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let max_results = input
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50) as usize;
+
+        // Check if search path is allowed (for sandbox mode)
+        if !path_manager.is_path_allowed(search_path) {
+            return ToolResult::error(format!(
+                "Access denied: '{}' is outside the allowed directory.",
+                search_path
+            ));
+        }
+
+        let resolved_path = path_manager.resolve(search_path);
+        let working_dir = path_manager.working_dir();
+
+        self.grep_search_internal(pattern, &resolved_path.to_string_lossy(), include, case_sensitive, max_results, working_dir).await
+    }
+}
+
+impl GrepSearchTool {
+    async fn grep_search_internal(
+        &self,
+        pattern: &str,
+        search_path: &str,
+        include: Option<&str>,
+        case_sensitive: bool,
+        max_results: usize,
+        working_dir: &Path,
+    ) -> ToolResult {
         // Try ripgrep first, fall back to grep
         let (cmd_name, args) = if which_exists("rg") {
             let mut args = vec![
@@ -108,7 +164,7 @@ impl Tool for GrepSearchTool {
 
         let output = Command::new(cmd_name)
             .args(&args)
-            .current_dir(project_dir)
+            .current_dir(working_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -134,9 +190,6 @@ impl Tool for GrepSearchTool {
         }
     }
 }
-
-/// Tool for finding files by name/pattern
-pub struct FileSearchTool;
 
 #[async_trait::async_trait]
 impl Tool for FileSearchTool {
@@ -172,6 +225,46 @@ impl Tool for FileSearchTool {
             .and_then(|v| v.as_str())
             .unwrap_or(".");
 
+        self.file_search_internal(pattern, search_path, project_dir).await
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing required parameter: pattern"),
+        };
+
+        let search_path = input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
+
+        // Check if search path is allowed (for sandbox mode)
+        if !path_manager.is_path_allowed(search_path) {
+            return ToolResult::error(format!(
+                "Access denied: '{}' is outside the allowed directory.",
+                search_path
+            ));
+        }
+
+        let resolved_path = path_manager.resolve(search_path);
+        let working_dir = path_manager.working_dir();
+
+        self.file_search_internal(pattern, &resolved_path.to_string_lossy(), working_dir).await
+    }
+}
+
+impl FileSearchTool {
+    async fn file_search_internal(
+        &self,
+        pattern: &str,
+        search_path: &str,
+        working_dir: &Path,
+    ) -> ToolResult {
         // Use find command for reliable cross-platform file search
         let output = Command::new("find")
             .arg(search_path)
@@ -188,7 +281,7 @@ impl Tool for FileSearchTool {
             .arg("*/.git/*")
             .arg("-type")
             .arg("f")
-            .current_dir(project_dir)
+            .current_dir(working_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()

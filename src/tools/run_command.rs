@@ -48,6 +48,56 @@ impl Tool for RunCommandTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(60);
 
+        self.run_command_internal(command, working_dir, timeout_secs, project_dir).await
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let command = match input.get("command").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => return ToolResult::error("Missing required parameter: command"),
+        };
+
+        let working_dir = input
+            .get("working_dir")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let timeout_secs = input
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60);
+
+        // If working_dir is provided, resolve it using path manager
+        let resolved_working_dir = if let Some(dir) = &working_dir {
+            // Check if path is allowed (for sandbox mode)
+            if !path_manager.is_path_allowed(dir) {
+                return ToolResult::error(format!(
+                    "Access denied: '{}' is outside the allowed directory.",
+                    dir
+                ));
+            }
+            path_manager.resolve(dir).to_path_buf()
+        } else {
+            // Use path manager's working directory
+            path_manager.working_dir().to_path_buf()
+        };
+
+        self.run_command_internal(command, working_dir, timeout_secs, &resolved_working_dir).await
+    }
+}
+
+impl RunCommandTool {
+    async fn run_command_internal(
+        &self,
+        command: &str,
+        working_dir: Option<String>,
+        timeout_secs: u64,
+        base_working_dir: &Path,
+    ) -> ToolResult {
         tracing::info!("Executing command: {}", command);
 
         let mut cmd = Command::new("bash");
@@ -57,11 +107,11 @@ impl Tool for RunCommandTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Use explicit working_dir if provided, otherwise default to project_dir
+        // Use explicit working_dir if provided, otherwise default to base_working_dir
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         } else {
-            cmd.current_dir(project_dir);
+            cmd.current_dir(base_working_dir);
         }
 
         let result = tokio::time::timeout(

@@ -59,10 +59,53 @@ impl Tool for MultiEditFileTool {
             return ToolResult::error("edits array is empty");
         }
 
-        let path = resolve_path(path, project_dir);
+        let path = resolve_path_old(path, project_dir);
+
+        self.multi_edit_internal(&path, input).await
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let path = match input.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing required parameter: path"),
+        };
+
+        let edits = match input.get("edits").and_then(|v| v.as_array()) {
+            Some(e) => e,
+            None => return ToolResult::error("Missing required parameter: edits (must be an array)"),
+        };
+
+        if edits.is_empty() {
+            return ToolResult::error("edits array is empty");
+        }
+
+        // Check write permission
+        if let Err(err) = path_manager.check_write_permission(path) {
+            return ToolResult::error(err);
+        }
+
+        let resolved_path = path_manager.resolve(path);
+        self.multi_edit_internal(&resolved_path, input).await
+    }
+}
+
+impl MultiEditFileTool {
+    async fn multi_edit_internal(&self, path: &Path, input: &serde_json::Value) -> ToolResult {
+        let edits = match input.get("edits").and_then(|v| v.as_array()) {
+            Some(e) => e,
+            None => return ToolResult::error("Missing required parameter: edits (must be an array)"),
+        };
+
+        if edits.is_empty() {
+            return ToolResult::error("edits array is empty");
+        }
 
         // Read the file
-        let mut content = match fs::read_to_string(&path).await {
+        let mut content = match fs::read_to_string(path).await {
             Ok(c) => c,
             Err(e) => {
                 return ToolResult::error(format!(
@@ -136,7 +179,7 @@ impl Tool for MultiEditFileTool {
         }
 
         // Write the result
-        match fs::write(&path, &content).await {
+        match fs::write(path, &content).await {
             Ok(()) => ToolResult::success(format!(
                 "Applied {}/{} edits to '{}':\n{}",
                 applied,
@@ -153,7 +196,8 @@ impl Tool for MultiEditFileTool {
     }
 }
 
-fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
+// Keep old resolve_path for backward compatibility
+fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()
