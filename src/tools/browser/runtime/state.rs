@@ -81,6 +81,21 @@ impl BrowserState {
         Ok(())
     }
     
+    /// Rename a page
+    pub fn rename_page(&mut self, old_name: &str, new_name: &str) -> Result<(), BrowserError> {
+        if self.pages.contains_key(new_name) {
+            return Err(BrowserError::Operation(format!("Page '{}' already exists", new_name)));
+        }
+        
+        if let Some(mut page_state) = self.pages.remove(old_name) {
+            page_state.rename(new_name.to_string());
+            self.pages.insert(new_name.to_string(), page_state);
+            Ok(())
+        } else {
+            Err(BrowserError::NotFound(format!("Page '{}' not found", old_name)))
+        }
+    }
+    
     /// Close all pages
     pub async fn close_all_pages(&mut self) -> Result<(), BrowserError> {
         let page_names: Vec<String> = self.pages.keys().cloned().collect();
@@ -144,6 +159,106 @@ impl BrowserState {
     pub fn browser(&self) -> &Browser {
         &self.browser
     }
+    
+    /// Set page group
+    pub fn set_page_group(&mut self, page_name: &str, group_name: Option<&str>) -> Result<(), BrowserError> {
+        if let Some(page_state) = self.pages.get_mut(page_name) {
+            page_state.tab_state_mut().group = group_name.map(|s| s.to_string());
+            Ok(())
+        } else {
+            Err(BrowserError::NotFound(format!("Page '{}' not found", page_name)))
+        }
+    }
+    
+    /// Get pages by group
+    pub fn get_pages_by_group(&self, group_name: &str) -> Vec<&PageState> {
+        self.pages.values()
+            .filter(|page| page.tab_state().group.as_deref() == Some(group_name))
+            .collect()
+    }
+    
+    /// Get all groups
+    pub fn get_groups(&self) -> Vec<String> {
+        let mut groups = std::collections::HashSet::new();
+        for page in self.pages.values() {
+            if let Some(group) = &page.tab_state().group {
+                groups.insert(group.clone());
+            }
+        }
+        groups.into_iter().collect()
+    }
+    
+    /// Get performance metrics for a page
+    pub fn get_page_performance(&self, page_name: &str) -> Option<&PerformanceMetrics> {
+        self.pages.get(page_name).map(|page| &page.tab_state().performance)
+    }
+    
+    /// Update performance metrics for a page
+    pub fn update_page_performance<F>(&mut self, page_name: &str, updater: F) -> Result<(), BrowserError>
+    where
+        F: FnOnce(&mut PerformanceMetrics),
+    {
+        if let Some(page_state) = self.pages.get_mut(page_name) {
+            updater(&mut page_state.tab_state_mut().performance);
+            Ok(())
+        } else {
+            Err(BrowserError::NotFound(format!("Page '{}' not found", page_name)))
+        }
+    }
+    
+    /// Get all pages performance summary
+    pub fn get_performance_summary(&self) -> PerformanceSummary {
+        let mut summary = PerformanceSummary::default();
+        
+        for page in self.pages.values() {
+            let metrics = &page.tab_state().performance;
+            
+            summary.total_pages += 1;
+            
+            if let Some(memory) = metrics.memory_usage {
+                summary.total_memory += memory;
+                summary.max_memory = summary.max_memory.max(memory);
+            }
+            
+            if let Some(load_time) = metrics.load_time {
+                summary.total_load_time += load_time;
+                summary.max_load_time = summary.max_load_time.max(load_time);
+            }
+            
+            summary.total_requests += metrics.request_count;
+            summary.total_data_transferred += metrics.data_transferred;
+        }
+        
+        if summary.total_pages > 0 {
+            summary.avg_memory = summary.total_memory / summary.total_pages as u64;
+            summary.avg_load_time = summary.total_load_time / summary.total_pages as u64;
+        }
+        
+        summary
+    }
+}
+
+/// Performance summary for all tabs
+#[derive(Debug, Clone, Default)]
+pub struct PerformanceSummary {
+    /// Total number of pages
+    pub total_pages: u32,
+    /// Total memory usage in bytes
+    pub total_memory: u64,
+    /// Average memory usage in bytes
+    pub avg_memory: u64,
+    /// Maximum memory usage in bytes
+    pub max_memory: u64,
+    /// Total load time in milliseconds
+    pub total_load_time: u64,
+    /// Average load time in milliseconds
+    pub avg_load_time: u64,
+    /// Maximum load time in milliseconds
+    pub max_load_time: u64,
+    /// Total number of requests
+    pub total_requests: u32,
+    /// Total data transferred in bytes
+    pub total_data_transferred: u64,
 }
 
 /// State of a page/tab
@@ -219,6 +334,11 @@ impl PageState {
     pub fn tab_state_mut(&mut self) -> &mut TabState {
         &mut self.tab_state
     }
+    
+    /// Rename the page
+    pub fn rename(&mut self, new_name: String) {
+        self.name = new_name;
+    }
 }
 
 /// State of a tab within a browser
@@ -232,6 +352,8 @@ pub struct TabState {
     pub active: bool,
     /// Whether tab is loading
     pub loading: bool,
+    /// Tab group (for grouping related tabs)
+    pub group: Option<String>,
     /// Tab navigation history
     pub history: Vec<String>,
     /// Current history position
@@ -242,6 +364,27 @@ pub struct TabState {
     pub local_storage: Vec<LocalStorageItem>,
     /// Tab session storage
     pub session_storage: Vec<SessionStorageItem>,
+    /// Performance metrics
+    pub performance: PerformanceMetrics,
+}
+
+/// Performance metrics for a tab
+#[derive(Debug, Clone, Default)]
+pub struct PerformanceMetrics {
+    /// Memory usage in bytes
+    pub memory_usage: Option<u64>,
+    /// Load time in milliseconds
+    pub load_time: Option<u64>,
+    /// Number of requests
+    pub request_count: u32,
+    /// Total data transferred in bytes
+    pub data_transferred: u64,
+    /// JavaScript heap size in bytes
+    pub js_heap_size: Option<u64>,
+    /// DOM node count
+    pub dom_node_count: Option<u32>,
+    /// Last updated timestamp
+    pub last_updated: i64,
 }
 
 /// Cookie representation

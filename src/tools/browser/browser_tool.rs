@@ -1,4 +1,4 @@
-use crate::tools::browser::client::{ActionExecutor, BrowserAction, BrowserSession, ScreenshotFormat};
+use crate::tools::browser::client::{ActionExecutor, BrowserAction, BrowserSession, ScreenshotFormat, SessionManager};
 use crate::tools::browser::config::ConfigManager;
 use crate::tools::browser::error::{BrowserError, BrowserResult};
 use crate::tools::browser::runtime::BrowserManager;
@@ -18,6 +18,8 @@ pub struct BrowserTool {
     action_executor: ActionExecutor,
     /// Current session
     session: Arc<Mutex<BrowserSession>>,
+    /// Session manager
+    session_manager: SessionManager,
 }
 
 impl BrowserTool {
@@ -38,26 +40,40 @@ impl BrowserTool {
         // Create session
         let session = Arc::new(Mutex::new(BrowserSession::new(manager.clone())));
         
+        // Create session manager
+        let session_manager = SessionManager::new(
+            std::env::current_dir().unwrap().join(".agent/browser/sessions")
+        );
+        
         Self {
             manager,
             config_manager,
             action_executor: ActionExecutor,
             session,
+            session_manager,
         }
     }
     
     /// Create a new browser tool with custom config directory
     pub fn with_config_dir(config_dir: std::path::PathBuf) -> Result<Self, BrowserError> {
-        let config_manager = Arc::new(ConfigManager::new(config_dir)?);
+        let config_manager = Arc::new(ConfigManager::new(config_dir.clone())?);
         let default_profile = config_manager.get_default_profile().clone();
         let manager = Arc::new(BrowserManager::new(default_profile));
         let session = Arc::new(Mutex::new(BrowserSession::new(manager.clone())));
+        
+        // Create session manager
+        let session_manager = SessionManager::new(
+            config_dir.parent()
+                .unwrap_or(&config_dir)
+                .join("sessions")
+        );
         
         Ok(Self {
             manager,
             config_manager,
             action_executor: ActionExecutor,
             session,
+            session_manager,
         })
     }
     
@@ -354,6 +370,253 @@ impl BrowserTool {
                 })
             }
             
+            "drag_drop" => {
+                let source_selector = input.get("source_selector")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: source_selector for drag_drop action")?;
+                let target_selector = input.get("target_selector")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: target_selector for drag_drop action")?;
+                let wait_seconds = input.get("wait_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2);
+                
+                Ok(BrowserAction::DragDrop {
+                    source_selector: source_selector.to_string(),
+                    target_selector: target_selector.to_string(),
+                    wait_seconds,
+                })
+            }
+            
+            "right_click" => {
+                let selector = input.get("selector")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: selector for right_click action")?;
+                let wait_seconds = input.get("wait_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2);
+                
+                Ok(BrowserAction::RightClick {
+                    selector: selector.to_string(),
+                    wait_seconds,
+                })
+            }
+            
+            "mouse_wheel" => {
+                let selector = input.get("selector")
+                    .and_then(|v| v.as_str());
+                let delta_x = input.get("delta_x")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32)
+                    .unwrap_or(0);
+                let delta_y = input.get("delta_y")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32)
+                    .unwrap_or(0);
+                let wait_seconds = input.get("wait_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2);
+                
+                Ok(BrowserAction::MouseWheel {
+                    selector: selector.map(|s| s.to_string()),
+                    delta_x,
+                    delta_y,
+                    wait_seconds,
+                })
+            }
+            
+            "get_cookies" => {
+                Ok(BrowserAction::GetCookies)
+            }
+            
+            "set_cookie" => {
+                let name = input.get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: name for set_cookie action")?;
+                let value = input.get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: value for set_cookie action")?;
+                let domain = input.get("domain")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let path = input.get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let secure = input.get("secure")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let http_only = input.get("http_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let same_site = input.get("same_site")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let expires = input.get("expires")
+                    .and_then(|v| v.as_i64());
+                
+                Ok(BrowserAction::SetCookie {
+                    name: name.to_string(),
+                    value: value.to_string(),
+                    domain,
+                    path,
+                    secure,
+                    http_only,
+                    same_site,
+                    expires,
+                })
+            }
+            
+            "delete_cookie" => {
+                let name = input.get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: name for delete_cookie action")?;
+                let domain = input.get("domain")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let path = input.get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                
+                Ok(BrowserAction::DeleteCookie {
+                    name: name.to_string(),
+                    domain,
+                    path,
+                })
+            }
+            
+            "get_local_storage" => {
+                let key = input.get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: key for get_local_storage action")?;
+                
+                Ok(BrowserAction::GetLocalStorage {
+                    key: key.to_string(),
+                })
+            }
+            
+            "set_local_storage" => {
+                let key = input.get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: key for set_local_storage action")?;
+                let value = input.get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: value for set_local_storage action")?;
+                
+                Ok(BrowserAction::SetLocalStorage {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })
+            }
+            
+            "delete_local_storage" => {
+                let key = input.get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: key for delete_local_storage action")?;
+                
+                Ok(BrowserAction::DeleteLocalStorage {
+                    key: key.to_string(),
+                })
+            }
+            
+            "get_session_storage" => {
+                let key = input.get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: key for get_session_storage action")?;
+                
+                Ok(BrowserAction::GetSessionStorage {
+                    key: key.to_string(),
+                })
+            }
+            
+            "set_session_storage" => {
+                let key = input.get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: key for set_session_storage action")?;
+                let value = input.get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: value for set_session_storage action")?;
+                
+                Ok(BrowserAction::SetSessionStorage {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })
+            }
+            
+            "delete_session_storage" => {
+                let key = input.get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: key for delete_session_storage action")?;
+                
+                Ok(BrowserAction::DeleteSessionStorage {
+                    key: key.to_string(),
+                })
+            }
+            
+            "go_back" => {
+                let wait_seconds = input.get("wait_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2);
+                
+                Ok(BrowserAction::GoBack {
+                    wait_seconds,
+                })
+            }
+            
+            "go_forward" => {
+                let wait_seconds = input.get("wait_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2);
+                
+                Ok(BrowserAction::GoForward {
+                    wait_seconds,
+                })
+            }
+            
+            "create_snapshot" => {
+                let snapshot_type = input.get("snapshot_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ai");
+                let output_path = input.get("output_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                
+                Ok(BrowserAction::CreateSnapshot {
+                    snapshot_type: snapshot_type.to_string(),
+                    output_path,
+                })
+            }
+            
+            "execute_batch" => {
+                let operations = input.get("operations")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing required parameter: operations for execute_batch action")?;
+                let parallel = input.get("parallel")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                
+                Ok(BrowserAction::ExecuteBatch {
+                    operations: operations.clone(),
+                    parallel,
+                })
+            }
+            
+            "get_driver_info" => {
+                Ok(BrowserAction::GetDriverInfo)
+            }
+            
+            "send_protocol_message" => {
+                let message_type = input.get("message_type")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing required parameter: message_type for send_protocol_message action")?;
+                let data = input.get("data")
+                    .ok_or("Missing required parameter: data for send_protocol_message action")?;
+                
+                Ok(BrowserAction::SendProtocolMessage {
+                    message_type: message_type.to_string(),
+                    data: data.clone(),
+                })
+            }
+            
             _ => Err(format!("Unknown action: {}", action)),
         }
     }
@@ -489,7 +752,12 @@ impl Tool for BrowserTool {
                             "close_page", "list_instances", "list_pages", "current_state",
                             "wait_for_navigation", "wait_for_element", "hover", "scroll_to",
                             "get_attributes", "set_attribute", "upload_file", "select_option",
-                            "check", "uncheck", "press_key"
+                            "check", "uncheck", "press_key", "drag_drop", "right_click", 
+                            "mouse_wheel", "go_back", "go_forward", "get_cookies", "set_cookie",
+                            "delete_cookie", "get_local_storage", "set_local_storage", 
+                            "delete_local_storage", "get_session_storage", "set_session_storage",
+                            "delete_session_storage", "create_snapshot", "execute_batch",
+                            "get_driver_info", "send_protocol_message"
                         ],
                         "description": "The browser action to perform"
                     },

@@ -1,5 +1,5 @@
 use crate::tools::browser::error::{BrowserError, BrowserResult};
-use crate::tools::browser::runtime::{BrowserManager, BrowserState};
+use crate::tools::browser::runtime::{BrowserManager, BrowserState, PerformanceMetrics, PerformanceSummary};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -120,6 +120,27 @@ impl BrowserSession {
         Ok(())
     }
     
+    /// Rename a page
+    pub async fn rename_page(&mut self, old_name: &str, new_name: &str) -> BrowserResult<()> {
+        let instance_name = self.current_instance
+            .as_ref()
+            .ok_or_else(|| BrowserError::Operation("No browser instance selected".to_string()))?;
+        
+        let browser_state = self.manager.get_browser(instance_name).await?;
+        let mut state = browser_state.lock().await;
+        
+        state.rename_page(old_name, new_name)?;
+        
+        // Update current page name if it was renamed
+        if let Some(current_page) = &self.current_page {
+            if current_page == old_name {
+                self.current_page = Some(new_name.to_string());
+            }
+        }
+        
+        Ok(())
+    }
+    
     /// Close current browser instance
     pub async fn close_current_instance(&mut self) -> BrowserResult<()> {
         let instance_name = self.current_instance
@@ -167,5 +188,66 @@ impl BrowserSession {
     /// Check if a page is selected
     pub fn has_page(&self) -> bool {
         self.current_page.is_some()
+    }
+    
+    /// Set page group
+    pub async fn set_page_group(&mut self, page_name: &str, group_name: Option<&str>) -> BrowserResult<()> {
+        let instance_name = self.current_instance
+            .as_ref()
+            .ok_or_else(|| BrowserError::Operation("No browser instance selected".to_string()))?;
+        
+        let browser_state = self.manager.get_browser(instance_name).await?;
+        let mut state = browser_state.lock().await;
+        
+        state.set_page_group(page_name, group_name)
+    }
+    
+    /// Get pages by group
+    pub async fn get_pages_by_group(&self, group_name: &str) -> BrowserResult<Vec<String>> {
+        let instance_name = self.current_instance
+            .as_ref()
+            .ok_or_else(|| BrowserError::Operation("No browser instance selected".to_string()))?;
+        
+        let browser_state = self.manager.get_browser(instance_name).await?;
+        let state = browser_state.lock().await;
+        
+        let pages = state.get_pages_by_group(group_name);
+        Ok(pages.iter().map(|p| p.name().to_string()).collect())
+    }
+    
+    /// Get all groups
+    pub async fn get_groups(&self) -> BrowserResult<Vec<String>> {
+        let instance_name = self.current_instance
+            .as_ref()
+            .ok_or_else(|| BrowserError::Operation("No browser instance selected".to_string()))?;
+        
+        let browser_state = self.manager.get_browser(instance_name).await?;
+        let state = browser_state.lock().await;
+        
+        Ok(state.get_groups())
+    }
+    
+    /// Get performance metrics for a page
+    pub async fn get_page_performance(&self, page_name: &str) -> BrowserResult<Option<PerformanceMetrics>> {
+        let instance_name = self.current_instance
+            .as_ref()
+            .ok_or_else(|| BrowserError::Operation("No browser instance selected".to_string()))?;
+        
+        let browser_state = self.manager.get_browser(instance_name).await?;
+        let state = browser_state.lock().await;
+        
+        Ok(state.get_page_performance(page_name).cloned())
+    }
+    
+    /// Get performance summary for all pages
+    pub async fn get_performance_summary(&self) -> BrowserResult<PerformanceSummary> {
+        let instance_name = self.current_instance
+            .as_ref()
+            .ok_or_else(|| BrowserError::Operation("No browser instance selected".to_string()))?;
+        
+        let browser_state = self.manager.get_browser(instance_name).await?;
+        let state = browser_state.lock().await;
+        
+        Ok(state.get_performance_summary())
     }
 }
