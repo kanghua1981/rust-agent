@@ -153,6 +153,11 @@ impl PathManager {
         &self.working_dir
     }
 
+    /// Check if sandbox is enabled
+    pub fn is_sandbox_enabled(&self) -> bool {
+        self.sandbox.is_some()
+    }
+
     /// Update the allowed directory.
     pub fn set_allowed_dir(&mut self, dir: Option<PathBuf>) {
         self.allowed_dir = dir;
