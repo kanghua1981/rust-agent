@@ -82,7 +82,7 @@ impl Tool for UploadImageTool {
             }
         };
 
-        // Resolve path relative to project directory
+        // Resolve path relative to project directory (old method)
         let path = if input.path.starts_with('/') {
             Path::new(&input.path).to_path_buf()
         } else {
@@ -116,6 +116,72 @@ impl Tool for UploadImageTool {
              - File size: {} bytes\n\
              - Base64 size: {} characters",
             path.display(),
+            mime_type,
+            file_size,
+            base64_data.len()
+        );
+
+        if let Some(description) = &input.description {
+            output.push_str(&format!("\n- Description: {}", description));
+        }
+
+        // Note: The actual image data is not included in the tool result output
+        // because it's too large. Instead, we'll create a ContentBlock::Image
+        // in the agent layer when processing the tool result.
+        output.push_str("\n\nNote: The image has been added to the conversation and will be sent to the LLM if it supports vision.");
+
+        ToolResult::success(output)
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let input: UploadImageInput = match serde_json::from_value(input.clone()) {
+            Ok(input) => input,
+            Err(e) => {
+                return ToolResult::error(format!("Invalid input parameters: {}", e));
+            }
+        };
+
+        // Check if path is allowed (for sandbox mode)
+        if !path_manager.is_path_allowed(&input.path) {
+            return ToolResult::error(format!(
+                "Access denied: '{}' is outside the allowed directory.",
+                input.path
+            ));
+        }
+
+        let resolved_path = path_manager.resolve(&input.path);
+        
+        // Check if file exists
+        if !resolved_path.exists() {
+            return ToolResult::error(format!("Image file not found: {}", resolved_path.display()));
+        }
+
+        // Read and encode image
+        let (mime_type, base64_data) = match Self::read_image_to_base64(&resolved_path) {
+            Ok(result) => result,
+            Err(e) => {
+                return ToolResult::error(format!("Failed to process image: {}", e));
+            }
+        };
+
+        // Get file size info
+        let file_size = match std::fs::metadata(&resolved_path) {
+            Ok(metadata) => metadata.len(),
+            Err(_) => 0,
+        };
+
+        // Create output message
+        let mut output = format!(
+            "Image uploaded successfully:\n\
+             - Path: {}\n\
+             - MIME type: {}\n\
+             - File size: {} bytes\n\
+             - Base64 size: {} characters",
+            resolved_path.display(),
             mime_type,
             file_size,
             base64_data.len()

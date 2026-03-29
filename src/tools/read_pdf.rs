@@ -51,7 +51,113 @@ impl Tool for ReadPdfTool {
             None => return ToolResult::error("Missing required parameter: path"),
         };
 
-        let resolved = resolve_path(path, project_dir);
+        let resolved = resolve_path_old(path, project_dir);
+
+        if !resolved.exists() {
+            return ToolResult::error(format!("File not found: {}", resolved.display()));
+        }
+
+        // Check extension
+        let ext = resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext != "pdf" {
+            return ToolResult::error(format!(
+                "'{}' does not appear to be a PDF file (extension: .{})",
+                path, ext
+            ));
+        }
+
+        let start_page = input
+            .get("start_page")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let end_page = input
+            .get("end_page")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let max_chars = input
+            .get("max_chars")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50000) as usize;
+
+        let resolved_str = resolved.display().to_string();
+
+        // Strategy 1: marker_single (best for math / academic PDFs)
+        if which_exists("marker_single").await {
+            match extract_with_marker(&resolved_str, start_page, end_page).await {
+                Ok(text) if !text.trim().is_empty() => {
+                    return make_result(path, &text, max_chars, "marker (Markdown+LaTeX)");
+                }
+                Ok(_) => {
+                    tracing::debug!("marker returned empty output, falling back");
+                }
+                Err(e) => {
+                    tracing::debug!("marker failed: {}, falling back", e);
+                }
+            }
+        }
+
+        // Strategy 2: pdftotext (poppler-utils)
+        if which_exists("pdftotext").await {
+            match extract_with_pdftotext(&resolved_str, start_page, end_page).await {
+                Ok(text) if !text.trim().is_empty() => {
+                    return make_result(path, &text, max_chars, "pdftotext");
+                }
+                Ok(_) => {
+                    tracing::debug!("pdftotext returned empty output, falling back");
+                }
+                Err(e) => {
+                    tracing::debug!("pdftotext failed: {}, falling back", e);
+                }
+            }
+        }
+
+        // Strategy 3: mutool (mupdf)
+        if which_exists("mutool").await {
+            match extract_with_mutool(&resolved_str, start_page, end_page).await {
+                Ok(text) if !text.trim().is_empty() => {
+                    return make_result(path, &text, max_chars, "mutool");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!("mutool failed: {}", e);
+                }
+            }
+        }
+
+        // Nothing worked
+        ToolResult::error(format!(
+            "No PDF extraction tool found. Please install one of:\n\
+             • pip install marker-pdf   (best quality, supports math formulas)\n\
+             • apt install poppler-utils (pdftotext, good for plain text)\n\
+             • apt install mupdf-tools  (mutool, lightweight fallback)\n\n\
+             Alternatively, use run_command with a tool of your choice to extract '{}'.",
+            path
+        ))
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let path = match input.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing required parameter: path"),
+        };
+
+        // Check if path is allowed (for sandbox mode)
+        if !path_manager.is_path_allowed(path) {
+            return ToolResult::error(format!(
+                "Access denied: '{}' is outside the allowed directory.",
+                path
+            ));
+        }
+
+        let resolved = path_manager.resolve(path);
 
         if !resolved.exists() {
             return ToolResult::error(format!("File not found: {}", resolved.display()));
@@ -326,7 +432,8 @@ async fn which_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
+// Keep old resolve_path for backward compatibility
+fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()

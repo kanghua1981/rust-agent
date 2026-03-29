@@ -153,33 +153,6 @@ impl PathManager {
         &self.working_dir
     }
 
-    /// Get the original project directory.
-    pub fn original_project_dir(&self) -> &Path {
-        &self.original_project_dir
-    }
-
-    /// Check if sandbox is enabled.
-    pub fn is_sandbox_enabled(&self) -> bool {
-        self.sandbox.is_some()
-    }
-
-    /// Get the sandbox instance (if any).
-    pub fn sandbox(&self) -> Option<&Arc<Sandbox>> {
-        self.sandbox.as_ref()
-    }
-
-    /// Update the sandbox instance.
-    pub fn set_sandbox(&mut self, sandbox: Option<Arc<Sandbox>>) {
-        self.sandbox = sandbox;
-        if let Some(ref sandbox) = self.sandbox {
-            self.working_dir = sandbox.working_dir().to_path_buf();
-            self.allowed_dir = Some(self.working_dir.clone());
-        } else {
-            self.working_dir = self.original_project_dir.clone();
-            self.allowed_dir = None;
-        }
-    }
-
     /// Update the allowed directory.
     pub fn set_allowed_dir(&mut self, dir: Option<PathBuf>) {
         self.allowed_dir = dir;
@@ -194,5 +167,75 @@ pub fn resolve_path_old(path: &str, project_dir: &Path) -> PathBuf {
         p.to_path_buf()
     } else {
         project_dir.join(p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// 测试非沙盒模式下的路径解析
+    #[test]
+    fn test_path_manager_non_sandbox() {
+        let project_dir = PathBuf::from("/test/project");
+        let path_manager = PathManager::without_sandbox(project_dir.clone());
+        
+        // 测试相对路径
+        let resolved = path_manager.resolve("src/main.rs");
+        assert_eq!(resolved, project_dir.join("src/main.rs"));
+        
+        // 测试绝对路径
+        let resolved = path_manager.resolve("/absolute/path");
+        assert_eq!(resolved, PathBuf::from("/absolute/path"));
+        
+        // 测试工作目录
+        assert_eq!(path_manager.working_dir(), project_dir);
+        
+        // 测试沙盒状态
+        assert!(!path_manager.is_sandbox_enabled());
+    }
+
+    /// 测试路径权限检查
+    #[test]
+    fn test_path_manager_permissions() {
+        let project_dir = PathBuf::from("/test/project");
+        let path_manager = PathManager::without_sandbox(project_dir);
+        
+        // 在没有沙盒模式下，所有路径都应该被允许
+        assert!(path_manager.is_path_allowed("/any/path"));
+        assert!(path_manager.is_path_allowed("relative/path"));
+        
+        // 写权限检查应该总是成功（没有限制）
+        assert!(path_manager.check_write_permission("/any/path").is_ok());
+    }
+
+    /// 测试路径规范化
+    #[test]
+    fn test_path_manager_normalization() {
+        let project_dir = PathBuf::from("/test/project");
+        let path_manager = PathManager::without_sandbox(project_dir);
+        
+        // 测试相对路径规范化
+        let normalized = path_manager.resolve_and_normalize("src/../main.rs");
+        assert!(normalized.ends_with("main.rs"));
+        
+        // 测试绝对路径规范化
+        let normalized = path_manager.resolve_and_normalize("/test/../project/main.rs");
+        assert!(normalized.ends_with("project/main.rs"));
+    }
+
+    /// 测试向后兼容的路径解析函数
+    #[test]
+    fn test_resolve_path_old() {
+        let project_dir = PathBuf::from("/test/project");
+        
+        // 测试相对路径
+        let resolved = resolve_path_old("src/main.rs", &project_dir);
+        assert_eq!(resolved, project_dir.join("src/main.rs"));
+        
+        // 测试绝对路径
+        let resolved = resolve_path_old("/absolute/path", &project_dir);
+        assert_eq!(resolved, PathBuf::from("/absolute/path"));
     }
 }

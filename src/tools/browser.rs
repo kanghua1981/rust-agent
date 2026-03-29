@@ -397,4 +397,240 @@ impl Tool for BrowserTool {
             _ => ToolResult::error(format!("Unknown action: {}", action)),
         }
     }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let action = match input.get("action").and_then(|v| v.as_str()) {
+            Some(a) => a,
+            None => return ToolResult::error("Missing required parameter: action"),
+        };
+        
+        let headless = input
+            .get("headless")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        
+        let wait_seconds = input
+            .get("wait_seconds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2);
+        
+        // Handle quit action
+        if action == "quit" {
+            let mut state = self.state.lock().await;
+            if let Some(browser_state) = state.take() {
+                match browser_state.close().await {
+                    Ok(_) => return ToolResult::success("Browser closed successfully"),
+                    Err(e) => return ToolResult::error(format!("Failed to close browser: {}", e)),
+                }
+            } else {
+                return ToolResult::success("No browser session to close");
+            }
+        }
+        
+        // Ensure browser is initialized
+        if let Err(e) = self.ensure_browser(headless).await {
+            return ToolResult::error(format!("Failed to initialize browser: {}", e));
+        }
+        
+        // Get browser state handle
+        let mut handle = match self.get_state().await {
+            Ok(h) => h,
+            Err(e) => return ToolResult::error(e),
+        };
+        
+        let state = handle.state_mut();
+        
+        match action {
+            "navigate" => {
+                let url = match input.get("url").and_then(|v| v.as_str()) {
+                    Some(u) => u,
+                    None => return ToolResult::error("Missing required parameter: url for navigate action"),
+                };
+                
+                match state.page.goto(url).await {
+                    Ok(_) => {
+                        // Wait for navigation
+                        tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
+                        match state.page.wait_for_navigation().await {
+                            Ok(_) => ToolResult::success(format!("Navigated to {}", url)),
+                            Err(e) => ToolResult::error(format!("Navigation completed but wait failed: {}", e)),
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to navigate to {}: {}", url, e)),
+                }
+            }
+            
+            "click" => {
+                let selector = match input.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return ToolResult::error("Missing required parameter: selector for click action"),
+                };
+                
+                match state.page.find_element(selector).await {
+                    Ok(element) => {
+                        match element.click().await {
+                            Ok(_) => {
+                                tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
+                                ToolResult::success(format!("Clicked element: {}", selector))
+                            }
+                            Err(e) => ToolResult::error(format!("Failed to click element '{}': {}", selector, e)),
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            
+            "type" => {
+                let selector = match input.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return ToolResult::error("Missing required parameter: selector for type action"),
+                };
+                
+                let text = match input.get("text").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => return ToolResult::error("Missing required parameter: text for type action"),
+                };
+                
+                match state.page.find_element(selector).await {
+                    Ok(element) => {
+                        match element.type_str(text).await {
+                            Ok(_) => {
+                                tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
+                                ToolResult::success(format!("Typed '{}' into element: {}", text, selector))
+                            }
+                            Err(e) => ToolResult::error(format!("Failed to type text into element '{}': {}", selector, e)),
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            
+            "screenshot" => {
+                let output_path = input
+                    .get("output_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("screenshot.png");
+                
+                // Check write permission for screenshot path
+                if let Err(e) = path_manager.check_write_permission(output_path) {
+                    return ToolResult::error(format!("Permission denied for screenshot path: {}", e));
+                }
+                
+                let resolved_path = path_manager.resolve(output_path);
+                
+                let params = CaptureScreenshotParams {
+                    format: Some(CaptureScreenshotFormat::Png),
+                    quality: None,
+                    clip: None,
+                    from_surface: Some(true),
+                    capture_beyond_viewport: None,
+                    optimize_for_speed: None,
+                };
+                
+                match state.page.screenshot(params).await {
+                    Ok(screenshot) => {
+                        match std::fs::write(&resolved_path, screenshot) {
+                            Ok(_) => ToolResult::success(format!("Screenshot saved to {}", resolved_path.display())),
+                            Err(e) => ToolResult::error(format!("Failed to save screenshot to {}: {}", resolved_path.display(), e)),
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to take screenshot: {}", e)),
+                }
+            }
+            
+            "execute_script" => {
+                let script = match input.get("script").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return ToolResult::error("Missing required parameter: script for execute_script action"),
+                };
+                
+                match state.page.evaluate(script).await {
+                    Ok(result) => {
+                        match result.into_value::<serde_json::Value>() {
+                            Ok(value) => ToolResult::success(format!("Script executed successfully. Result: {:?}", value)),
+                            Err(e) => ToolResult::error(format!("Failed to deserialize script result: {}", e)),
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to execute script: {}", e)),
+                }
+            }
+            
+            "get_html" => {
+                match state.page.content().await {
+                    Ok(html) => ToolResult::success(html),
+                    Err(e) => ToolResult::error(format!("Failed to get page HTML: {}", e)),
+                }
+            }
+            
+            "get_text" => {
+                let selector = match input.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return ToolResult::error("Missing required parameter: selector for get_text action"),
+                };
+                
+                match state.page.find_element(selector).await {
+                    Ok(element) => {
+                        match element.inner_text().await {
+                            Ok(Some(text)) => ToolResult::success(text),
+                            Ok(None) => ToolResult::success("[no text]".to_string()),
+                            Err(e) => ToolResult::error(format!("Failed to get text from element '{}': {}", selector, e)),
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to find element '{}': {}", selector, e)),
+                }
+            }
+            
+            "find_elements" => {
+                let selector = match input.get("selector").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return ToolResult::error("Missing required parameter: selector for find_elements action"),
+                };
+                
+                match state.page.find_elements(selector).await {
+                    Ok(elements) => {
+                        let mut results = Vec::new();
+                        for (i, element) in elements.iter().enumerate() {
+                            match element.inner_text().await {
+                                Ok(Some(text)) => {
+                                    results.push(format!("Element {}: {}", i, text));
+                                }
+                                Ok(None) => {
+                                    results.push(format!("Element {}: [no text]", i));
+                                }
+                                Err(e) => {
+                                    results.push(format!("Element {}: Failed to get text: {}", i, e));
+                                }
+                            }
+                        }
+                        ToolResult::success(results.join("\n"))
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to find elements '{}': {}", selector, e)),
+                }
+            }
+            
+            "evaluate" => {
+                // Generic CDP evaluation - same as execute_script for now
+                let script = match input.get("script").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return ToolResult::error("Missing required parameter: script for evaluate action"),
+                };
+                
+                match state.page.evaluate(script).await {
+                    Ok(result) => {
+                        match result.into_value::<serde_json::Value>() {
+                            Ok(value) => ToolResult::success(format!("CDP evaluation successful. Result: {:?}", value)),
+                            Err(e) => ToolResult::error(format!("Failed to deserialize evaluation result: {}", e)),
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to evaluate script: {}", e)),
+                }
+            }
+            
+            _ => ToolResult::error(format!("Unknown action: {}", action)),
+        }
+    }
 }
