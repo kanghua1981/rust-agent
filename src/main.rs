@@ -13,6 +13,7 @@ mod model_manager;
 mod output;
 mod path_manager;
 mod persistence;
+mod plugin;
 mod service;
 mod skills;
 mod streaming;
