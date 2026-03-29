@@ -86,3 +86,21 @@ base64 = "0.21"
 
 # Browser automation with CDP
 chromiumoxide = "0.9.1"
+chrono = "0.4.44"
+
+# Graph algorithms for dependency management
+petgraph = "0.6"
+
+# Compression libraries
+flate2 = "1.0"
+brotli = "3.4"
+lz4 = "1.24"
+zstd = "0.13"
+
+# Async utilities
+futures-util = "0.3"
+
+# Serialization formats
+bson = "2.8"
+ciborium = "0.2"
+rmp-serde = "1.1"
