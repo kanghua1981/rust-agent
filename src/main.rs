@@ -11,6 +11,7 @@ mod mcp_client;
 mod mcp_server;
 mod model_manager;
 mod output;
+mod path_manager;
 mod persistence;
 mod service;
 mod skills;

@@ -47,6 +47,7 @@ use crate::llm::{self, LlmClient};
 use crate::memory::Memory;
 use crate::model_manager;
 use crate::output::AgentOutput;
+use crate::path_manager;
 use crate::sandbox::Sandbox;
 use crate::service::{ServiceEvent, SERVICE_EVENT_TX};
 use crate::streaming;
@@ -76,6 +77,8 @@ pub struct Agent {
     role_configs: HashMap<String, Config>,
     /// Sandbox for snapshot-based rollback.
     pub sandbox: Sandbox,
+    /// Path manager for unified path handling.
+    pub path_manager: Arc<path_manager::PathManager>,
     /// When false (default), sessions are stored in the project's `.agent/session.json`.
     /// When true, sessions are stored in the global `~/.local/share/rust_agent/sessions/`.
     pub global_session: bool,
@@ -95,8 +98,14 @@ impl Agent {
             // 如果沙盒当前是禁用的，尝试启用它
             let sandbox = crate::sandbox::Sandbox::new(&self.project_dir);
             self.sandbox = sandbox;
-            // 更新工具执行器的工作目录
-            self.set_allowed_dir(Some(self.sandbox.working_dir().to_path_buf()));
+            // 更新 path manager
+            let new_path_manager = Arc::new(path_manager::PathManager::with_sandbox(
+                self.project_dir.clone(),
+                Arc::new(self.sandbox.clone()),
+            ));
+            self.path_manager = new_path_manager.clone();
+            // 更新工具执行器
+            self.tool_executor.set_path_manager(new_path_manager);
 
             // 仅当 overlay 实际挂载成功（sandbox 不再是 disabled）时才注入系统提示词。
             // 如果 fuse-overlayfs 不可用，sandbox 静默回退为 disabled，此时绝对不能
@@ -118,8 +127,13 @@ impl Agent {
         } else if !enabled && self.sandbox.working_dir() != &self.project_dir {
             // 如果沙盒当前是启用的，禁用它
             self.sandbox = crate::sandbox::Sandbox::disabled(&self.project_dir);
-            // 恢复工具执行器的工作目录
-            self.set_allowed_dir(Some(self.project_dir.clone()));
+            // 更新 path manager
+            let new_path_manager = Arc::new(path_manager::PathManager::without_sandbox(
+                self.project_dir.clone(),
+            ));
+            self.path_manager = new_path_manager.clone();
+            // 更新工具执行器
+            self.tool_executor.set_path_manager(new_path_manager);
             
             // 移除沙盒模式说明
             if let Some(start) = self.conversation.system_prompt.find("## Sandbox Mode") {
@@ -142,7 +156,11 @@ impl Agent {
     /// Restrict write/edit tools to paths inside `dir` for this agent.
     /// Pass `None` to remove the restriction.
     pub fn set_allowed_dir(&mut self, dir: Option<std::path::PathBuf>) {
-        self.tool_executor.set_allowed_dir(dir);
+        self.tool_executor.set_allowed_dir(dir.clone());
+        // Also update path manager by creating a new one
+        if let Some(path_manager) = Arc::get_mut(&mut self.path_manager) {
+            path_manager.set_allowed_dir(dir);
+        }
     }
 
     /// Spawn all MCP servers configured in `.agent/mcp.toml` and register
@@ -179,6 +197,13 @@ impl Agent {
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
+        
+        // Create path manager
+        let path_manager = Arc::new(path_manager::PathManager::with_sandbox(
+            project_dir.clone(),
+            Arc::new(sandbox.clone()),
+        ));
+        
         let mut agent = Agent {
             config,
             client,
@@ -195,13 +220,14 @@ impl Agent {
             models_cfg,
             role_configs,
             sandbox,
+            path_manager,
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
         };
         
-        // 在沙盒模式下，限制文件操作只能在沙盒工作目录内
-        agent.tool_executor.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
+        // Set path manager in tool executor
+        agent.tool_executor.set_path_manager(agent.path_manager.clone());
         
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {
@@ -225,6 +251,12 @@ impl Agent {
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
+        // Create path manager
+        let path_manager = Arc::new(path_manager::PathManager::with_sandbox(
+            project_dir.clone(),
+            Arc::new(sandbox.clone()),
+        ));
+        
         let mut agent = Agent {
             config,
             client,
@@ -241,13 +273,14 @@ impl Agent {
             models_cfg,
             role_configs,
             sandbox,
+            path_manager,
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
         };
         
-        // 在沙盒模式下，限制文件操作只能在沙盒工作目录内
-        agent.tool_executor.set_allowed_dir(Some(agent.sandbox.working_dir().to_path_buf()));
+        // Set path manager in tool executor
+        agent.tool_executor.set_path_manager(agent.path_manager.clone());
         
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {
@@ -947,16 +980,15 @@ impl Agent {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        // Use sandbox working dir for path resolution (overlay merged dir or project dir)
-        let effective_dir = self.sandbox.working_dir();
-        let resolved = resolve_tool_path(path, effective_dir);
+        // Use path manager for path resolution
+        let resolved = self.path_manager.resolve(path);
         let resolved_str = resolved.display().to_string();
 
         // Sandbox: snapshot the file before modification
         self.sandbox.before_write(&resolved).await;
 
         // Read old content if file exists
-        let old_content = tokio::fs::read_to_string(&resolved_str).await.ok();
+        let old_content: Option<String> = tokio::fs::read_to_string(&resolved_str).await.ok();
 
         // Execute the tool
         let result = self.tool_executor.execute(tool_name, tool_input).await;
@@ -1760,15 +1792,7 @@ Directory tree:
     }
 }
 
-/// Resolve a path (relative to project_dir or absolute)
-fn resolve_tool_path(path: &str, project_dir: &std::path::Path) -> std::path::PathBuf {
-    let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_dir.join(p)
-    }
-}
+
 
 /// Check if a tool action needs user confirmation
 fn needs_confirmation(tool_name: &str, _input: &serde_json::Value) -> bool {

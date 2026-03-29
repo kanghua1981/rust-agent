@@ -37,9 +37,37 @@ impl Tool for ReadFileTool {
             None => return ToolResult::error("Missing required parameter: path"),
         };
 
-        let path = resolve_path(path, project_dir);
+        let path = resolve_path_old(path, project_dir);
 
-        match fs::read_to_string(&path).await {
+        self.read_file_internal(&path, input).await
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let path = match input.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing required parameter: path"),
+        };
+
+        // Check if path is allowed (for sandbox mode)
+        if !path_manager.is_path_allowed(path) {
+            return ToolResult::error(format!(
+                "Access denied: '{}' is outside the allowed directory.",
+                path
+            ));
+        }
+
+        let resolved_path = path_manager.resolve(path);
+        self.read_file_internal(&resolved_path, input).await
+    }
+}
+
+impl ReadFileTool {
+    async fn read_file_internal(&self, path: &Path, input: &serde_json::Value) -> ToolResult {
+        match fs::read_to_string(path).await {
             Ok(content) => {
                 let start_line = input
                     .get("start_line")
@@ -94,7 +122,8 @@ impl Tool for ReadFileTool {
     }
 }
 
-fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
+// Keep old resolve_path for backward compatibility
+fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()

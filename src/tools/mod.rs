@@ -64,6 +64,7 @@ impl ToolResult {
 pub struct ToolExecutor {
     tools: HashMap<String, Box<dyn Tool + Send + Sync>>,
     project_dir: PathBuf,
+    path_manager: Option<Arc<crate::path_manager::PathManager>>,
     /// When set, write/edit/delete tools are restricted to this directory.
     /// Paths outside it are rejected before the tool runs.
     allowed_dir: Option<PathBuf>,
@@ -74,6 +75,16 @@ pub struct ToolExecutor {
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult;
+    
+    /// Execute with path manager (optional, for tools that need advanced path handling)
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        // Default implementation falls back to execute with project_dir
+        self.execute(input, path_manager.working_dir()).await
+    }
 }
 
 impl ToolExecutor {
@@ -81,6 +92,7 @@ impl ToolExecutor {
         let mut executor = ToolExecutor {
             tools: HashMap::new(),
             project_dir,
+            path_manager: None,
             allowed_dir: None,
         };
 
@@ -227,6 +239,13 @@ impl ToolExecutor {
         self.project_dir = dir;
     }
 
+    /// Set the path manager for unified path handling.
+    pub fn set_path_manager(&mut self, path_manager: Arc<crate::path_manager::PathManager>) {
+        self.path_manager = Some(path_manager.clone());
+        // Update project_dir to match path manager's working directory
+        self.project_dir = path_manager.working_dir().to_path_buf();
+    }
+
     /// Restrict write/edit tools to paths inside `dir`.
     /// Pass `None` to remove the restriction.
     pub fn set_allowed_dir(&mut self, dir: Option<PathBuf>) {
@@ -276,9 +295,17 @@ impl ToolExecutor {
         // If an allowed_dir is set, reject write/edit tools that try to touch
         // paths outside it.  Read-only tools are not restricted.
         const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit_file"];
-        if let Some(ref allowed) = self.allowed_dir {
-            if WRITE_TOOLS.contains(&name) {
-                if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
+        
+        if WRITE_TOOLS.contains(&name) {
+            if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
+                // Use path manager if available, otherwise use old logic
+                if let Some(ref path_manager) = self.path_manager {
+                    match path_manager.check_write_permission(path_str) {
+                        Ok(()) => (),
+                        Err(err) => return ToolResult::error(err),
+                    }
+                } else if let Some(ref allowed) = self.allowed_dir {
+                    // Old permission check logic
                     let resolved = if Path::new(path_str).is_absolute() {
                         PathBuf::from(path_str)
                     } else {
@@ -327,11 +354,21 @@ impl ToolExecutor {
             Some(tool) => {
                 use futures::FutureExt; // catch_unwind on futures
 
-                let result = std::panic::AssertUnwindSafe(
-                    tool.execute(input, &self.project_dir),
-                )
-                .catch_unwind()
-                .await;
+                let result = if let Some(ref path_manager) = self.path_manager {
+                    // Use path manager if available
+                    std::panic::AssertUnwindSafe(
+                        tool.execute_with_path_manager(input, path_manager),
+                    )
+                    .catch_unwind()
+                    .await
+                } else {
+                    // Fall back to old method
+                    std::panic::AssertUnwindSafe(
+                        tool.execute(input, &self.project_dir),
+                    )
+                    .catch_unwind()
+                    .await
+                };
 
                 match result {
                     Ok(r) => r,

@@ -47,10 +47,44 @@ impl Tool for EditFileTool {
             None => return ToolResult::error("Missing required parameter: new_string"),
         };
 
-        let path = resolve_path(path, project_dir);
+        let path = resolve_path_old(path, project_dir);
+        self.edit_file_internal(&path, old_string, new_string).await
+    }
+    
+    async fn execute_with_path_manager(
+        &self, 
+        input: &serde_json::Value, 
+        path_manager: &crate::path_manager::PathManager
+    ) -> ToolResult {
+        let path = match input.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing required parameter: path"),
+        };
 
+        let old_string = match input.get("old_string").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return ToolResult::error("Missing required parameter: old_string"),
+        };
+
+        let new_string = match input.get("new_string").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return ToolResult::error("Missing required parameter: new_string"),
+        };
+
+        // Check write permission
+        if let Err(err) = path_manager.check_write_permission(path) {
+            return ToolResult::error(err);
+        }
+
+        let resolved_path = path_manager.resolve(path);
+        self.edit_file_internal(&resolved_path, old_string, new_string).await
+    }
+}
+
+impl EditFileTool {
+    async fn edit_file_internal(&self, path: &Path, old_string: &str, new_string: &str) -> ToolResult {
         // Read the file
-        let content = match fs::read_to_string(&path).await {
+        let content = match fs::read_to_string(path).await {
             Ok(c) => c,
             Err(e) => {
                 return ToolResult::error(format!(
@@ -82,7 +116,7 @@ impl Tool for EditFileTool {
         // Perform the replacement
         let new_content = content.replacen(old_string, new_string, 1);
 
-        match fs::write(&path, &new_content).await {
+        match fs::write(path, &new_content).await {
             Ok(()) => {
                 // Find the line number where the change was made
                 let prefix = &content[..content.find(old_string).unwrap()];
@@ -105,11 +139,10 @@ impl Tool for EditFileTool {
     }
 }
 
-fn resolve_path(path: &str, project_dir: &Path) -> std::path::PathBuf {
+// Keep old resolve_path for backward compatibility
+fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
-        // 在沙盒模式下，如果绝对路径指向原始项目目录，将其重定向到沙盒目录
-        // 注意：这里假设project_dir是沙盒的working_dir
         p.to_path_buf()
     } else {
         project_dir.join(p)
