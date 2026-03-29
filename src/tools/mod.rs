@@ -284,9 +284,32 @@ impl ToolExecutor {
                     } else {
                         self.project_dir.join(path_str)
                     };
-                    // canonicalize() fails for not-yet-existing files; use the
-                    // raw resolved path as fallback so new files are still checked.
-                    let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+                    // canonicalize() fails for not-yet-existing files; try to canonicalize parent directory
+                    let canonical = match resolved.canonicalize() {
+                        Ok(canonical) => canonical,
+                        Err(_) => {
+                            // For new files, try to canonicalize the parent directory
+                            if let Some(parent) = resolved.parent() {
+                                match parent.canonicalize() {
+                                    Ok(canonical_parent) => {
+                                        // Parent directory canonicalized successfully
+                                        if let Some(filename) = resolved.file_name() {
+                                            canonical_parent.join(filename)
+                                        } else {
+                                            resolved.clone()
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Parent directory also doesn't exist, use resolved path
+                                        resolved.clone()
+                                    }
+                                }
+                            } else {
+                                // No parent directory (should not happen for file paths)
+                                resolved.clone()
+                            }
+                        }
+                    };
                     // Normalise allowed_dir the same way.
                     let allowed_canon = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
                     if !canonical.starts_with(&allowed_canon) {
