@@ -1764,6 +1764,7 @@ pub async fn run(
                         session_id.clone(),
                         agent_out,
                         sandbox,
+                        None, // 插件管理器（TUI模式暂不支持）
                     );
                     a.global_session = global_session;
                     a
@@ -1775,13 +1776,13 @@ pub async fn run(
                             b(Color::Red),
                         )])))
                         .ok();
-                    let mut a = Agent::new(config, project_dir, agent_out, sandbox);
+                    let mut a = Agent::new(config, project_dir, agent_out, sandbox, None); // 插件管理器（TUI模式暂不支持）
                     a.global_session = global_session;
                     a
                 }
             }
         } else {
-            let mut a = Agent::new(config, project_dir, agent_out, sandbox);
+            let mut a = Agent::new(config, project_dir, agent_out, sandbox, None); // 插件管理器（TUI模式暂不支持）
             a.global_session = global_session;
             a
         };

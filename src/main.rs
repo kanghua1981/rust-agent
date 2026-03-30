@@ -163,6 +163,14 @@ struct Args {
     /// multiple named sessions across projects.
     #[arg(long)]
     global_session: bool,
+
+    /// 启用插件系统
+    #[arg(long)]
+    enable_plugins: bool,
+
+    /// 插件作用域（逗号分隔：global,project,temporary）
+    #[arg(long, default_value = "project,global")]
+    plugin_scopes: String,
 }
 
 #[tokio::main]
@@ -275,8 +283,18 @@ async fn main() -> Result<()> {
         RunMode::Server | RunMode::Tui | RunMode::Worker | RunMode::Mcp => unreachable!(), // handled above
     };
 
+    // 初始化插件管理器
+    let plugin_manager = if args.enable_plugins {
+        let scopes = parse_plugin_scopes(&args.plugin_scopes);
+        Some(Arc::new(tokio::sync::Mutex::new(
+            plugin::PluginManager::new_with_scopes(project_dir.clone(), scopes)
+        )))
+    } else {
+        None
+    };
+
     // Run the agent
-    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.isolation, args.global_session).await;
+    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.isolation, args.global_session, plugin_manager).await;
 
     // Kill auto-spawned sub-agents so they don't become orphan processes.
     // On the next startup the ports would be occupied, causing port-bind failures.
@@ -313,4 +331,29 @@ fn spawn_sub_agents(config: &config::Config, project_dir: &std::path::Path) -> V
     }
 
     children
+}
+
+/// 解析插件作用域字符串
+fn parse_plugin_scopes(scopes_str: &str) -> Vec<plugin::PluginScope> {
+    let mut result = Vec::new();
+    
+    for scope_str in scopes_str.split(',') {
+        let scope_str = scope_str.trim().to_lowercase();
+        match scope_str.as_str() {
+            "global" => result.push(plugin::PluginScope::Global),
+            "project" => result.push(plugin::PluginScope::Project),
+            "temporary" => result.push(plugin::PluginScope::Temporary),
+            _ => {
+                tracing::warn!("Unknown plugin scope: {}, ignoring", scope_str);
+            }
+        }
+    }
+    
+    // 如果没有指定作用域，使用默认值
+    if result.is_empty() {
+        result.push(plugin::PluginScope::Project);
+        result.push(plugin::PluginScope::Global);
+    }
+    
+    result
 }

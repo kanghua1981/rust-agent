@@ -73,7 +73,7 @@ impl crate::output::AgentOutput for NullOutput {
 /// Run the MCP JSON-RPC 2.0 server loop over stdin/stdout.
 pub async fn run(project_dir: PathBuf) -> Result<()> {
     let output: Arc<dyn crate::output::AgentOutput> = Arc::new(NullOutput);
-    let executor = ToolExecutor::new(project_dir, output);
+    let executor = ToolExecutor::new(project_dir, output, None); // 插件管理器（MCP模式暂不支持）
 
     let mut reader = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();

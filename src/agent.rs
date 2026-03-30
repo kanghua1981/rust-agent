@@ -89,6 +89,8 @@ pub struct Agent {
     /// When set, overrides the adaptive router for every message.
     /// `None` means use the normal router logic.
     pub force_mode: Option<crate::router::ExecutionMode>,
+    /// Plugin manager for plugin system integration
+    pub plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
 }
 
 impl Agent {
@@ -168,6 +170,11 @@ impl Agent {
     pub async fn load_mcp_tools(&mut self) {
         self.tool_executor.load_mcp_tools().await;
     }
+    
+    /// Load plugin tools from plugin manager
+    pub async fn load_plugin_tools(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.tool_executor.load_plugin_tools().await
+    }
 
     /// Connect to the supplied MCP server entries and register their tools.
     /// Used by server/worker mode where the client sends a `load_mcp` message.
@@ -190,7 +197,7 @@ impl Agent {
         self.tool_executor.list_mcp_tools()
     }
 
-    pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
+    pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);
         let mut conversation = Conversation::new(&project_dir);
@@ -207,7 +214,7 @@ impl Agent {
         let mut agent = Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(effective_dir, output.clone()),
+            tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -224,6 +231,7 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+            plugin_manager,
         };
         
         // Set path manager in tool executor
@@ -245,7 +253,7 @@ impl Agent {
     }
 
     /// Create agent with a restored conversation
-    pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
+    pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);
         let models_cfg = model_manager::load();
@@ -260,7 +268,7 @@ impl Agent {
         let mut agent = Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(effective_dir, output.clone()),
+            tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -277,6 +285,7 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+            plugin_manager,
         };
         
         // Set path manager in tool executor

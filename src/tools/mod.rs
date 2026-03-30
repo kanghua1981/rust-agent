@@ -68,6 +68,8 @@ pub struct ToolExecutor {
     /// When set, write/edit/delete tools are restricted to this directory.
     /// Paths outside it are rejected before the tool runs.
     allowed_dir: Option<PathBuf>,
+    /// 插件管理器（可选）
+    plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
 }
 
 /// Trait that all tools must implement
@@ -88,12 +90,13 @@ pub trait Tool: Send + Sync {
 }
 
 impl ToolExecutor {
-    pub fn new(project_dir: PathBuf, output: Arc<dyn AgentOutput>) -> Self {
+    pub fn new(project_dir: PathBuf, output: Arc<dyn AgentOutput>, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let mut executor = ToolExecutor {
             tools: HashMap::new(),
             project_dir,
             path_manager: None,
             allowed_dir: None,
+            plugin_manager,
         };
 
         // Register all built-in tools
@@ -137,6 +140,33 @@ impl ToolExecutor {
         executor.load_script_tools_from(&executor.project_dir.clone());
 
         executor
+    }
+
+    /// 加载插件工具
+    pub async fn load_plugin_tools(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Clone the plugin manager Arc first to avoid borrow conflicts
+        let pm_clone = self.plugin_manager.clone();
+        
+        if let Some(pm) = &pm_clone {
+            let pm_lock = pm.lock().await;
+            // 获取所有插件工具
+            let tools = pm_lock.get_all_tools();
+            let tool_count = tools.len();
+            
+            // 注册每个插件工具
+            for tool in tools {
+                let plugin_tool = PluginToolWrapper::new(
+                    tool.name.clone(),
+                    tool.description.clone(),
+                    tool.plugin_id.clone(),
+                    pm.clone(),
+                );
+                self.register(Box::new(plugin_tool));
+            }
+            
+            tracing::info!("Loaded {} plugin tools", tool_count);
+        }
+        Ok(())
     }
 
     fn register(&mut self, tool: Box<dyn Tool + Send + Sync>) {
@@ -386,7 +416,93 @@ impl ToolExecutor {
                     }
                 }
             }
-            None => ToolResult::error(format!("Unknown tool: {}", name)),
+            None => {
+                // 如果没有找到内置工具，尝试执行插件工具
+                if let Some(pm) = &self.plugin_manager {
+                    let mut pm_lock = pm.lock().await;
+                    match pm_lock.execute_tool(name, input).await {
+                        Ok(result) => {
+                            // 将插件工具的结果转换为 ToolResult
+                            let output = if let Some(output_str) = result.as_str() {
+                                output_str.to_string()
+                            } else {
+                                serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+                            };
+                            ToolResult::success(output)
+                        }
+                        Err(e) => ToolResult::error(format!("Plugin tool execution failed: {}", e)),
+                    }
+                } else {
+                    ToolResult::error(format!("Unknown tool: {}", name))
+                }
+            }
         }
     }
 }
+
+/// 插件工具包装器
+struct PluginToolWrapper {
+    name: String,
+    description: String,
+    plugin_id: String,
+    plugin_manager: Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>,
+}
+
+impl PluginToolWrapper {
+    fn new(
+        name: String,
+        description: String,
+        plugin_id: String,
+        plugin_manager: Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            plugin_id,
+            plugin_manager,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for PluginToolWrapper {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true,
+            }),
+        }
+    }
+    
+    async fn execute(&self, input: &serde_json::Value, _project_dir: &Path) -> ToolResult {
+        // 执行插件工具
+        let mut pm_lock = self.plugin_manager.lock().await;
+        let tool_full_name = format!("{}@{}", self.name, self.plugin_id);
+        match pm_lock.execute_tool(&tool_full_name, input).await {
+            Ok(result) => {
+                // 将插件工具的结果转换为ToolResult
+                let output = if let Some(output_str) = result.as_str() {
+                    output_str.to_string()
+                } else {
+                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+                };
+                ToolResult::success(output)
+            }
+            Err(e) => ToolResult::error(format!("Plugin tool execution failed: {}", e)),
+        }
+    }
+    
+    async fn execute_with_path_manager(
+        &self,
+        input: &serde_json::Value,
+        _path_manager: &crate::path_manager::PathManager,
+    ) -> ToolResult {
+        // 插件工具不使用路径管理器，直接调用execute
+        self.execute(input, Path::new(".")).await
+    }
+}
+

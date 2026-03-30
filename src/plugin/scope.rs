@@ -125,6 +125,13 @@ impl ScopeManager {
         Self { base_dirs }
     }
     
+    /// 创建作用域管理器并指定作用域
+    pub fn new_with_scopes(project_dir: PathBuf, scopes: Vec<PluginScope>) -> Self {
+        let base_dirs = BaseDirectories::new(project_dir);
+        // 这里可以添加作用域过滤逻辑，但当前实现中所有作用域都可用
+        Self { base_dirs }
+    }
+    
     /// 获取基础目录
     pub fn base_dirs(&self) -> &BaseDirectories {
         &self.base_dirs

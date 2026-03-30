@@ -111,6 +111,7 @@ async fn run_async(
         project_dir.clone(),
         ws_output.clone(),
         Sandbox::disabled(&project_dir),
+        None, // 插件管理器（Worker模式暂不支持）
     );
 
     // Apply isolation mode to the sandbox handle.

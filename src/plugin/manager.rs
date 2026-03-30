@@ -38,6 +38,34 @@ pub struct PluginInstance {
     pub loaded_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// 插件信息（用于CLI显示）
+#[derive(Debug, Clone)]
+pub struct PluginInfo {
+    /// 插件ID
+    pub id: String,
+    /// 插件名称
+    pub name: String,
+    /// 插件版本
+    pub version: String,
+    /// 插件描述
+    pub description: String,
+    /// 插件作者
+    pub author: String,
+    /// 是否启用
+    pub enabled: bool,
+    /// 插件工具列表
+    pub tools: Vec<ToolInfo>,
+}
+
+/// 工具信息（用于CLI显示）
+#[derive(Debug, Clone)]
+pub struct ToolInfo {
+    /// 工具名称
+    pub name: String,
+    /// 工具描述
+    pub description: String,
+}
+
 impl PluginInstance {
     /// 创建新的插件实例
     pub fn new(meta: PluginMeta, scope: PluginScope, path: PathBuf) -> Self {
@@ -87,6 +115,8 @@ pub struct PluginManager {
     scope_plugins: HashMap<PluginScope, HashSet<String>>,
     /// 名称插件映射（插件名称 -> 插件ID列表，用于冲突检测）
     name_plugins: HashMap<String, Vec<String>>,
+    /// 工具加载器
+    tool_loader: super::tool_loader::ToolLoader,
 }
 
 impl PluginManager {
@@ -99,6 +129,20 @@ impl PluginManager {
             plugins: HashMap::new(),
             scope_plugins: HashMap::new(),
             name_plugins: HashMap::new(),
+            tool_loader: super::tool_loader::ToolLoader::new(),
+        }
+    }
+    
+    /// 创建插件管理器并指定作用域
+    pub fn new_with_scopes(project_dir: PathBuf, scopes: Vec<PluginScope>) -> Self {
+        let scope_manager = Arc::new(ScopeManager::new_with_scopes(project_dir, scopes));
+        
+        Self {
+            scope_manager,
+            plugins: HashMap::new(),
+            scope_plugins: HashMap::new(),
+            name_plugins: HashMap::new(),
+            tool_loader: super::tool_loader::ToolLoader::new(),
         }
     }
     
@@ -195,6 +239,16 @@ impl PluginManager {
             .or_insert_with(Vec::new)
             .push(plugin_id.clone());
         
+        // 加载插件工具
+        match self.tool_loader.load_tools_from_plugin(&plugin_id, plugin_path) {
+            Ok(tools) => {
+                tracing::info!("Loaded {} tools from plugin {}", tools.len(), plugin_id);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load tools from plugin {}: {}", plugin_id, e);
+            }
+        }
+        
         tracing::info!("Loaded plugin {} from scope {:?}", plugin_id, scope);
         
         Ok(())
@@ -245,6 +299,87 @@ impl PluginManager {
         self.plugins.values()
             .filter(|p| p.is_enabled())
             .collect()
+    }
+    
+    /// 获取所有插件工具
+    pub fn get_all_tools(&self) -> Vec<super::tool_loader::ToolDefinition> {
+        self.tool_loader.all_tools()
+            .iter()
+            .map(|t| (*t).clone())
+            .collect()
+    }
+    
+    /// 执行插件工具
+    pub async fn execute_tool(&mut self, tool_name: &str, parameters: &serde_json::Value) -> Result<serde_json::Value, PluginError> {
+        self.tool_loader.execute_tool(tool_name, parameters).await
+    }
+    
+    /// 列出所有插件（用于CLI命令）
+    pub fn list_plugins(&self) -> Vec<PluginInfo> {
+        self.plugins.values()
+            .map(|plugin| PluginInfo {
+                id: plugin.meta.id(),
+                name: plugin.meta.name.clone(),
+                version: plugin.meta.version.clone(),
+                description: plugin.meta.description.clone(),
+                author: plugin.meta.author.clone(),
+                enabled: plugin.is_enabled(),
+                tools: self.tool_loader.get_plugin_tools(&plugin.meta.id())
+                    .iter()
+                    .map(|t| ToolInfo {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+    
+    /// 获取插件信息
+    pub fn get_plugin_info(&self, plugin_name: &str) -> Option<PluginInfo> {
+        // 首先尝试通过ID查找
+        if let Some(plugin) = self.plugins.get(plugin_name) {
+            return Some(PluginInfo {
+                id: plugin.meta.id(),
+                name: plugin.meta.name.clone(),
+                version: plugin.meta.version.clone(),
+                description: plugin.meta.description.clone(),
+                author: plugin.meta.author.clone(),
+                enabled: plugin.is_enabled(),
+                tools: self.tool_loader.get_plugin_tools(&plugin.meta.id())
+                    .iter()
+                    .map(|t| ToolInfo {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                    })
+                    .collect(),
+            });
+        }
+        
+        // 然后尝试通过名称查找
+        if let Some(plugin_ids) = self.name_plugins.get(plugin_name) {
+            if let Some(plugin_id) = plugin_ids.first() {
+                if let Some(plugin) = self.plugins.get(plugin_id) {
+                    return Some(PluginInfo {
+                        id: plugin.meta.id(),
+                        name: plugin.meta.name.clone(),
+                        version: plugin.meta.version.clone(),
+                        description: plugin.meta.description.clone(),
+                        author: plugin.meta.author.clone(),
+                        enabled: plugin.is_enabled(),
+                        tools: self.tool_loader.get_plugin_tools(&plugin.meta.id())
+                            .iter()
+                            .map(|t| ToolInfo {
+                                name: t.name.clone(),
+                                description: t.description.clone(),
+                            })
+                            .collect(),
+                    });
+                }
+            }
+        }
+        
+        None
     }
     
     /// 按名称获取插件
