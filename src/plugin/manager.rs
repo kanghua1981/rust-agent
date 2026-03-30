@@ -452,6 +452,33 @@ impl PluginManager {
         entries
     }
 
+    /// 收集所有已启用插件的 `system_prompt.md` 内容，按插件加载顺序拼接。
+    /// 每段内容以插件名为标题分隔，便于追踪来源。
+    /// 若插件未启用或不含该文件则跳过，不报错。
+    pub fn collect_system_prompts(&self) -> String {
+        let mut result = String::new();
+        for plugin in self.plugins.values() {
+            if !plugin.is_enabled() {
+                continue;
+            }
+            let prompt_path = plugin.path.join("system_prompt.md");
+            let Ok(content) = std::fs::read_to_string(&prompt_path) else {
+                continue;
+            };
+            let content = content.trim();
+            if content.is_empty() {
+                continue;
+            }
+            result.push_str(&format!(
+                "\n\n--- Plugin: {} ---\n{}",
+                plugin.name(),
+                content
+            ));
+            tracing::info!("Plugin '{}': appended system_prompt.md ({} chars)", plugin.name(), content.len());
+        }
+        result
+    }
+
     /// 扫描所有已启用插件的 `workspaces.toml`，合并 nodes + peers + cluster token。
     /// 插件中 `[[node]]` 的 `workdir` 若为相对路径，以插件目录为基准展开为绝对路径。
     /// 多个插件均设置了 cluster token 时，取第一个非空值。

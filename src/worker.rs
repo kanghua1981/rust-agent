@@ -133,6 +133,31 @@ async fn run_async(
         Some(plugin_manager.clone()),
     );
 
+    // Hook 总线 + system_prompt 追加（与 cli.rs 保持一致）
+    {
+        let pm_lock = plugin_manager.lock().await;
+        let hook_bus = pm_lock.get_hook_bus();
+        let extra_prompt = pm_lock.collect_system_prompts();
+        drop(pm_lock);
+        agent.set_hook_bus(Some(hook_bus.clone()));
+        if !extra_prompt.is_empty() {
+            agent.conversation.system_prompt.push_str(&extra_prompt);
+        }
+        // agent.start hook（fire-and-forget）
+        {
+            use crate::plugin::hook_bus::HookEvent;
+            let session_id = agent.session_id().unwrap_or("none").to_string();
+            hook_bus.emit(HookEvent::new(
+                "agent.start",
+                session_id,
+                serde_json::json!({
+                    "project_dir": project_dir.display().to_string(),
+                    "mode": "worker",
+                }),
+            ));
+        }
+    }
+
     // 注册插件工具 + MCP
     if let Err(e) = agent.load_plugin_tools().await {
         tracing::warn!("Worker: failed to load plugin tools: {}", e);
@@ -149,6 +174,32 @@ async fn run_async(
             for err in &errors {
                 tracing::warn!("Worker plugin MCP: {}", err);
             }
+        }
+    }
+
+    // Plugin skills 索引注入（与 cli.rs 保持一致）
+    {
+        let pm_lock = plugin_manager.lock().await;
+        let plugin_skills: Vec<_> = pm_lock.get_all_skills()
+            .into_iter()
+            .filter(|s| s.plugin_id != "@system")
+            .collect();
+        drop(pm_lock);
+        if !plugin_skills.is_empty() {
+            let mut section = "\n\n--- Plugin Skills ---".to_string();
+            section.push_str("\n## Available Plugin Skills (use `load_skill` tool with the skill name to read full content)");
+            for skill in &plugin_skills {
+                let tags_hint = if skill.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [tags: {}]", skill.tags.join(", "))
+                };
+                section.push_str(&format!(
+                    "\n- **{}** (plugin: {}){} — {}",
+                    skill.name, skill.plugin_id, tags_hint, skill.description,
+                ));
+            }
+            agent.conversation.system_prompt.push_str(&section);
         }
     }
 

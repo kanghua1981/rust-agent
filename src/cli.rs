@@ -639,6 +639,17 @@ pub async fn run(
         }
     }
     
+    // 将插件的 system_prompt.md 追加到系统提示词。
+    // 每个启用插件根目录下的 system_prompt.md 若存在，则按加载顺序依次追加。
+    if let Some(pm) = &plugin_manager {
+        let pm_lock = pm.lock().await;
+        let extra = pm_lock.collect_system_prompts();
+        drop(pm_lock);
+        if !extra.is_empty() {
+            agent.conversation.system_prompt.push_str(&extra);
+        }
+    }
+
     // 将插件 skills 注入 system_prompt。
     // @system 技能（项目内置）已由 conversation.rs 注入，这里只补充非 @system 的插件提供的技能。
     if let Some(pm) = &plugin_manager {
