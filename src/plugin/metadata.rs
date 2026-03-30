@@ -145,9 +145,13 @@ impl PluginMeta {
         Ok(())
     }
     
-    /// 获取插件唯一标识符
+    /// 获取插件唯一标识符（仅用 name，字符集限制为 [a-zA-Z0-9_-]，
+    /// 以确保作为工具名后缀时符合 Anthropic / OpenAI API 约束）。
     pub fn id(&self) -> String {
-        format!("{}@{}", self.name, self.version)
+        self.name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect()
     }
 }
 

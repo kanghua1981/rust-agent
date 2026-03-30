@@ -61,6 +61,8 @@ pub const ALL_COMMANDS: &[CommandMeta] = &[
     // ── Planning ─────────────────────────────────────────────────────────────
     CommandMeta::new("/summary",  "[generate]",                "View or generate project summary"),
     CommandMeta::new("/plan",     "<task>|run|show|clear",     "Explore & plan, then execute"),
+    // ── Plugins ──────────────────────────────────────────────────────────────
+    CommandMeta::new("/plugin",   "[list|enable|disable|info|tools|skills]", "Manage plugins"),
     // ── Remote nodes ─────────────────────────────────────────────────────────
     CommandMeta::new("/nodes",    "",                          "Probe remote agent nodes (workspaces.toml [[peer]])"),
     // ── Sandbox ──────────────────────────────────────────────────────────────
