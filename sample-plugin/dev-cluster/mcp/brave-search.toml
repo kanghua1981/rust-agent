@@ -1,0 +1,25 @@
+# ============================================================
+# mcp/brave-search.toml
+#
+# HTTP/SSE 传输 MCP Server 配置范例
+#
+# 连接到已运行的 Brave Search MCP Server（HTTP+SSE 传输）。
+# 无需本地 command/args，直接通过 url 建立 SSE 连接。
+#
+# 提供的工具（由 MCP 服务端声明）：
+#   brave__brave_web_search
+#   brave__brave_local_search
+#
+# 启动本地 Brave Search MCP Server：
+#   BRAVE_API_KEY=xxx npx -y @modelcontextprotocol/server-brave-search
+#   # 默认监听 http://localhost:3000
+# ============================================================
+
+# 单 server 格式（顶级字段）
+name = "brave"
+url  = "http://localhost:3000"   # SSE 端点：自动追加 /sse
+
+# 附加请求头（HTTP 传输专用，stdio 传输忽略）
+[headers]
+# Authorization = "Bearer <token>"   # 若 MCP 服务端需要鉴权
+X-Client-Name = "rust-agent"

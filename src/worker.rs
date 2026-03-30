@@ -106,12 +106,102 @@ async fn run_async(
     let confirm_tx  = ws_output.confirm_tx.clone();
     let ask_user_tx = ws_output.ask_user_tx.clone();
 
+    // ── Plugin system ─────────────────────────────────────────────────────
+    // Worker 加载插件的方式和 CLI 完全一致：
+    //   - 项目插件：<project_dir>/.agent/plugins/  (容器内 = /workspace/.agent/plugins/)
+    //   - 全局插件：~/.config/rust_agent/plugins/  (容器内 bind-mount 到 /root/.config/rust_agent/)
+    //
+    // 重要原则：enable/disable 仅修改内存，永远不回写磁盘（plugin.toml 只读）。
+    // 客户端通过 WS 消息动态控制本 session 内哪些插件启用，持久化由客户端负责。
+    let plugin_manager = {
+        let pm = crate::plugin::PluginManager::new(project_dir.clone());
+        Arc::new(tokio::sync::Mutex::new(pm))
+    };
+    {
+        let mut pm_lock = plugin_manager.lock().await;
+        if let Err(e) = pm_lock.load_all_plugins() {
+            tracing::warn!("Worker: failed to load plugins: {}", e);
+        }
+        pm_lock.load_system_skills(&project_dir);
+    }
+
     let mut agent = Agent::new(
         config,
         project_dir.clone(),
         ws_output.clone(),
         Sandbox::disabled(&project_dir),
+        Some(plugin_manager.clone()),
     );
+
+    // Hook 总线 + system_prompt 追加（与 cli.rs 保持一致）
+    {
+        let pm_lock = plugin_manager.lock().await;
+        let hook_bus = pm_lock.get_hook_bus();
+        let extra_prompt = pm_lock.collect_system_prompts();
+        drop(pm_lock);
+        agent.set_hook_bus(Some(hook_bus.clone()));
+        if !extra_prompt.is_empty() {
+            agent.conversation.system_prompt.push_str(&extra_prompt);
+        }
+        // agent.start hook（fire-and-forget）
+        {
+            use crate::plugin::hook_bus::HookEvent;
+            let session_id = agent.session_id().unwrap_or("none").to_string();
+            hook_bus.emit(HookEvent::new(
+                "agent.start",
+                session_id,
+                serde_json::json!({
+                    "project_dir": project_dir.display().to_string(),
+                    "mode": "worker",
+                }),
+            ));
+        }
+    }
+
+    // 注册插件工具 + MCP
+    if let Err(e) = agent.load_plugin_tools().await {
+        tracing::warn!("Worker: failed to load plugin tools: {}", e);
+    }
+    {
+        let pm_lock = plugin_manager.lock().await;
+        let mcp_entries = pm_lock.collect_mcp_entries();
+        drop(pm_lock);
+        if !mcp_entries.is_empty() {
+            let (loaded, errors) = agent.load_mcp_from_entries(&mcp_entries).await;
+            if !loaded.is_empty() {
+                tracing::info!("Worker plugin MCP tools: {}", loaded.join(", "));
+            }
+            for err in &errors {
+                tracing::warn!("Worker plugin MCP: {}", err);
+            }
+        }
+    }
+
+    // Plugin skills 索引注入（与 cli.rs 保持一致）
+    {
+        let pm_lock = plugin_manager.lock().await;
+        let plugin_skills: Vec<_> = pm_lock.get_all_skills()
+            .into_iter()
+            .filter(|s| s.plugin_id != "@system")
+            .collect();
+        drop(pm_lock);
+        if !plugin_skills.is_empty() {
+            let mut section = "\n\n--- Plugin Skills ---".to_string();
+            section.push_str("\n## Available Plugin Skills (use `load_skill` tool with the skill name to read full content)");
+            for skill in &plugin_skills {
+                let tags_hint = if skill.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [tags: {}]", skill.tags.join(", "))
+                };
+                section.push_str(&format!(
+                    "\n- **{}** (plugin: {}){} — {}",
+                    skill.name, skill.plugin_id, tags_hint, skill.description,
+                ));
+            }
+            agent.conversation.system_prompt.push_str(&section);
+        }
+    }
 
     // Apply isolation mode to the sandbox handle.
     //
@@ -208,10 +298,19 @@ async fn run_async(
     // Send ready event — include workdir, sandbox, hardware caps and virtual nodes
     // so remote managers (call_node) can make informed routing decisions.
     // Use pre-passed workspaces (from server via --workspaces-json) if available;
-    // fall back to loading from disk (CLI/direct worker invocations).
+    // fall back to collecting from plugin system (CLI/direct worker invocations).
+    // 注意：worker 中的 PluginManager 仅用于读取配置，enable/disable 操作
+    // 只改内存、不回写磁盘，持久化状态由客户端通过 plugin.toml enabled 字段管理。
     let effective_workspaces = if workspaces.is_empty() {
-        let ws_cfg = workspaces::load(&project_dir);
-        ws_cfg.local_nodes()
+        let mut pm = crate::plugin::PluginManager::new(project_dir.clone());
+        let _ = pm.load_all_plugins();
+        let from_plugins = pm.collect_workspace();
+        if from_plugins.nodes.is_empty() {
+            // 兼容兜底
+            workspaces::load(&project_dir).local_nodes()
+        } else {
+            from_plugins.local_nodes()
+        }
     } else {
         workspaces
     };
@@ -348,6 +447,12 @@ enum ControlCmd {
     UnloadMcp(String),
     /// List all currently-loaded MCP tool names.
     ListMcpTools,
+    /// 列出所有插件及其状态。
+    ListPlugins,
+    /// 为本会话启用指定插件（仅内存，不回写磁盘）。
+    EnablePlugin(String),
+    /// 为本会话禁用指定插件（仅内存，不回写磁盘）。
+    DisablePlugin(String),
 }
 
 async fn handle_control_cmd(
@@ -509,6 +614,72 @@ async fn handle_control_cmd(
             ws_output.emit_public("mcp_tools_list", serde_json::json!({
                 "tools": tools,
             }));
+        }
+
+        ControlCmd::ListPlugins => {
+            if let Some(pm) = &agent.plugin_manager {
+                let lock = pm.lock().await;
+                let plugins = lock.list_plugins();
+                let list: Vec<_> = plugins.iter().map(|p| serde_json::json!({
+                    "id":          p.id,
+                    "name":        p.name,
+                    "version":     p.version,
+                    "description": p.description,
+                    "enabled":     p.enabled,
+                    "tools":       p.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+                })).collect();
+                ws_output.emit_public("plugins_list", serde_json::json!({ "plugins": list }));
+            } else {
+                ws_output.emit_public("plugins_list", serde_json::json!({ "plugins": [] }));
+            }
+        }
+
+        ControlCmd::EnablePlugin(id) => {
+            if let Some(pm) = &agent.plugin_manager {
+                let result = { pm.lock().await.enable_plugin(&id) };
+                match result {
+                    Ok(()) => {
+                        // 刷新 LLM 可见工具列表（仅内存，不回写磁盘）
+                        let _ = agent.load_plugin_tools().await;
+                        ws_output.emit_public("plugin_status_changed", serde_json::json!({
+                            "id":     id,
+                            "action": "enabled",
+                            "note":   "session-only, not persisted to disk",
+                        }));
+                    }
+                    Err(e) => {
+                        ws_output.emit_public("error", serde_json::json!({
+                            "message": format!("enable_plugin '{}' failed: {}", id, e)
+                        }));
+                    }
+                }
+            } else {
+                ws_output.emit_public("error", serde_json::json!({ "message": "Plugin system not available" }));
+            }
+        }
+
+        ControlCmd::DisablePlugin(id) => {
+            if let Some(pm) = &agent.plugin_manager {
+                let result = { pm.lock().await.disable_plugin(&id) };
+                match result {
+                    Ok(()) => {
+                        // 已禁用插件的工具将从 LLM 可见列表消失
+                        let _ = agent.load_plugin_tools().await;
+                        ws_output.emit_public("plugin_status_changed", serde_json::json!({
+                            "id":     id,
+                            "action": "disabled",
+                            "note":   "session-only, not persisted to disk",
+                        }));
+                    }
+                    Err(e) => {
+                        ws_output.emit_public("error", serde_json::json!({
+                            "message": format!("disable_plugin '{}' failed: {}", id, e)
+                        }));
+                    }
+                }
+            } else {
+                ws_output.emit_public("error", serde_json::json!({ "message": "Plugin system not available" }));
+            }
         }
     }
 }
@@ -706,6 +877,32 @@ fn dispatch_ws_message(
         // Message format:
         //   { "type": "list_mcp_tools" }
         "list_mcp_tools" => { let _ = ctrl_tx.send(ControlCmd::ListMcpTools); }
+
+        // ── Plugin management (仅内存，不持久化） ──────────────────────────────
+        // { "type": "list_plugins" }
+        // { "type": "enable_plugin",  "data": { "id": "my-plugin" } }
+        // { "type": "disable_plugin", "data": { "id": "my-plugin" } }
+        "list_plugins" => { let _ = ctrl_tx.send(ControlCmd::ListPlugins); }
+
+        "enable_plugin" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::EnablePlugin(id.to_string()));
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "enable_plugin: missing 'data.id'"
+                }));
+            }
+        }
+
+        "disable_plugin" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::DisablePlugin(id.to_string()));
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "disable_plugin: missing 'data.id'"
+                }));
+            }
+        }
 
         "cancel" => {
             crate::agent::request_interrupt();

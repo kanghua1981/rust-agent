@@ -13,6 +13,7 @@ mod model_manager;
 mod output;
 mod path_manager;
 mod persistence;
+mod plugin;
 mod service;
 mod skills;
 mod streaming;
@@ -162,6 +163,14 @@ struct Args {
     /// multiple named sessions across projects.
     #[arg(long)]
     global_session: bool,
+
+    /// 启用插件系统
+    #[arg(long)]
+    enable_plugins: bool,
+
+    /// 插件作用域（逗号分隔：global,project,temporary）
+    #[arg(long, default_value = "project,global")]
+    plugin_scopes: String,
 }
 
 #[tokio::main]
@@ -259,7 +268,26 @@ async fn main() -> Result<()> {
 
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
-        return server::run(config, project_dir, &args.host, args.port, args.isolation).await;
+        // 插件系统收集 workspaces 配置（nodes / peers / cluster token）。
+        // 旧的 .agent/workspaces.toml 仍可作为兼容插件放在插件目录下。
+        let ws_cfg = {
+            let mut pm = plugin::PluginManager::new(project_dir.clone());
+            let _ = pm.load_all_plugins();
+            let from_plugins = pm.collect_workspace();
+            // 兼容兜底：若插件中没有任何 nodes/peers，尝试读旧配置文件
+            if from_plugins.nodes.is_empty() && from_plugins.peers.is_empty() {
+                let legacy = crate::workspaces::load(&project_dir);
+                if !legacy.nodes.is_empty() || !legacy.peers.is_empty() {
+                    tracing::warn!(".agent/workspaces.toml 已废弃，请将 workspaces.toml 放入插件目录");
+                    legacy
+                } else {
+                    from_plugins
+                }
+            } else {
+                from_plugins
+            }
+        };
+        return server::run(config, project_dir, &args.host, args.port, args.isolation, ws_cfg).await;
     }
 
     // MCP server mode: expose tools as a JSON-RPC 2.0 MCP tool server over stdio.
@@ -274,8 +302,18 @@ async fn main() -> Result<()> {
         RunMode::Server | RunMode::Tui | RunMode::Worker | RunMode::Mcp => unreachable!(), // handled above
     };
 
+    // 初始化插件管理器
+    let plugin_manager = if args.enable_plugins {
+        let scopes = parse_plugin_scopes(&args.plugin_scopes);
+        Some(Arc::new(tokio::sync::Mutex::new(
+            plugin::PluginManager::new_with_scopes(project_dir.clone(), scopes)
+        )))
+    } else {
+        None
+    };
+
     // Run the agent
-    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.isolation, args.global_session).await;
+    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.isolation, args.global_session, plugin_manager).await;
 
     // Kill auto-spawned sub-agents so they don't become orphan processes.
     // On the next startup the ports would be occupied, causing port-bind failures.
@@ -312,4 +350,29 @@ fn spawn_sub_agents(config: &config::Config, project_dir: &std::path::Path) -> V
     }
 
     children
+}
+
+/// 解析插件作用域字符串
+fn parse_plugin_scopes(scopes_str: &str) -> Vec<plugin::PluginScope> {
+    let mut result = Vec::new();
+    
+    for scope_str in scopes_str.split(',') {
+        let scope_str = scope_str.trim().to_lowercase();
+        match scope_str.as_str() {
+            "global" => result.push(plugin::PluginScope::Global),
+            "project" => result.push(plugin::PluginScope::Project),
+            "temporary" => result.push(plugin::PluginScope::Temporary),
+            _ => {
+                tracing::warn!("Unknown plugin scope: {}, ignoring", scope_str);
+            }
+        }
+    }
+    
+    // 如果没有指定作用域，使用默认值
+    if result.is_empty() {
+        result.push(plugin::PluginScope::Project);
+        result.push(plugin::PluginScope::Global);
+    }
+    
+    result
 }

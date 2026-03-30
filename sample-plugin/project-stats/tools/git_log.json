@@ -1,0 +1,27 @@
+{
+  "name": "git_log",
+  "description": "查询 Git 提交历史，支持按作者、文件路径、条数过滤，返回结构化 JSON",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "description": "返回最近 N 条提交（默认 20）",
+        "default": 20
+      },
+      "author": {
+        "type": "string",
+        "description": "按作者邮箱或名称过滤（可选）"
+      },
+      "path": {
+        "type": "string",
+        "description": "只看指定路径相关的提交（可选，相对项目目录）"
+      },
+      "since": {
+        "type": "string",
+        "description": "起始日期，格式 YYYY-MM-DD（可选）"
+      }
+    },
+    "required": []
+  }
+}

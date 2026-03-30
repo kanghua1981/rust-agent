@@ -59,6 +59,14 @@
     - [AGENT.md 示例](#agentmd-示例)
     - [Skill 文件示例](#skill-文件示例)
     - [查看已加载的 Skills](#查看已加载的-skills)
+  - [🔌 插件系统](#-插件系统)
+    - [插件目录结构](#插件目录结构)
+    - [plugin.toml 清单](#plugintoml-清单)
+    - [插件工具](#插件工具)
+    - [插件技能skills](#插件技能skills)
+    - [Hooks钩子事件](#hooks钩子事件)
+    - [插件-system_promptmd](#插件-system_promptmd)
+    - [安装与示例插件](#安装与示例插件)
   - [✏️ 自定义系统提示词](#️-自定义系统提示词)
   - [🔒 安全与确认机制](#-安全与确认机制)
     - [需要确认的操作](#需要确认的操作)
@@ -851,6 +859,210 @@ your-project/
 
 ---
 
+## 🔌 插件系统
+
+插件是对 Agent 功能最自然的扩展单元，安装即用，无需修改任何 Rust 核心代码。将插件目录放入 `.agent/plugins/` 并重启 Agent 即生效。
+
+### 插件目录结构
+
+```
+.agent/
+└── plugins/
+    └── my-plugin/               # 插件根目录（名称即 ID）
+        ├── plugin.toml          # 插件清单（必须）
+        ├── system_prompt.md     # 追加到系统提示词（可选）
+        ├── tools/               # 动态工具定义（可选）
+        │   ├── my_tool.json     # 工具 schema
+        │   └── my_tool.sh       # 执行脚本
+        ├── skills/              # 领域知识注入（可选）
+        │   └── guide.md
+        └── hooks/               # 生命周期钩子（可选）
+            ├── on_start.toml
+            └── on_tool_after.toml
+```
+
+### plugin.toml 清单
+
+```toml
+[plugin]
+name        = "my-plugin"
+version     = "1.0.0"
+description = "这个插件做什么"
+author      = "yourname"
+enabled     = true      # false 可临时禁用，不删除目录
+```
+
+`name` 和 `enabled` 是必填项，其余均可省略。
+
+### 插件工具
+
+与 Skills 动态工具格式完全一致——在 `tools/` 下放 `.json` + 脚本即可：
+
+```json
+// tools/git_log.json
+{
+  "name": "git_log",
+  "description": "查询 Git 提交历史，返回结构化 JSON",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit":  { "type": "integer", "description": "返回最多条数", "default": 20 },
+      "author": { "type": "string",  "description": "按作者过滤（可省）" }
+    }
+  },
+  "command": "./tools/git_log.sh",
+  "timeout_secs": 15
+}
+```
+
+LLM 调用时参数以 JSON 形式写入脚本 stdin，stdout 作为返回値，非零退出码为错误。
+
+### 插件技能（Skills）
+
+`skills/` 目录下的 Markdown 文件在 Agent 启动时自动加入 skills 索引，LLM 可通过 `load_skill` 工具按需加载完整内容：
+
+```
+🤖 > /skills
+📋  5 skill(s) loaded:
+  • Project Instructions (AGENT.md) [embedded]
+  • Coding Style (.agent/skills/coding-style.md) [on-demand]
+  • Git Workflow (plugin:project-stats / guide.md) [on-demand]    ← 插件技能
+```
+
+### Hooks（钩子事件）
+
+钩子让插件在 Agent 生命周期的关键节点执行自定义逻辑。
+
+#### Hook 配置格式
+
+每个 `.toml` 文件定义一个 Hook：
+
+```toml
+# hooks/on_start.toml
+event        = "agent.start"
+mode         = "fire_and_forget"
+command      = "./hooks/on_start.sh"
+timeout_secs = 5
+```
+
+| 字段 | 说明 |
+|------|------|
+| `event` | 监听的事件名称 |
+| `mode` | 执行模式（见下表） |
+| `command` | 执行的脚本，路径相对于插件根目录 |
+| `timeout_secs` | 超时（默认 30s） |
+
+#### 执行模式
+
+| 模式 | 行为 | 典型用途 |
+|------|------|----------|
+| `fire_and_forget` | 异步触发，不阻塞 Agent | 写日志、发通知、统计 |
+| `blocking` | 同步执行，Agent 等到脚本退出才继续 | 启动前探活检查 |
+| `intercepting` | 脚本 stdout 可修改 Agent 决策 | 路由覆盖、工具拦截 |
+
+Agent 把事件 payload 以 JSON 写入脚本 **stdin**：
+
+```bash
+#!/bin/bash
+# hooks/on_start.sh
+payload=$(cat)
+project_dir=$(echo "$payload" | jq -r '.project_dir')
+echo "[$(date)] agent started in $project_dir" >> /tmp/audit.log
+```
+
+#### 已支持的 Hook 事件
+
+| 事件 | 触发时机 | Payload 字段 | 支持 intercepting |
+|------|----------|--------------|-------------------|
+| `agent.start` | Agent 初始化完成后 | `project_dir`, `mode` | ❌ |
+| `tool.before` | 工具调用前 | `tool_name`, `input` | ✅ |
+| `tool.after` | 工具调用后 | `tool_name`, `result`, `duration_ms` | ❌ |
+| `context.warning` | 上下文使用率超 80% | `usage_pct`, `tokens_used` | ❌ |
+| `context.critical` | 上下文使用率超 95% | `usage_pct`, `tokens_used` | ❌ |
+| `plan.complete` | 流水线通过 Checker | `mode`, `attempts`, `success` | ❌ |
+| `router.decision` | 自适应路由决策时 | `proposed_mode`, `task_preview` | ✅ |
+
+#### router.decision 拦截示例——高风险词强制走完整流水线
+
+```bash
+#!/bin/bash
+# hooks/on_router.sh
+payload=$(cat)
+task=$(echo "$payload" | jq -r '.task_preview')
+if echo "$task" | grep -qiE 'drop|delete|force.?push|truncate'; then
+    echo '{"override_mode": "full_pipeline"}'
+else
+    echo '{}'   # 空对象 = 不干预
+fi
+```
+
+```toml
+# hooks/on_router.toml
+event        = "router.decision"
+mode         = "intercepting"
+command      = "./hooks/on_router.sh"
+timeout_secs = 3
+```
+
+### 插件 system_prompt.md
+
+插件的 `system_prompt.md` 以**追加方式**写入系统提示词，位于项目级 `system_prompt.md` 之后、skills 索引之前，适合注入工具使用规范或领域约束：
+
+```markdown
+# Git 工具规范（由 project-stats 插件追加）
+- 查询提交历史时使用 git_log 工具，不要执行原始 git 命令
+- 写入代码前先用 word_count 评估规模
+```
+
+结合 `.agent/system_prompt.md` 的 `# OVERRIDE` 覆盖机制，可以构建完全定制化的专属 Agent：
+
+| 文件 | 作用 |
+|------|------|
+| `.agent/system_prompt.md`（`# OVERRIDE`） | 完全替换默认角色定位 |
+| `plugins/<name>/system_prompt.md` | 追加领域规则 |
+
+整个工具 / 流水线 / 安全确认基础设施完整保留，只替换角色定位和领域规则。
+
+### 安装与示例插件
+
+```bash
+# 方式一：直接复制
+cp -r /path/to/plugin .agent/plugins/
+
+# 方式二：git clone
+git clone https://github.com/example/agent-plugin-xxx .agent/plugins/xxx
+
+# 重启 Agent 即生效，无需其他配置
+```
+
+项目在 `sample/` 目录下提供了两个完整示例：
+
+#### `sample/project-stats/`——工具 + Hooks 综合示例
+
+| 组件 | 内容 |
+|------|------|
+| 工具 | `git_log`（Git 历史查询）、`word_count`（代码规模统计） |
+| 技能 | `git-workflow.md`（工具使用最佳实践） |
+| Hooks | `agent.start` fire_and_forget（写会话日志）、`tool.after` fire_and_forget（写审计日志）、`router.decision` intercepting（高风险词 → 强制 full_pipeline） |
+| system_prompt.md | 限制 LLM 使用插件工具而非原始 git 命令 |
+
+安装：`cp -r sample/project-stats .agent/plugins/project-stats`
+
+#### `sample/dev-cluster/`——多节点 + MCP 配置示例
+
+| 组件 | 内容 |
+|------|------|
+| 工具 | `probe_nodes`（探活本地节点 + 远程 peer /health） |
+| 技能 | `multi-node-guide.md`（路由规则 + MCP 工具说明） |
+| `workspaces.toml` | 3 个本地 node（frontend/backend/infra）+ 2 个 peer（gpu-box/ci-runner） |
+| MCP 配置 | stdio 传输（filesystem）、HTTP/SSE 传输（brave-search）、多服务器格式（github + postgres） |
+| Hooks | `agent.start` blocking（启动时探活所有节点） |
+| system_prompt.md | 生产操作确认规则 + 节点路由约束 |
+
+安装：`cp -r sample/dev-cluster .agent/plugins/dev-cluster`
+
+---
+
 ## ✏️ 自定义系统提示词
 
 通过 Markdown 文件自定义 LLM 行为：
@@ -879,7 +1091,9 @@ your-project/
 **加载顺序：**
 
 ```
-默认提示词 → 全局 system_prompt.md → 项目 system_prompt.md → summary → skills → memory
+默认提示词 → 全局 system_prompt.md → 项目 system_prompt.md
+          → 插件 system_prompt.md（按插件顺序追加）
+          → summary → skills 索引（内置 + 插件）→ memory
 ```
 
 ---
@@ -1373,10 +1587,14 @@ your-project/
 └── .agent/
     ├── memory.md           # 持久记忆（自动维护）
     ├── summary.md          # 项目摘要（/summary 生成）
-    ├── system_prompt.md    # 项目级系统提示词（可选）
+    ├── system_prompt.md    # 项目级系统提示词（可选，# OVERRIDE 可替换默认）
     ├── mcp.toml            # MCP 客户端配置（可选）
-    └── skills/             # 项目级 Skills
-        └── *.md
+    ├── skills/             # 项目级 Skills
+    │   ├── coding-style.md
+    │   └── my-tool/        # 目录 Skill（SKILL.md + tool.json + 脚本）
+    └── plugins/            # 插件目录（可选）
+        ├── project-stats/  # 示例：Git 统计 + 审计日志 + 路由优化
+        └── dev-cluster/    # 示例：多节点拓扑 + MCP 配置
 ```
 
 建议在 `.gitignore` 中添加：

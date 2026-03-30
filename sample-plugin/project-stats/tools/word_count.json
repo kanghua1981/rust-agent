@@ -1,0 +1,22 @@
+{
+  "name": "word_count",
+  "description": "统计文件或目录的代码行数、单词数、字符数，支持按扩展名过滤",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "要统计的文件或目录路径（相对项目目录）"
+      },
+      "ext": {
+        "type": "string",
+        "description": "只统计指定扩展名，如 rs、py、ts（可选，不填则统计全部）"
+      },
+      "exclude": {
+        "type": "string",
+        "description": "排除的路径模式，如 target、node_modules（可选）"
+      }
+    },
+    "required": ["path"]
+  }
+}

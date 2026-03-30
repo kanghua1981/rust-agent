@@ -1,0 +1,16 @@
+# Hook 1: agent.start — fire_and_forget
+# ============================================================
+# 每次 Agent 启动时记录一条日志（不阻塞启动流程）。
+# 触发时机：cli.rs 中插件加载完成后立即发射
+# ============================================================
+
+event       = "agent.start"
+mode        = "fire_and_forget"   # 不等结果，不影响启动速度
+description = "Agent 启动时写入会话日志"
+script      = "hooks/scripts/on_agent_start.sh"
+priority    = 10                  # 较高优先级，先于其他 agent.start hook 执行
+timeout     = 5                   # 秒，超时自动跳过
+
+# 附加环境变量注入给脚本
+[env]
+LOG_PREFIX = "[project-stats]"

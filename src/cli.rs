@@ -15,6 +15,149 @@ use crate::output::AgentOutput;
 use crate::persistence;
 use crate::ui;
 
+/// Handle `/plugin` command — list, enable, disable, info, tools.
+///
+/// - `/plugin`                — list all plugins
+/// - `/plugin list`           — list all plugins
+/// - `/plugin enable <name>`  — enable a plugin
+/// - `/plugin disable <name>` — disable a plugin
+/// - `/plugin info <name>`    — show plugin information
+/// - `/plugin tools`          — list plugin tools
+pub async fn handle_plugin_command(subcommand: &str, agent: &mut Agent) {
+    let parts: Vec<&str> = subcommand.split_whitespace().collect();
+    
+    match parts.as_slice() {
+        [] | ["list"] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                let plugins = pm_lock.list_plugins();
+                if plugins.is_empty() {
+                    println!("\n🔌  No plugins loaded.");
+                } else {
+                    println!("\n🔌  {} plugin(s) loaded:", plugins.len());
+                    for plugin in plugins {
+                        let status = if plugin.enabled { "enabled" } else { "disabled" };
+                        println!("  • {} ({}) [{}]", plugin.name, plugin.id, status);
+                    }
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+                println!("  Start the agent with --enable-plugins to enable plugins.");
+            }
+        }
+        ["enable", name] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let mut pm_lock = pm.lock().await;
+                match pm_lock.enable_plugin(name) {
+                    Ok(()) => println!("\n✅  Plugin '{}' enabled.", name),
+                    Err(e) => println!("\n❌  Failed to enable plugin '{}': {}", name, e),
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
+        ["disable", name] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let mut pm_lock = pm.lock().await;
+                match pm_lock.disable_plugin(name) {
+                    Ok(()) => println!("\n✅  Plugin '{}' disabled.", name),
+                    Err(e) => println!("\n❌  Failed to disable plugin '{}': {}", name, e),
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
+        ["info", name] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                match pm_lock.get_plugin_info(name) {
+                    Some(info) => {
+                        println!("\n🔌  Plugin: {}", info.name);
+                        println!("  ID: {}", info.id);
+                        println!("  Version: {}", info.version);
+                        println!("  Description: {}", info.description);
+                        println!("  Author: {}", info.author);
+                        println!("  Status: {}", if info.enabled { "enabled" } else { "disabled" });
+                        println!("  Tools: {}", info.tools.len());
+                        for tool in &info.tools {
+                            println!("    • {} - {}", tool.name, tool.description);
+                        }
+                    }
+                    None => println!("\n❌  Plugin '{}' not found.", name),
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
+        ["tools"] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                let tools = pm_lock.get_all_tools();
+                if tools.is_empty() {
+                    println!("\n🔧  No plugin tools available.");
+                } else {
+                    println!("\n🔧  {} plugin tool(s) available:", tools.len());
+                    for tool in tools {
+                        println!("  • {} ({}) - {}", tool.name, tool.plugin_id, tool.description);
+                    }
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
+        ["skills"] | ["skills", ""] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                let skills = pm_lock.get_all_skills();
+                if skills.is_empty() {
+                    println!("\n📚  No plugin skills available.");
+                } else {
+                    println!("\n📚  {} plugin skill(s):", skills.len());
+                    for skill in &skills {
+                        let tags = if skill.tags.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{}]", skill.tags.join(", "))
+                        };
+                        println!("  • {} (plugin: {}){}", skill.name, skill.plugin_id, tags);
+                        if !skill.description.is_empty() {
+                            println!("    {}", skill.description);
+                        }
+                    }
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
+        ["skills", query] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                let skills = pm_lock.search_skills(query);
+                if skills.is_empty() {
+                    println!("\n📚  No plugin skills matching '{}'.", query);
+                } else {
+                    println!("\n📚  {} skill(s) matching '{}':", skills.len(), query);
+                    for skill in &skills {
+                        println!("  • {} (plugin: {}) — {}", skill.name, skill.plugin_id, skill.description);
+                    }
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
+        _ => {
+            println!("\n🔌  Plugin command usage:");
+            println!("  /plugin list            - list all plugins");
+            println!("  /plugin enable <name>   - enable a plugin");
+            println!("  /plugin disable <name>  - disable a plugin");
+            println!("  /plugin info <name>     - show plugin information");
+            println!("  /plugin tools           - list plugin tools");
+            println!("  /plugin skills          - list all plugin skills");
+            println!("  /plugin skills <query>  - search plugin skills");
+        }
+    }
+}
+
 /// List saved sessions and exit
 pub fn list_sessions_and_exit() -> Result<()> {
     let sessions = persistence::list_sessions()?;
@@ -49,6 +192,325 @@ pub fn list_sessions_and_exit() -> Result<()> {
     Ok(())
 }
 
+enum SlashResult {
+    Continue,
+    Quit,
+    NotACommand,
+}
+
+fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
+    match input {
+        "/quit" | "/exit" | "/q" => {
+            // Sandbox cleanup is handled by the caller after the REPL exits
+            auto_save_session(agent);
+            println!("\n{}", "👋 Goodbye! Happy coding!".bright_green());
+            SlashResult::Quit
+        }
+        "/help" | "/h" => {
+            ui::print_help();
+            SlashResult::Continue
+        }
+        "/clear" => {
+            agent.reset();
+            println!("\n{}", "🔄 Conversation cleared.".bright_cyan());
+            SlashResult::Continue
+        }
+        "/usage" => {
+            let (input_tokens, output_tokens) = agent.token_usage();
+            ui::print_usage(input_tokens, output_tokens, agent.role_token_usage());
+            SlashResult::Continue
+        }
+        "/save" => {
+            if agent.global_session {
+                match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
+                    Ok(id) => {
+                        agent.set_session_id(id.clone());
+                        println!("\n{}  Session saved (global): {}", "💾", id.bright_yellow());
+                    }
+                    Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
+                }
+            } else {
+                match persistence::save_local_session(&agent.conversation, &agent.project_dir) {
+                    Ok(()) => println!("\n{}  Session saved to {}", "💾", ".agent/session.json".bright_yellow()),
+                    Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
+                }
+            }
+            SlashResult::Continue
+        }
+        "/sessions" => {
+            if let Err(e) = list_sessions_and_exit() {
+                ui::print_error(&format!("Failed to list sessions: {}", e));
+            }
+            SlashResult::Continue
+        }
+        "/yesall" => {
+            confirm::set_auto_approve(true);
+            println!(
+                "\n{}  {}",
+                "✅",
+                "Auto-approve enabled. All operations will proceed without confirmation."
+                    .bright_green()
+            );
+            SlashResult::Continue
+        }
+        "/confirm" => {
+            confirm::set_auto_approve(false);
+            println!(
+                "\n{}  {}",
+                "🔒",
+                "Confirmations re-enabled. Dangerous operations will require approval."
+                    .bright_cyan()
+            );
+            SlashResult::Continue
+        }
+        "/context" => {
+            let status =
+                crate::context::check_context(&agent.conversation, &agent.config.model);
+            ui::print_context_status(
+                status.estimated_tokens,
+                status.max_tokens,
+                status.usage_percent,
+                agent.conversation.messages.len(),
+            );
+            SlashResult::Continue
+        }
+        _ if input == "/model" || input.starts_with("/model ") => {
+            // Model switching not implemented in this branch
+            println!(
+                "\n{}  Model switching is not available in this branch.",
+                "⚠️"
+            );
+            SlashResult::Continue
+        }
+        "/skills" => {
+            {
+                let loaded = crate::skills::load_skills(&agent.project_dir);
+                if loaded.is_empty() {
+                    println!(
+                        "\n{}  No skills found. Create {} or add Markdown files to {}",
+                        "📋",
+                        "AGENT.md".bright_yellow(),
+                        ".agent/skills/".bright_yellow()
+                    );
+                } else {
+                    println!("\n{}  {} skill(s) loaded:", "📋", loaded.len());
+                    for skill in &loaded.skills {
+                        println!(
+                            "  {} {} {} {}",
+                            "•".bright_cyan(),
+                            skill.name.bright_white(),
+                            format!("({})", skill.source).dimmed(),
+                            "[embedded]".green()
+                        );
+                    }
+                    for entry in &loaded.index {
+                        println!(
+                            "  {} {} {} {}",
+                            "•".bright_cyan(),
+                            entry.name.bright_white(),
+                            format!("({})", entry.source).dimmed(),
+                            "[on-demand]".yellow()
+                        );
+                    }
+                }
+            }
+            SlashResult::Continue
+        }
+        "/memory" => {
+            let mem = &agent.memory;
+            if mem.is_empty() {
+                println!(
+                    "\n{}  Memory is empty. It will grow as you use the agent.",
+                    "🧠"
+                );
+            } else {
+                println!("\n{}  Agent Memory ({} entries):", "🧠", mem.entry_count());
+                if !mem.knowledge.is_empty() {
+                    println!("  {} {}:", "📖", "Project Knowledge".bright_cyan());
+                    for fact in &mem.knowledge {
+                        println!("    {} {}", "•".dimmed(), fact);
+                    }
+                }
+                if !mem.file_map.is_empty() {
+                    println!("  {} {}:", "📁", "Key Files".bright_cyan());
+                    for (path, desc) in &mem.file_map {
+                        if desc.is_empty() {
+                            println!("    {} {}", "•".dimmed(), path.bright_white());
+                        } else {
+                            println!(
+                                "    {} {} {}",
+                                "•".dimmed(),
+                                path.bright_white(),
+                                format!("({})", desc).dimmed()
+                            );
+                        }
+                    }
+                }
+                if !mem.session_log.is_empty() {
+                    println!("  {} {}:", "📝", "Session Log".bright_cyan());
+                    for entry in &mem.session_log {
+                        println!("    {} {}", "•".dimmed(), entry.dimmed());
+                    }
+                }
+            }
+            SlashResult::Continue
+        }
+        _ if input == "/mode" || input.starts_with("/mode ") => {
+            handle_mode_command(input, agent);
+            SlashResult::Continue
+        }
+        _ => SlashResult::NotACommand,
+    }
+}
+
+/// Auto-save the session (silent, won't error to user)
+pub fn auto_save_session(agent: &mut Agent) {
+    if agent.conversation.messages.is_empty() {
+        return;
+    }
+    if agent.global_session {
+        match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
+            Ok(id) => {
+                agent.set_session_id(id);
+            }
+            Err(e) => {
+                tracing::warn!("Auto-save (global) failed: {}", e);
+            }
+        }
+    } else {
+        if let Err(e) = persistence::save_local_session(&agent.conversation, &agent.project_dir) {
+            tracing::warn!("Auto-save (local) failed: {}", e);
+        }
+    }
+}
+
+
+
+/// Handle `/mode [simple|plan|pipeline|auto]` command.
+///
+/// - `/mode`              — show current override (or "auto")
+/// - `/mode simple`       — force BasicLoop for every message
+/// - `/mode plan`         — force PlanAndExecute for every message
+/// - `/mode pipeline`     — force FullPipeline for every message
+/// - `/mode auto`         — clear override, let the router decide
+fn handle_mode_command(input: &str, agent: &mut Agent) {
+    use crate::router::ExecutionMode;
+
+    let sub = input.strip_prefix("/mode").unwrap_or("").trim();
+
+    match sub {
+        "" => {
+            let current = match agent.force_mode {
+                Some(ExecutionMode::BasicLoop)     => "simple (forced)".to_string(),
+                Some(ExecutionMode::PlanAndExecute) => "plan (forced)".to_string(),
+                Some(ExecutionMode::FullPipeline)  => "pipeline (forced)".to_string(),
+                None => "auto (router decides)".to_string(),
+            };
+            println!("\n{}  Current execution mode: {}", "🔀", current.bright_white());
+            println!("  Use {} to change:", "/mode <option>".bright_cyan());
+            println!("    {}      — single-model loop, fast & cheap", "simple".bright_yellow());
+            println!("    {}        — planner + executor, no checker", "plan".bright_yellow());
+            println!("    {}    — full planner → executor → checker", "pipeline".bright_yellow());
+            println!("    {}        — let the router decide (default)", "auto".bright_yellow());
+            println!();
+        }
+        "simple" => {
+            agent.set_force_mode(Some(ExecutionMode::BasicLoop));
+            println!("\n{}  Mode locked to {}: single-model loop for all messages.", "🔀", "simple".bright_green());
+        }
+        "plan" => {
+            agent.set_force_mode(Some(ExecutionMode::PlanAndExecute));
+            println!("\n{}  Mode locked to {}: planner + executor for all messages.", "🔀", "plan".bright_green());
+        }
+        "pipeline" => {
+            agent.set_force_mode(Some(ExecutionMode::FullPipeline));
+            println!("\n{}  Mode locked to {}: full pipeline for all messages.", "🔀", "pipeline".bright_green());
+        }
+        "auto" => {
+            agent.set_force_mode(None);
+            println!("\n{}  Mode reset to {}: adaptive router will classify each task.", "🔀", "auto".bright_green());
+        }
+        other => {
+            println!(
+                "\n{}  Unknown mode: {}. Valid options: simple, plan, pipeline, auto",
+                "❓",
+                other.bright_red()
+            );
+        }
+    }
+}
+
+/// Save the current terminal (termios) state so it can be restored later.
+///
+/// Child processes spawned by `run_command` can accidentally corrupt
+/// terminal settings (ECHO, ICANON, VMIN, etc.) even though we set
+/// their stdin to null.  Some tools or signal handlers might also
+/// leave the terminal in a bad state.  Saving before `process_message`
+/// and restoring after guarantees the readline prompt always works.
+#[cfg(unix)]
+fn save_terminal_state() -> Option<libc::termios> {
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == 0 {
+            Some(termios)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn save_terminal_state() -> Option<()> {
+    None
+}
+
+/// Restore terminal settings saved by `save_terminal_state`.
+#[cfg(unix)]
+fn restore_terminal_state(termios: &libc::termios) {
+    unsafe {
+        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, termios);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_terminal_state(_: &()) {}
+
+/// Run `process_message` with Ctrl-C interrupt support.
+///
+/// A background task listens for SIGINT and sets the global interrupt flag.
+/// `process_message` checks this flag at every tool-call boundary and exits
+/// cleanly, leaving the conversation in a consistent state.
+///
+/// This is safer than `tokio::select!` which would cancel the future at an
+/// arbitrary `.await` point (e.g. mid-stream LLM response), potentially
+/// leaving a `ToolUse` block without a matching `ToolResult` in the history.
+async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
+    crate::agent::clear_interrupt();
+    crate::agent::clear_guidance();
+    // Ctrl-C → interrupt flag
+    let interrupt_guard = tokio::spawn(async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            crate::agent::request_interrupt();
+        }
+    });
+    // Ctrl-\ (SIGQUIT) → guidance flag (pipeline executor picks it up between iterations)
+    #[cfg(unix)]
+    let guidance_guard = tokio::spawn(async {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut sigquit) = signal(SignalKind::quit()) {
+            loop {
+                if sigquit.recv().await.is_none() { break; }
+                crate::agent::request_guidance();
+            }
+        }
+    });
+    let result = agent.process_message(input).await;
+    interrupt_guard.abort();
+    #[cfg(unix)]
+    guidance_guard.abort();
+    result
+}
+
 /// Main entry point for the CLI interaction loop
 pub async fn run(
     config: Config,
@@ -58,6 +520,7 @@ pub async fn run(
     output: Arc<dyn AgentOutput>,
     isolation: crate::container::IsolationMode,
     global_session: bool,
+    plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
 ) -> Result<()> {
     ui::print_banner();
     ui::print_workdir();
@@ -84,12 +547,12 @@ pub async fn run(
                     session.meta.id.bright_yellow(),
                     msg_count.to_string().bright_white()
                 );
-                Agent::with_conversation(config, project_dir.clone(), conversation, session.meta.id, output.clone(), sandbox)
+                Agent::with_conversation(config, project_dir.clone(), conversation, session.meta.id, output.clone(), sandbox, plugin_manager.clone())
             }
             Err(e) => {
                 ui::print_error(&format!("Failed to resume session: {}", e));
                 println!("Starting a new session instead.\n");
-                Agent::new(config, project_dir.clone(), output.clone(), sandbox)
+                Agent::new(config, project_dir.clone(), output.clone(), sandbox, plugin_manager.clone())
             }
         }
     } else if !global_session {
@@ -103,22 +566,118 @@ pub async fn run(
                     "🔄",
                     msg_count.to_string().bright_white()
                 );
-                Agent::with_conversation(config, project_dir.clone(), conversation, "local".to_string(), output.clone(), sandbox)
+                Agent::with_conversation(config, project_dir.clone(), conversation, "local".to_string(), output.clone(), sandbox, plugin_manager.clone())
             }
-            Ok(None) => Agent::new(config, project_dir.clone(), output.clone(), sandbox),
+            Ok(None) => Agent::new(config, project_dir.clone(), output.clone(), sandbox, plugin_manager.clone()),
             Err(e) => {
                 tracing::warn!("Failed to load local session: {}", e);
-                Agent::new(config, project_dir.clone(), output.clone(), sandbox)
+                Agent::new(config, project_dir.clone(), output.clone(), sandbox, plugin_manager.clone())
             }
         }
     } else {
-        Agent::new(config, project_dir.clone(), output.clone(), sandbox)
+        Agent::new(config, project_dir.clone(), output.clone(), sandbox, plugin_manager.clone())
     };
     agent.global_session = global_session;
 
-    // Load MCP client tools from .agent/mcp.toml (if present).
-    // Silently skipped when the file doesn't exist or no servers are configured.
-    agent.load_mcp_tools().await;
+    // 检查旧格式 .agent/mcp.toml 是否存在，提示迁移
+    let legacy_mcp = project_dir.join(".agent").join("mcp.toml");
+    if legacy_mcp.exists() {
+        output.on_warning(
+            ".agent/mcp.toml 已废弃：MCP 服务配置请移至插件目录。\
+            \n  创建插件目录 .agent/plugins/<名称>/，并在其中新建 mcp/<服务名>.toml。\
+            \n  详见 docs/plugin_design.md。"
+        );
+    }
+
+    // Load plugin tools
+    if let Some(pm) = &plugin_manager {
+        let mut pm_lock = pm.lock().await;
+        if let Err(e) = pm_lock.load_all_plugins() {
+            output.on_warning(&format!("Failed to load plugins: {}", e));
+        }
+        // 将项目内技能（AGENT.md / .agent/skills）注册为 @system 插件，
+        // 使得 load_skill 工具可以统一查询项目技能和插件技能。
+        pm_lock.load_system_skills(&project_dir);
+
+        // Hook 总线：将 PluginManager 的 hook_bus 共享给 Agent（含 ToolExecutor）
+        let hook_bus = pm_lock.get_hook_bus();
+        drop(pm_lock);
+        agent.set_hook_bus(Some(hook_bus.clone()));
+        // ── agent.start hook（fire-and-forget）─────────────────────────────────
+        {
+            use crate::plugin::hook_bus::HookEvent;
+            let session_id = agent.session_id().unwrap_or("none").to_string();
+            hook_bus.emit(HookEvent::new(
+                "agent.start",
+                session_id,
+                serde_json::json!({
+                    "project_dir": project_dir.display().to_string(),
+                    "mode": "cli",
+                }),
+            ));
+        }
+    }
+    
+    // Load plugin tools into tool executor
+    if let Err(e) = agent.load_plugin_tools().await {
+        output.on_warning(&format!("Failed to load plugin tools: {}", e));
+    }
+
+    // 将插件的 MCP 服务器连接并注册到工具执行器
+    if let Some(pm) = &plugin_manager {
+        let pm_lock = pm.lock().await;
+        let mcp_entries = pm_lock.collect_mcp_entries();
+        drop(pm_lock);
+        if !mcp_entries.is_empty() {
+            let (loaded, errors) = agent.load_mcp_from_entries(&mcp_entries).await;
+            if !loaded.is_empty() {
+                tracing::info!("Plugin MCP tools registered: {}", loaded.join(", "));
+            }
+            for err in &errors {
+                output.on_warning(&format!("Plugin MCP: {}", err));
+            }
+        }
+    }
+    
+    // 将插件的 system_prompt.md 追加到系统提示词。
+    // 每个启用插件根目录下的 system_prompt.md 若存在，则按加载顺序依次追加。
+    if let Some(pm) = &plugin_manager {
+        let pm_lock = pm.lock().await;
+        let extra = pm_lock.collect_system_prompts();
+        drop(pm_lock);
+        if !extra.is_empty() {
+            agent.conversation.system_prompt.push_str(&extra);
+        }
+    }
+
+    // 将插件 skills 注入 system_prompt。
+    // @system 技能（项目内置）已由 conversation.rs 注入，这里只补充非 @system 的插件提供的技能。
+    if let Some(pm) = &plugin_manager {
+        let pm_lock = pm.lock().await;
+        let plugin_skills: Vec<_> = pm_lock.get_all_skills()
+            .into_iter()
+            .filter(|s| s.plugin_id != "@system")
+            .collect();
+        if !plugin_skills.is_empty() {
+            let mut section = "\n\n--- Plugin Skills ---".to_string();
+            section.push_str("\n## Available Plugin Skills (use `load_skill` tool with the skill name to read full content)");
+            for skill in &plugin_skills {
+                let tags_hint = if skill.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [tags: {}]", skill.tags.join(", "))
+                };
+                section.push_str(&format!(
+                    "\n- **{}** (plugin: {}){} — {}",
+                    skill.name,
+                    skill.plugin_id,
+                    tags_hint,
+                    skill.description,
+                ));
+            }
+            agent.conversation.system_prompt.push_str(&section);
+        }
+    }
 
     // Print sandbox status
     if sandbox_enabled {
@@ -221,9 +780,21 @@ pub async fn run(
                         handle_plan_command(input, &mut agent).await;
                         continue;
                     }
-                    // /nodes probes all [[remote]] entries in workspaces.toml
+                    // /nodes probes all [[remote]] entries in workspaces (via plugin system)
                     if input == "/nodes" {
-                        handle_nodes_command(&agent.project_dir).await;
+                        let ws_cfg = if let Some(pm) = &plugin_manager {
+                            let lock = pm.lock().await;
+                            let from_pm = lock.collect_workspace();
+                            if from_pm.peers.is_empty() {
+                                // 兼容兜底
+                                crate::workspaces::load(&agent.project_dir)
+                            } else {
+                                from_pm
+                            }
+                        } else {
+                            crate::workspaces::load(&agent.project_dir)
+                        };
+                        handle_nodes_command(ws_cfg).await;
                         continue;
                     }
                     // Sandbox commands need async
@@ -239,6 +810,13 @@ pub async fn run(
                         handle_changes_command(&agent).await;
                         continue;
                     }
+                    // Plugin commands
+                    if input.starts_with("/plugin") {
+                        let subcommand = input.strip_prefix("/plugin").map(|s| s.trim()).unwrap_or("");
+                        handle_plugin_command(subcommand, &mut agent).await;
+                        continue;
+                    }
+                    
                     let handled = handle_slash_command(input, &mut agent);
                     match handled {
                         SlashResult::Continue => continue,
@@ -341,786 +919,47 @@ pub async fn run(
     Ok(())
 }
 
-enum SlashResult {
-    Continue,
-    Quit,
-    NotACommand,
-}
-
-fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
-    match input {
-        "/quit" | "/exit" | "/q" => {
-            // Sandbox cleanup is handled by the caller after the REPL exits
-            auto_save_session(agent);
-            println!("\n{}", "👋 Goodbye! Happy coding!".bright_green());
-            SlashResult::Quit
+/// Handle `/summary` command — generate or load project summary.
+async fn handle_summary_command(input: &str, agent: &mut Agent) {
+    let sub = input.strip_prefix("/summary").unwrap_or("").trim();
+    if sub.is_empty() {
+        // Generate summary
+        ui::print_summary_generating();
+        // Summary generation not implemented in this branch
+        println!("{}  Summary generation is not available in this branch.", "⚠️");
+    } else {
+        // Load specific summary file
+        let path = std::path::Path::new(sub);
+        if !path.exists() {
+            ui::print_error(&format!("File not found: {}", sub));
+            return;
         }
-        "/help" | "/h" => {
-            ui::print_help();
-            SlashResult::Continue
-        }
-        "/clear" => {
-            agent.reset();
-            println!("\n{}", "🔄 Conversation cleared.".bright_cyan());
-            SlashResult::Continue
-        }
-        "/usage" => {
-            let (input_tokens, output_tokens) = agent.token_usage();
-            ui::print_usage(input_tokens, output_tokens, agent.role_token_usage());
-            SlashResult::Continue
-        }
-        "/save" => {
-            if agent.global_session {
-                match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
-                    Ok(id) => {
-                        agent.set_session_id(id.clone());
-                        println!("\n{}  Session saved (global): {}", "💾", id.bright_yellow());
-                    }
-                    Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
-                }
-            } else {
-                match persistence::save_local_session(&agent.conversation, &agent.project_dir) {
-                    Ok(()) => println!("\n{}  Session saved to {}", "💾", ".agent/session.json".bright_yellow()),
-                    Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
-                }
-            }
-            SlashResult::Continue
-        }
-        "/sessions" => {
-            if let Err(e) = list_sessions_and_exit() {
-                ui::print_error(&format!("Failed to list sessions: {}", e));
-            }
-            SlashResult::Continue
-        }
-        "/yesall" => {
-            confirm::set_auto_approve(true);
-            println!(
-                "\n{}  {}",
-                "✅",
-                "Auto-approve enabled. All operations will proceed without confirmation."
-                    .bright_green()
-            );
-            SlashResult::Continue
-        }
-        "/confirm" => {
-            confirm::set_auto_approve(false);
-            println!(
-                "\n{}  {}",
-                "🔒",
-                "Confirmations re-enabled. Dangerous operations will require approval."
-                    .bright_cyan()
-            );
-            SlashResult::Continue
-        }
-        "/context" => {
-            let status =
-                crate::context::check_context(&agent.conversation, &agent.config.model);
-            ui::print_context_status(
-                status.estimated_tokens,
-                status.max_tokens,
-                status.usage_percent,
-                agent.conversation.messages.len(),
-            );
-            SlashResult::Continue
-        }
-        _ if input == "/model" || input.starts_with("/model ") => {
-            handle_model_command(input, agent);
-            SlashResult::Continue
-        }
-        "/skills" => {
-            {
-                let loaded = crate::skills::load_skills(&agent.project_dir);
-                if loaded.is_empty() {
-                    println!(
-                        "\n{}  No skills found. Create {} or add Markdown files to {}",
-                        "📋",
-                        "AGENT.md".bright_yellow(),
-                        ".agent/skills/".bright_yellow()
-                    );
-                } else {
-                    println!("\n{}  {} skill(s) loaded:", "📋", loaded.len());
-                    for skill in &loaded.skills {
-                        println!(
-                            "  {} {} {} {}",
-                            "•".bright_cyan(),
-                            skill.name.bright_white(),
-                            format!("({})", skill.source).dimmed(),
-                            "[embedded]".green()
-                        );
-                    }
-                    for entry in &loaded.index {
-                        println!(
-                            "  {} {} {} {}",
-                            "•".bright_cyan(),
-                            entry.name.bright_white(),
-                            format!("({})", entry.source).dimmed(),
-                            "[on-demand]".yellow()
-                        );
-                    }
-                }
-            }
-            SlashResult::Continue
-        }
-        "/memory" => {
-            let mem = &agent.memory;
-            if mem.is_empty() {
-                println!(
-                    "\n{}  Memory is empty. It will grow as you use the agent.",
-                    "🧠"
-                );
-            } else {
-                println!("\n{}  Agent Memory ({} entries):", "🧠", mem.entry_count());
-                if !mem.knowledge.is_empty() {
-                    println!("  {} {}:", "📖", "Project Knowledge".bright_cyan());
-                    for fact in &mem.knowledge {
-                        println!("    {} {}", "•".dimmed(), fact);
-                    }
-                }
-                if !mem.file_map.is_empty() {
-                    println!("  {} {}:", "📁", "Key Files".bright_cyan());
-                    for (path, desc) in &mem.file_map {
-                        if desc.is_empty() {
-                            println!("    {} {}", "•".dimmed(), path.bright_white());
-                        } else {
-                            println!(
-                                "    {} {} {}",
-                                "•".dimmed(),
-                                path.bright_white(),
-                                format!("({})", desc).dimmed()
-                            );
-                        }
-                    }
-                }
-                if !mem.session_log.is_empty() {
-                    println!("  {} {}:", "📝", "Session Log".bright_cyan());
-                    for entry in &mem.session_log {
-                        println!("    {} {}", "•".dimmed(), entry.dimmed());
-                    }
-                }
-            }
-            SlashResult::Continue
-        }
-        _ if input == "/mode" || input.starts_with("/mode ") => {
-            handle_mode_command(input, agent);
-            SlashResult::Continue
-        }
-        _ if input == "/export" || input.starts_with("/export ") => {
-            use std::fmt::Write as FmtWrite;
-            use std::time::{SystemTime, UNIX_EPOCH};
-            use crate::conversation::{ContentBlock, Role};
-
-            let ts_string = {
-                let secs = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let s  = secs % 60;
-                let m  = (secs / 60) % 60;
-                let h  = (secs / 3600) % 24;
-                let days = secs / 86400;
-                let z   = days + 719468;
-                let era = z / 146097;
-                let doe = z - era * 146097;
-                let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-                let y   = yoe + era * 400;
-                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-                let mp  = (5 * doy + 2) / 153;
-                let d   = doy - (153 * mp + 2) / 5 + 1;
-                let mo  = if mp < 10 { mp + 3 } else { mp - 9 };
-                let yr  = if mo <= 2 { y + 1 } else { y };
-                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", yr, mo, d, h, m, s)
-            };
-
-            let filename = {
-                let custom = input.strip_prefix("/export").unwrap_or("").trim();
-                if custom.is_empty() {
-                    let compact = ts_string.replace(" UTC", "").replace(' ', "-").replace(':', "");
-                    format!("conversation-{}.md", compact)
-                } else if custom.ends_with(".md") {
-                    custom.to_owned()
-                } else {
-                    format!("{}.md", custom)
-                }
-            };
-            let path = agent.project_dir.join(&filename);
-
-            let mut md = String::new();
-            let _ = writeln!(md, "# Conversation Export\n");
-            let _ = writeln!(md, "Generated: {}\n", ts_string);
-            let _ = writeln!(md, "---\n");
-
-            for msg in &agent.conversation.messages {
-                    // Skip messages that contain only ToolResult blocks.
-                    let is_tool_result_only = msg.content.iter().all(|b| {
-                        matches!(b, ContentBlock::ToolResult { .. })
-                    });
-
-                    match msg.role {
-                        Role::User if !is_tool_result_only => {
-                            let _ = writeln!(md, "## \u{1F9D1} You\n");
-                            for block in &msg.content {
-                                if let ContentBlock::Text { text } = block {
-                                    let _ = writeln!(md, "{}\n", text.trim());
-                                }
-                            }
-                            let _ = writeln!(md, "---\n");
-                        }
-                        Role::Assistant => {
-                            let _ = writeln!(md, "## \u{1F916} Agent\n");
-                            for block in &msg.content {
-                                match block {
-                                    ContentBlock::Text { text } if !text.trim().is_empty() => {
-                                        let _ = writeln!(md, "{}\n", text.trim());
-                                    }
-                                    ContentBlock::ToolUse { name, input: tool_input, .. } => {
-                                        let pretty = serde_json::to_string_pretty(tool_input)
-                                            .unwrap_or_else(|_| tool_input.to_string());
-                                        let _ = writeln!(md, "**Tool:** `{}`\n", name);
-                                        let _ = writeln!(md, "```json");
-                                        let _ = writeln!(md, "{}", pretty);
-                                        let _ = writeln!(md, "```\n");
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            let _ = writeln!(md, "---\n");
-                        }
-                        _ => {}
-                    }
-                }
-
-            match std::fs::write(&path, &md) {
-                Ok(()) => println!(
-                    "\n{}  Saved: {}  {}",
-                    "💾",
-                    path.display().to_string().bright_white(),
-                    format!("({} bytes)", md.len()).dimmed()
-                ),
-                Err(e) => ui::print_error(&format!("Export failed: {}", e)),
-            }
-            SlashResult::Continue
-        }
-        _ => {
-            // Unknown slash command, treat as regular message
-            if input.starts_with('/') {
-                println!(
-                    "\n{}  Unknown command: {}. Type {} for available commands.",
-                    "❓",
-                    input.bright_red(),
-                    "/help".bright_white()
-                );
-                SlashResult::Continue
-            } else {
-                SlashResult::NotACommand
-            }
-        }
+        // Summary loading not implemented in this branch
+        println!("{}  Summary loading is not available in this branch.", "⚠️");
     }
 }
 
-/// Handle `/model` command — list, switch, add, remove, default.
-///
-/// - `/model`                — show current model & list all configured models
-/// - `/model <alias>`        — switch to the model with the given alias
-/// - `/model add <alias>`    — interactively add a new model entry
-/// - `/model remove <alias>` — remove a model entry
-/// - `/model default <alias>`— set the default model alias
-pub fn handle_model_command(input: &str, agent: &mut Agent) {
-    let subcommand = input.strip_prefix("/model").unwrap_or("").trim();
-
-    match subcommand {
-        "" => {
-            // Show current model and list all configured models
-            println!(
-                "\n{}  Current model: {} ({})",
-                "🤖",
-                agent.config.model.bright_white().bold(),
-                agent.config.provider.to_string().bright_cyan()
-            );
-            if let Some(ref alias) = agent.config.model_alias {
-                println!("  Alias: {}", alias.bright_yellow());
-            }
-            println!();
-
-            let models_cfg = crate::model_manager::load();
-            if models_cfg.models.is_empty() {
-                println!(
-                    "  {}  No models configured in {}",
-                    "📋",
-                    crate::model_manager::config_path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "models.toml".to_string())
-                        .dimmed()
-                );
-                println!(
-                    "  Use {} to add a model.\n",
-                    "/model add <alias>".bright_white()
-                );
-            } else {
-                let default_alias = models_cfg.default.as_deref().unwrap_or("");
-                println!("  {}  Configured models:", "📋");
-                for alias in models_cfg.aliases() {
-                    if let Some(entry) = models_cfg.models.get(alias) {
-                        let marker = if alias == default_alias { " ⭐" } else { "" };
-                        let active = agent
-                            .config
-                            .model_alias
-                            .as_deref()
-                            .map(|a| a == alias)
-                            .unwrap_or(false);
-                        let prefix = if active {
-                            "▶".bright_green().to_string()
-                        } else {
-                            "•".dimmed().to_string()
-                        };
-                        println!(
-                            "    {} {} {} ({}/{}){}", 
-                            prefix,
-                            alias.bright_yellow(),
-                            "→".dimmed(),
-                            entry.provider.bright_cyan(),
-                            entry.model.bright_white(),
-                            marker
-                        );
-                    }
-                }
-                println!();
-
-                // ── Pipeline / Role status ────────────────────────────────
-                let pipeline_enabled = agent.pipeline_enabled();
-                let pipeline_label = if pipeline_enabled {
-                    "✅ 已启用".bright_green().to_string()
-                } else {
-                    "❌ 已禁用".dimmed().to_string()
-                };
-                println!("  {}  Pipeline: {}", "🔀", pipeline_label);
-
-                if !models_cfg.roles.is_empty() {
-                    println!("  {}  角色配置:", "🎭");
-                    let role_icons = [("planner", "🧠"), ("executor", "⚙️ "), ("checker", "🔍")];
-                    // Print known roles in order first
-                    for (role, icon) in &role_icons {
-                        if let Some(r) = models_cfg.roles.get(*role) {
-                            println!(
-                                "    {} {} → {}",
-                                icon,
-                                role.bright_yellow(),
-                                r.model.bright_white()
-                            );
-                        }
-                    }
-                    // Then any custom roles
-                    let known = ["planner", "executor", "checker"];
-                    for (role, r) in &models_cfg.roles {
-                        if !known.contains(&role.as_str()) {
-                            println!(
-                                "    🔧 {} → {}",
-                                role.bright_yellow(),
-                                r.model.bright_white()
-                            );
-                        }
-                    }
-                    println!();
-                    if !pipeline_enabled {
-                        println!(
-                            "  {}  开启流水线：在 {} 中设置 {} = {}",
-                            "💡".to_string().dimmed(),
-                            "models.toml".bright_white(),
-                            "[pipeline] enabled".bright_yellow(),
-                            "true".bright_green()
-                        );
-                    }
-                } else {
-                    println!(
-                        "  {}  未配置角色。在 {} 中添加 {} 以启用多角色流水线。",
-                        "💡".to_string().dimmed(),
-                        "models.toml".bright_white(),
-                        "[roles.planner]".bright_yellow()
-                    );
-                }
-
-                println!();
-                println!(
-                    "  Switch: {}  Add: {}  Remove: {}",
-                    "/model <alias>".bright_white(),
-                    "/model add <alias>".bright_white(),
-                    "/model remove <alias>".bright_white()
-                );
-                println!();
-            }
-        }
-        sub if sub.starts_with("add ") => {
-            let alias = sub.strip_prefix("add ").unwrap().trim();
-            if alias.is_empty() {
-                println!("\n{}  Usage: /model add <alias>", "❓");
-                return;
-            }
-            // Interactive prompts
-            println!(
-                "\n{}  Adding model '{}'",
-                "➕",
-                alias.bright_yellow()
-            );
-            let provider = prompt_line("  Provider (anthropic/openai/compatible): ");
-            let model = prompt_line("  Model name: ");
-            let base_url_raw = prompt_line("  Base URL (leave blank for default): ");
-            let api_key_raw = prompt_line("  API key (leave blank to use env var): ");
-
-            let base_url = if base_url_raw.is_empty() {
-                None
-            } else {
-                Some(base_url_raw)
-            };
-            let api_key = if api_key_raw.is_empty() {
-                None
-            } else {
-                Some(api_key_raw)
-            };
-
-            let entry = crate::model_manager::ModelEntry {
-                provider,
-                model,
-                base_url,
-                api_key,
-                max_tokens: None,
-            };
-
-            let mut models_cfg = crate::model_manager::load();
-            models_cfg.add(alias.to_string(), entry);
-
-            // If this is the first model, also set it as default
-            if models_cfg.models.len() == 1 {
-                models_cfg.set_default(alias.to_string());
-            }
-
-            match crate::model_manager::save(&models_cfg) {
-                Ok(_) => {
-                    println!(
-                        "\n{}  Model '{}' saved to {}",
-                        "✅",
-                        alias.bright_yellow(),
-                        crate::model_manager::config_path()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default()
-                            .dimmed()
-                    );
-                }
-                Err(e) => {
-                    ui::print_error(&format!("Failed to save models config: {}", e));
-                }
-            }
-        }
-        sub if sub.starts_with("remove ") => {
-            let alias = sub.strip_prefix("remove ").unwrap().trim();
-            if alias.is_empty() {
-                println!("\n{}  Usage: /model remove <alias>", "❓");
-                return;
-            }
-            let mut models_cfg = crate::model_manager::load();
-            if models_cfg.remove(alias) {
-                match crate::model_manager::save(&models_cfg) {
-                    Ok(_) => {
-                        println!(
-                            "\n{}  Model '{}' removed.",
-                            "🗑️",
-                            alias.bright_yellow()
-                        );
-                    }
-                    Err(e) => {
-                        ui::print_error(&format!("Failed to save models config: {}", e));
-                    }
-                }
-            } else {
-                println!(
-                    "\n{}  Model '{}' not found.",
-                    "❓",
-                    alias.bright_red()
-                );
-            }
-        }
-        sub if sub.starts_with("default ") => {
-            let alias = sub.strip_prefix("default ").unwrap().trim();
-            if alias.is_empty() {
-                println!("\n{}  Usage: /model default <alias>", "❓");
-                return;
-            }
-            let mut models_cfg = crate::model_manager::load();
-            if models_cfg.models.contains_key(alias) {
-                models_cfg.set_default(alias.to_string());
-                match crate::model_manager::save(&models_cfg) {
-                    Ok(_) => {
-                        println!(
-                            "\n{}  Default model set to '{}'.",
-                            "⭐",
-                            alias.bright_yellow()
-                        );
-                    }
-                    Err(e) => {
-                        ui::print_error(&format!("Failed to save models config: {}", e));
-                    }
-                }
-            } else {
-                println!(
-                    "\n{}  Model '{}' not found. Use {} to see available models.",
-                    "❓",
-                    alias.bright_red(),
-                    "/model".bright_white()
-                );
-            }
-        }
-        alias => {
-            // Switch to model by alias
-            let models_cfg = crate::model_manager::load();
-            if let Some(resolved) = models_cfg.resolve(alias) {
-                agent.switch_model(&resolved);
-                println!(
-                    "\n{}  Switched to '{}' → {} ({})",
-                    "🔄",
-                    alias.bright_yellow(),
-                    agent.config.model.bright_white(),
-                    agent.config.provider.to_string().bright_cyan()
-                );
-            } else {
-                println!(
-                    "\n{}  Model '{}' not found. Use {} to see available models.",
-                    "❓",
-                    alias.bright_red(),
-                    "/model".bright_white()
-                );
-            }
-        }
+/// Handle `/plan` command — generate a plan for a task.
+async fn handle_plan_command(input: &str, agent: &mut Agent) {
+    let task = input.strip_prefix("/plan").unwrap_or("").trim();
+    if task.is_empty() {
+        println!(
+            "\n{}  Usage: {} {}",
+            "📋",
+            "/plan".bright_white(),
+            "<task description>".dimmed()
+        );
+        return;
     }
+    
+    println!("\n{}  Generating plan for: {}\n", "🧠", task.bright_cyan());
+    
+    // Plan generation not implemented in this branch
+    println!("{}  Plan generation is not available in this branch.", "⚠️");
 }
 
-/// Small helper to prompt a line from stdin (used by /model add).
-fn prompt_line(prompt: &str) -> String {
-    use std::io::Write;
-    print!("{}", prompt);
-    std::io::stdout().flush().ok();
-    let mut buf = String::new();
-    std::io::stdin().read_line(&mut buf).ok();
-    buf.trim().to_string()
-}
-
-/// Handle `/plan` command (async because planning calls the LLM).
-///
-/// - `/plan <task>`    — generate a plan for the task (read-only exploration, no execution)
-/// - `/plan run`       — execute the pending plan
-/// - `/plan show`      — display the pending plan again
-/// - `/plan clear`     — discard the pending plan
-pub async fn handle_plan_command(input: &str, agent: &mut Agent) {
-    let subcommand = input.strip_prefix("/plan").unwrap_or("").trim();
-
-    match subcommand {
-        "" => {
-            // No argument — show usage
-            println!(
-                "\n{}  {}",
-                "📝",
-                "Plan Mode — think first, execute later".bright_cyan().bold()
-            );
-            println!();
-            println!("  {}  Generate a plan for a task", "/plan <task>".bright_white());
-            println!("  {}       Execute the pending plan", "/plan run".bright_white());
-            println!("  {}      Display the pending plan", "/plan show".bright_white());
-            println!("  {}     Discard the pending plan", "/plan clear".bright_white());
-
-            if agent.pending_plan.is_some() {
-                println!(
-                    "\n  {}  {}",
-                    "💡",
-                    "A pending plan exists. Use /plan show to view, /plan run to execute.".bright_green()
-                );
-            }
-            println!();
-        }
-        "run" => {
-            if let Some(plan) = agent.pending_plan.clone() {
-                println!(
-                    "\n{}  {}",
-                    "🚀",
-                    "Executing plan...".bright_cyan().bold()
-                );
-                println!("{}\n", "─".repeat(60).dimmed());
-                match agent.execute_plan(&plan).await {
-                    Ok(_) => {
-                        auto_save_session(agent);
-                    }
-                    Err(e) => {
-                        ui::print_error(&format!("Plan execution failed: {}", e));
-                    }
-                }
-            } else {
-                println!(
-                    "\n{}  {}",
-                    "⚠️",
-                    "No pending plan. Use /plan <task> to generate one first.".yellow()
-                );
-            }
-        }
-        "show" => {
-            if let Some(ref plan) = agent.pending_plan {
-                println!(
-                    "\n{}  {}:\n",
-                    "📋",
-                    "Pending Plan".bright_cyan().bold()
-                );
-                let skin = termimad::MadSkin::default();
-                skin.print_text(plan);
-                println!("\n{}", "─".repeat(60).dimmed());
-                println!(
-                    "  {} Use {} to execute or {} to discard.",
-                    "💡",
-                    "/plan run".bright_white(),
-                    "/plan clear".bright_white()
-                );
-                println!();
-            } else {
-                println!(
-                    "\n{}  {}",
-                    "📋",
-                    "No pending plan.".dimmed()
-                );
-            }
-        }
-        "clear" => {
-            if agent.pending_plan.is_some() {
-                agent.pending_plan = None;
-                println!(
-                    "\n{}  {}",
-                    "🗑️",
-                    "Pending plan cleared.".bright_cyan()
-                );
-            } else {
-                println!(
-                    "\n{}  {}",
-                    "📋",
-                    "No pending plan to clear.".dimmed()
-                );
-            }
-        }
-        task => {
-            // Generate a plan for the given task
-            println!(
-                "\n{}  {}",
-                "📝",
-                "Generating plan (read-only exploration)...".bright_cyan()
-            );
-            println!("{}\n", "─".repeat(60).dimmed());
-
-            match agent.generate_plan(task).await {
-                Ok(plan) => {
-                    println!("\n{}", "─".repeat(60).dimmed());
-                    println!(
-                        "\n{}  {}",
-                        "✅",
-                        "Plan generated and saved.".bright_green()
-                    );
-                    println!(
-                        "  {} Use {} to execute or {} to view again.\n",
-                        "💡",
-                        "/plan run".bright_white(),
-                        "/plan show".bright_white()
-                    );
-                    // Also save to memory for traceability
-                    agent.memory.log_action(&format!(
-                        "generated plan ({} chars)",
-                        plan.len()
-                    ));
-                }
-                Err(e) => {
-                    ui::print_error(&format!("Failed to generate plan: {}", e));
-                }
-            }
-        }
-    }
-}
-
-/// Handle `/summary` command (async because generation calls the LLM).
-///
-/// - `/summary`            — show existing summary, or offer to generate
-/// - `/summary generate`   — force (re-)generate the project summary
-pub async fn handle_summary_command(input: &str, agent: &mut Agent) {
-    let subcommand = input.strip_prefix("/summary").unwrap_or("").trim();
-    let cwd = &agent.project_dir;
-
-    match subcommand {
-        "generate" => {
-            // Force (re-)generate
-            if crate::summary::exists(&cwd) {
-                println!(
-                    "\n{}  {}",
-                    "⚠️",
-                    "A project summary already exists. Regenerating...".yellow()
-                );
-            }
-            ui::print_summary_generating();
-            match agent.generate_project_summary().await {
-                Ok(_) => {
-                    ui::print_summary_done();
-                }
-                Err(e) => {
-                    ui::print_error(&format!("Failed to generate summary: {}", e));
-                }
-            }
-        }
-        "" => {
-            // Show existing summary, or prompt to generate
-            if let Some(summary) = crate::summary::load(&cwd) {
-                println!("\n{}  {}:\n", "📋", "Project Summary".bright_cyan().bold());
-                let skin = termimad::MadSkin::default();
-                skin.print_text(&summary);
-                println!();
-                println!(
-                    "  {} Run {} to regenerate.",
-                    "💡".to_string().dimmed(),
-                    "/summary generate".bright_white()
-                );
-            } else {
-                println!(
-                    "\n{}  No project summary found.",
-                    "📋"
-                );
-                print!(
-                    "  Generate one now? {} ",
-                    "[y/N]".bright_white()
-                );
-                use std::io::Write;
-                std::io::stdout().flush().ok();
-
-                // Read a single line for confirmation
-                let mut answer = String::new();
-                if std::io::stdin().read_line(&mut answer).is_ok() {
-                    let answer = answer.trim().to_lowercase();
-                    if answer == "y" || answer == "yes" {
-                        ui::print_summary_generating();
-                        match agent.generate_project_summary().await {
-                            Ok(_) => {
-                                ui::print_summary_done();
-                            }
-                            Err(e) => {
-                                ui::print_error(&format!("Failed to generate summary: {}", e));
-                            }
-                        }
-                    } else {
-                        println!("  {}", "Skipped.".dimmed());
-                    }
-                }
-            }
-        }
-        other => {
-            println!(
-                "\n{}  Unknown subcommand: {}. Usage: {} or {}",
-                "❓",
-                other.bright_red(),
-                "/summary".bright_white(),
-                "/summary generate".bright_white()
-            );
-        }
-    }
-}
-
-/// Handle `/rollback` — restore all files to their pre-sandbox state.
-pub async fn handle_rollback_command(agent: &mut Agent) {
+/// Handle `/rollback` — discard all sandbox changes (restore original).
+async fn handle_rollback_command(agent: &mut Agent) {
     if !agent.sandbox.is_enabled().await {
         println!(
             "\n{}  {}",
@@ -1140,11 +979,11 @@ pub async fn handle_rollback_command(agent: &mut Agent) {
         return;
     }
 
-    // Show what will be rolled back
+    // Show what will be lost
     let changes = agent.sandbox.changed_files().await;
     println!(
-        "\n{}  {} tracked change(s) will be rolled back:",
-        "⏪",
+        "\n{}  {} change(s) will be lost:",
+        "⚠️",
         changes.len().to_string().bright_white()
     );
     for c in &changes {
@@ -1156,12 +995,7 @@ pub async fn handle_rollback_command(agent: &mut Agent) {
         println!("    {} {} ({})", icon, c.path.display().to_string().bright_white(), c.kind);
     }
     println!();
-
-    // Confirm
-    print!(
-        "  {} ",
-        "Proceed with rollback? [y/N]".bright_yellow()
-    );
+    println!("  {} [y/N]?", "Rollback all changes?".bright_red().bold());
     use std::io::Write;
     std::io::stdout().flush().ok();
     let mut answer = String::new();
@@ -1193,7 +1027,7 @@ pub async fn handle_rollback_command(agent: &mut Agent) {
 }
 
 /// Handle `/commit` — accept all sandbox changes (discard snapshots).
-pub async fn handle_commit_command(agent: &mut Agent) {
+async fn handle_commit_command(agent: &mut Agent) {
     if !agent.sandbox.is_enabled().await {
         println!(
             "\n{}  {}",
@@ -1241,7 +1075,7 @@ pub async fn handle_commit_command(agent: &mut Agent) {
 }
 
 /// Handle `/changes` — display sandbox-tracked file modifications.
-pub async fn handle_changes_command(agent: &Agent) {
+async fn handle_changes_command(agent: &Agent) {
     if !agent.sandbox.is_enabled().await {
         println!(
             "\n{}  {}",
@@ -1314,152 +1148,6 @@ pub async fn handle_changes_command(agent: &Agent) {
     );
 }
 
-/// Handle `/mode [simple|plan|pipeline|auto]` command.
-///
-/// - `/mode`              — show current override (or "auto")
-/// - `/mode simple`       — force BasicLoop for every message
-/// - `/mode plan`         — force PlanAndExecute for every message
-/// - `/mode pipeline`     — force FullPipeline for every message
-/// - `/mode auto`         — clear override, let the router decide
-fn handle_mode_command(input: &str, agent: &mut Agent) {
-    use crate::router::ExecutionMode;
-
-    let sub = input.strip_prefix("/mode").unwrap_or("").trim();
-
-    match sub {
-        "" => {
-            let current = match agent.force_mode {
-                Some(ExecutionMode::BasicLoop)     => "simple (forced)".to_string(),
-                Some(ExecutionMode::PlanAndExecute) => "plan (forced)".to_string(),
-                Some(ExecutionMode::FullPipeline)  => "pipeline (forced)".to_string(),
-                None => "auto (router decides)".to_string(),
-            };
-            println!("\n{}  Current execution mode: {}", "🔀", current.bright_white());
-            println!("  Use {} to change:", "/mode <option>".bright_cyan());
-            println!("    {}      — single-model loop, fast & cheap", "simple".bright_yellow());
-            println!("    {}        — planner + executor, no checker", "plan".bright_yellow());
-            println!("    {}    — full planner → executor → checker", "pipeline".bright_yellow());
-            println!("    {}        — let the router decide (default)", "auto".bright_yellow());
-            println!();
-        }
-        "simple" => {
-            agent.set_force_mode(Some(ExecutionMode::BasicLoop));
-            println!("\n{}  Mode locked to {}: single-model loop for all messages.", "🔀", "simple".bright_green());
-        }
-        "plan" => {
-            agent.set_force_mode(Some(ExecutionMode::PlanAndExecute));
-            println!("\n{}  Mode locked to {}: planner + executor for all messages.", "🔀", "plan".bright_green());
-        }
-        "pipeline" => {
-            agent.set_force_mode(Some(ExecutionMode::FullPipeline));
-            println!("\n{}  Mode locked to {}: full pipeline for all messages.", "🔀", "pipeline".bright_green());
-        }
-        "auto" => {
-            agent.set_force_mode(None);
-            println!("\n{}  Mode reset to {}: adaptive router will classify each task.", "🔀", "auto".bright_green());
-        }
-        other => {
-            println!(
-                "\n{}  Unknown mode: {}. Valid options: simple, plan, pipeline, auto",
-                "❓",
-                other.bright_red()
-            );
-        }
-    }
-}
-
-/// Auto-save the session (silent, won't error to user)
-pub fn auto_save_session(agent: &mut Agent) {
-    if agent.conversation.messages.is_empty() {
-        return;
-    }
-    if agent.global_session {
-        match persistence::save_session(&agent.conversation, agent.session_id(), &agent.project_dir) {
-            Ok(id) => {
-                agent.set_session_id(id);
-            }
-            Err(e) => {
-                tracing::warn!("Auto-save (global) failed: {}", e);
-            }
-        }
-    } else {
-        if let Err(e) = persistence::save_local_session(&agent.conversation, &agent.project_dir) {
-            tracing::warn!("Auto-save (local) failed: {}", e);
-        }
-    }
-}
-
-/// Save the current terminal (termios) state so it can be restored later.
-///
-/// Child processes spawned by `run_command` can accidentally corrupt
-/// terminal settings (ECHO, ICANON, VMIN, etc.) even though we set
-/// their stdin to null.  Some tools or signal handlers might also
-/// leave the terminal in a bad state.  Saving before `process_message`
-/// and restoring after guarantees the readline prompt always works.
-#[cfg(unix)]
-fn save_terminal_state() -> Option<libc::termios> {
-    unsafe {
-        let mut termios: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == 0 {
-            Some(termios)
-        } else {
-            None
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn save_terminal_state() -> Option<()> {
-    None
-}
-
-/// Restore terminal settings saved by `save_terminal_state`.
-#[cfg(unix)]
-fn restore_terminal_state(termios: &libc::termios) {
-    unsafe {
-        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, termios);
-    }
-}
-
-#[cfg(not(unix))]
-fn restore_terminal_state(_: &()) {}
-
-/// Run `process_message` with Ctrl-C interrupt support.
-///
-/// A background task listens for SIGINT and sets the global interrupt flag.
-/// `process_message` checks this flag at every tool-call boundary and exits
-/// cleanly, leaving the conversation in a consistent state.
-///
-/// This is safer than `tokio::select!` which would cancel the future at an
-/// arbitrary `.await` point (e.g. mid-stream LLM response), potentially
-/// leaving a `ToolUse` block without a matching `ToolResult` in the history.
-async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
-    crate::agent::clear_interrupt();
-    crate::agent::clear_guidance();
-    // Ctrl-C → interrupt flag
-    let interrupt_guard = tokio::spawn(async {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            crate::agent::request_interrupt();
-        }
-    });
-    // Ctrl-\ (SIGQUIT) → guidance flag (pipeline executor picks it up between iterations)
-    #[cfg(unix)]
-    let guidance_guard = tokio::spawn(async {
-        use tokio::signal::unix::{signal, SignalKind};
-        if let Ok(mut sigquit) = signal(SignalKind::quit()) {
-            loop {
-                if sigquit.recv().await.is_none() { break; }
-                crate::agent::request_guidance();
-            }
-        }
-    });
-    let result = agent.process_message(input).await;
-    interrupt_guard.abort();
-    #[cfg(unix)]
-    guidance_guard.abort();
-    result
-}
-
 /// Percent-encode a token value for use as a URL query-parameter.
 fn probe_url_encode(s: &str) -> String {
     s.bytes()
@@ -1475,27 +1163,25 @@ fn probe_url_encode(s: &str) -> String {
 
 // ── /nodes command ────────────────────────────────────────────────────────────
 
-/// Probe every `[[remote]]` entry in workspaces.toml, print hierarchical status
-/// (physical server → virtual nodes with workdir/sandbox/tags), and populate the
-/// in-process route table so that subsequent `any:<tag>` calls work immediately.
-async fn handle_nodes_command(project_dir: &std::path::Path) {
+/// Probe every `[[peer]]` entry collected from the plugin system, print hierarchical
+/// status (physical server → virtual nodes with workdir/sandbox/tags), and populate
+/// the in-process route table so that subsequent `any:<tag>` calls work immediately.
+async fn handle_nodes_command(cfg: crate::workspaces::WorkspacesFile) {
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
 
-    let cfg = crate::workspaces::load(project_dir);
     let remotes = cfg.all_peers().to_vec();
     let cluster_tok = cfg.cluster.token.clone();
 
     if remotes.is_empty() {
         println!(
             "\n{}",
-            "📡  No [[peer]] entries in workspaces.toml.".bright_yellow()
+            "📡  No [[peer]] entries found.".bright_yellow()
         );
         println!(
-            "  Add entries to {} or {}",
-            ".agent/workspaces.toml".bright_yellow(),
-            "~/.config/rust_agent/workspaces.toml".bright_yellow()
+            "  在插件的 {} 文件中添加 [[peer]] 条目。",
+            "workspaces.toml".bright_yellow()
         );
         return;
     }

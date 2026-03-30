@@ -104,3 +104,6 @@ futures-util = "0.3"
 bson = "2.8"
 ciborium = "0.2"
 rmp-serde = "1.1"
+
+# Testing utilities
+tempfile = "3.10"

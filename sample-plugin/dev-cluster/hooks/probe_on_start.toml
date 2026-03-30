@@ -1,0 +1,19 @@
+# Hook: agent.start — blocking
+# ============================================================
+# Agent 启动时探测各 peer 节点可达性，记录结果。
+# 使用 blocking 模式，确保探测结果在第一条用户消息前完成。
+#
+# 如果探测耗时过长，可改为 fire_and_forget，让启动立即完成：
+#   mode = "fire_and_forget"
+# ============================================================
+
+event       = "agent.start"
+mode        = "blocking"
+description = "启动时探测 peer 节点可达性，将结果写入 /tmp/dev-cluster-nodes.json"
+script      = "hooks/scripts/probe_on_start.sh"
+priority    = 50
+timeout     = 15   # peer 探测最多等 15 秒
+
+[env]
+PROBE_TIMEOUT = "3"
+RESULT_FILE   = "/tmp/dev-cluster-nodes.json"

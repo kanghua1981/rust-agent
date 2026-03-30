@@ -1,0 +1,19 @@
+{
+  "name": "probe_nodes",
+  "description": "探测 workspaces.toml 中声明的节点可达性，返回每个节点的连通状态和延迟",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "targets": {
+        "type": "string",
+        "description": "逗号分隔的节点名称（可选，不填则探测全部已知节点 URL）"
+      },
+      "timeout": {
+        "type": "integer",
+        "description": "每个节点探测超时秒数（默认 5）",
+        "default": 5
+      }
+    },
+    "required": []
+  }
+}

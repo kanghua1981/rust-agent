@@ -1,0 +1,56 @@
+# ============================================================
+# workspaces.toml — 插件提供的节点拓扑
+#
+# Agent 启动时，PluginManager 会合并所有插件的 workspaces.toml：
+#   - [[node]]  本机可调用节点（call_node 工具可直接路由）
+#   - [[peer]]  远程 Agent 服务器（server 模式启动时自动探测握手）
+#   - [cluster] 集群共享密钥
+#
+# workdir 若为相对路径，以本插件目录为基准自动展开为绝对路径。
+# ============================================================
+
+[cluster]
+# 集群通信共享密钥；留空表示无鉴权（仅内网使用）
+# token = "change-me-before-deploy"
+
+# ── 本机节点 ──────────────────────────────────────────────────
+# 每个 [[node]] 对应一个独立的工作目录和执行上下文。
+# LLM 可通过 call_node(node="frontend", task="...") 路由任务到指定节点。
+
+[[node]]
+name        = "frontend"
+workdir     = "/workspace/frontend"   # 前端项目根目录
+description = "React/TypeScript 前端，负责 UI 开发和构建"
+isolation   = "normal"                # "normal" | "sandbox" | "container"
+exec_mode   = "auto"                  # "simple" | "plan" | "pipeline" | "auto"
+tags        = ["frontend", "typescript", "react"]
+
+[[node]]
+name        = "backend"
+workdir     = "/workspace/backend"    # 后端项目根目录
+description = "Rust/Python 后端服务，负责 API 和业务逻辑"
+isolation   = "sandbox"               # sandbox 隔离，限制文件访问范围
+exec_mode   = "plan"                  # 后端改动默认走 plan+execute
+tags        = ["backend", "rust", "api"]
+
+[[node]]
+name        = "infra"
+workdir     = "/workspace/infra"      # 基础设施即代码（Terraform/Helm）
+description = "基础设施配置，Terraform & Kubernetes manifests"
+isolation   = "sandbox"
+exec_mode   = "pipeline"             # 基础设施变更强制走完整三阶段流水线
+tags        = ["infra", "terraform", "k8s"]
+
+# ── 远程 peer 节点 ─────────────────────────────────────────────
+# [[peer]] 描述其他机器上运行的 Agent server。
+# server 进程启动时会主动 WebSocket 握手，发现并注册对方所有节点。
+# 握手后，LLM 可通过 call_node(node="gpu-worker@gpu-box", ...) 路由。
+
+[[peer]]
+name  = "gpu-box"
+url   = "ws://192.168.1.100:9527"    # GPU 训练机
+# token = "per-peer-override"        # 覆盖 cluster token（可选）
+
+[[peer]]
+name  = "ci-runner"
+url   = "ws://ci.internal:9527"      # CI 服务器

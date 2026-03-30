@@ -89,6 +89,10 @@ pub struct Agent {
     /// When set, overrides the adaptive router for every message.
     /// `None` means use the normal router logic.
     pub force_mode: Option<crate::router::ExecutionMode>,
+    /// Plugin manager for plugin system integration
+    pub plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
+    /// Hook 事件总线（与 PluginManager 共享同一 Arc）
+    hook_bus: Option<Arc<crate::plugin::hook_bus::HookBus>>,
 }
 
 impl Agent {
@@ -162,11 +166,10 @@ impl Agent {
             path_manager.set_allowed_dir(dir);
         }
     }
-
-    /// Spawn all MCP servers configured in `.agent/mcp.toml` and register
-    /// their tools.  Call once after construction (in CLI / stdio mode).
-    pub async fn load_mcp_tools(&mut self) {
-        self.tool_executor.load_mcp_tools().await;
+    
+    /// Load plugin tools from plugin manager
+    pub async fn load_plugin_tools(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.tool_executor.load_plugin_tools().await
     }
 
     /// Connect to the supplied MCP server entries and register their tools.
@@ -190,7 +193,7 @@ impl Agent {
         self.tool_executor.list_mcp_tools()
     }
 
-    pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
+    pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);
         let mut conversation = Conversation::new(&project_dir);
@@ -207,7 +210,7 @@ impl Agent {
         let mut agent = Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(effective_dir, output.clone()),
+            tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -224,6 +227,8 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+            plugin_manager,
+            hook_bus: None,
         };
         
         // Set path manager in tool executor
@@ -245,7 +250,7 @@ impl Agent {
     }
 
     /// Create agent with a restored conversation
-    pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox) -> Self {
+    pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
         let memory = Memory::load(&project_dir);
         let models_cfg = model_manager::load();
@@ -260,7 +265,7 @@ impl Agent {
         let mut agent = Agent {
             config,
             client,
-            tool_executor: ToolExecutor::new(effective_dir, output.clone()),
+            tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
             memory,
             total_input_tokens: 0,
@@ -277,6 +282,8 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+            plugin_manager,
+            hook_bus: None,
         };
         
         // Set path manager in tool executor
@@ -333,6 +340,18 @@ impl Agent {
     /// Set session ID
     pub fn set_session_id(&mut self, id: String) {
         self.session_id = Some(id);
+    }
+
+    /// 设置 Hook 事件总线共享引用。
+    /// 由 cli.rs 在 load_all_plugins 完成后调用，同时也将 hook_bus 传递给内部的 ToolExecutor。
+    pub fn set_hook_bus(&mut self, bus: Option<Arc<crate::plugin::hook_bus::HookBus>>) {
+        self.tool_executor.set_hook_bus(bus.clone());
+        self.hook_bus = bus;
+    }
+
+    /// 获取 Hook 事件总线共享引用（供 pipeline.rs 等外部模块使用）。
+    pub fn hook_bus(&self) -> Option<Arc<crate::plugin::hook_bus::HookBus>> {
+        self.hook_bus.clone()
     }
 
     /// Switch the active model at runtime.
@@ -680,6 +699,82 @@ impl Agent {
         ]));
     }
 
+    /// 发射 `router.decision` intercepting hook，允许插件覆盖路由模式。
+    /// 脚本失败/超时均回退为原模式，不阻断主流程。
+    async fn apply_router_hook(
+        &self,
+        mode: crate::router::ExecutionMode,
+        user_input: &str,
+    ) -> crate::router::ExecutionMode {
+        use crate::router::ExecutionMode;
+        use crate::plugin::hook_bus::{HookEvent, HookResult};
+
+        let bus = match &self.hook_bus {
+            Some(b) => b.clone(),
+            None => return mode,
+        };
+
+        let mode_str = match mode {
+            ExecutionMode::BasicLoop     => "basic_loop",
+            ExecutionMode::PlanAndExecute => "plan_and_execute",
+            ExecutionMode::FullPipeline  => "full_pipeline",
+        };
+        let classification_source = if self.force_mode.is_some() { "forced" } else { "auto" };
+        let task_preview: String = user_input.chars().take(200).collect();
+
+        let event = HookEvent::new(
+            "router.decision",
+            self.session_id.as_deref().unwrap_or("none").to_string(),
+            serde_json::json!({
+                "proposed_mode":        mode_str,
+                "classification_source": classification_source,
+                "task_preview":          task_preview,
+            }),
+        );
+
+        match bus.emit_intercepting(event).await {
+            HookResult::PatchParams { params } => {
+                let override_str = params
+                    .get("override_mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new_mode = match override_str {
+                    "basic_loop"      => ExecutionMode::BasicLoop,
+                    "plan_and_execute" => ExecutionMode::PlanAndExecute,
+                    "full_pipeline"   => ExecutionMode::FullPipeline,
+                    other => {
+                        self.output.on_warning(&format!(
+                            "[hook] router.decision: unknown override_mode '{}', keeping '{}'",
+                            other, mode_str
+                        ));
+                        return mode;
+                    }
+                };
+                if new_mode != mode {
+                    let new_str = match new_mode {
+                        ExecutionMode::BasicLoop     => "basic_loop",
+                        ExecutionMode::PlanAndExecute => "plan_and_execute",
+                        ExecutionMode::FullPipeline  => "full_pipeline",
+                    };
+                    self.output.on_warning(&format!(
+                        "🔀 Router overridden by hook: {} → {}",
+                        mode_str, new_str
+                    ));
+                }
+                new_mode
+            }
+            // Cancel 不阻断路由，降级为原决策
+            HookResult::Cancel { reason } => {
+                self.output.on_warning(&format!(
+                    "[hook] router.decision cancelled ({}), keeping '{}'",
+                    reason, mode_str
+                ));
+                mode
+            }
+            HookResult::Continue => mode,
+        }
+    }
+
     /// Generate a brief explanation of what a tool is about to do and answer
     /// the user's question. Uses a lightweight LLM call (no tools).
     async fn explain_tool_action(
@@ -731,6 +826,8 @@ impl Agent {
     pub async fn process_message(&mut self, user_input: &str) -> Result<String> {
         // ── Adaptive routing ─────────────────────────────────────────────
         let mode = self.resolve_execution_mode(user_input).await;
+        // 允许插件 hook 拦截并覆盖路由决策（intercepting）
+        let mode = self.apply_router_hook(mode, user_input).await;
 
         match mode {
             crate::router::ExecutionMode::FullPipeline => {
@@ -1040,6 +1137,28 @@ impl Agent {
             status.estimated_tokens,
             status.max_tokens,
         );
+
+        // Emit hook: context.warning / context.critical
+        if let Some(bus) = &self.hook_bus {
+            let event_name = if status.usage_percent >= 90.0 {
+                "context.critical"
+            } else {
+                "context.warning"
+            };
+            let session_id = self.session_id.as_deref().unwrap_or("none").to_string();
+            let bus = bus.clone();
+            let event = crate::plugin::hook_bus::HookEvent::new(
+                event_name,
+                session_id,
+                serde_json::json!({
+                    "used_tokens":  status.estimated_tokens,
+                    "max_tokens":   status.max_tokens,
+                    "ratio":        status.usage_percent / 100.0,
+                    "model":        self.config.model,
+                }),
+            );
+            bus.emit_blocking(event).await;
+        }
 
         // Plan what to truncate (without modifying the conversation yet)
         let plan = match context::plan_truncation(&self.conversation, &self.config.model) {

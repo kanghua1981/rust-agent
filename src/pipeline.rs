@@ -114,6 +114,19 @@ impl PipelineRunner {
                     "✅ Pipeline complete — Checker: PASS (attempt {})",
                     attempt + 1
                 ));
+                // ── plan.complete hook（fire-and-forget）─────────────────────
+                if let Some(bus) = agent.hook_bus() {
+                    use crate::plugin::hook_bus::HookEvent;
+                    bus.emit(HookEvent::new(
+                        "plan.complete",
+                        agent.session_id().unwrap_or("none").to_string(),
+                        serde_json::json!({
+                            "mode": "full_pipeline",
+                            "attempts": attempt + 1,
+                            "success": true,
+                        }),
+                    ));
+                }
                 return Ok(last_result);
             }
 
@@ -210,6 +223,19 @@ impl PipelineRunner {
         agent.output_arc().on_stage_end("Executor");
 
         agent.output_arc().on_warning("✅ Plan+Execute complete (no Checker stage).");
+        // ── plan.complete hook（fire-and-forget）─────────────────────────────
+        if let Some(bus) = agent.hook_bus() {
+            use crate::plugin::hook_bus::HookEvent;
+            bus.emit(HookEvent::new(
+                "plan.complete",
+                agent.session_id().unwrap_or("none").to_string(),
+                serde_json::json!({
+                    "mode": "plan_and_execute",
+                    "attempts": 1,
+                    "success": true,
+                }),
+            ));
+        }
         Ok(result)
     }
 }

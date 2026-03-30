@@ -1,0 +1,37 @@
+# ============================================================
+# mcp/filesystem.toml
+#
+# stdio 传输 MCP Server 配置范例
+#
+# 使用官方 @modelcontextprotocol/server-filesystem 包，
+# 通过 npx 按需启动，无需预先全局安装。
+#
+# 提供的工具（由 MCP 服务端声明）：
+#   filesystem__read_file
+#   filesystem__write_file
+#   filesystem__list_directory
+#   filesystem__create_directory
+#   filesystem__move_file
+#   filesystem__search_files
+#   filesystem__get_file_info
+#
+# 注意：工具名前缀 = name 字段值（此处为 "filesystem"）
+# ============================================================
+
+# 单 server 格式（顶级字段）
+name    = "filesystem"
+command = "npx"
+args    = [
+  "-y",
+  "@modelcontextprotocol/server-filesystem",
+  # 授权该 MCP Server 可访问的目录（可列多个）
+  "/workspace/frontend",
+  "/workspace/backend",
+  "/workspace/infra",
+]
+
+# 注入到 MCP Server 子进程的环境变量
+[env]
+NODE_ENV = "production"
+# 可在此处添加 API 密钥等敏感信息（勿提交到 Git）
+# SOME_API_KEY = "sk-..."
