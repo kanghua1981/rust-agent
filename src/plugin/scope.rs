@@ -77,10 +77,12 @@ pub struct BaseDirectories {
 impl BaseDirectories {
     /// 创建基础目录结构
     pub fn new(project_dir: PathBuf) -> Self {
-        let global_plugin_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".rust-agent/plugins");
-        
+        // Global plugins live inside the XDG config dir so that the container
+        // bind-mount of ~/.config/rust_agent/ automatically covers them.
+        let global_plugin_dir = dirs::config_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".config"))
+            .join("rust_agent/plugins");
+
         let temp_dir = std::env::temp_dir().join("rust-agent-plugins");
         
         Self {
@@ -116,20 +118,22 @@ impl BaseDirectories {
 #[derive(Debug, Clone)]
 pub struct ScopeManager {
     base_dirs: BaseDirectories,
+    /// 限制加载的作用域范围。None 表示加载全部作用域。
+    active_scopes: Option<Vec<PluginScope>>,
 }
 
 impl ScopeManager {
-    /// 创建作用域管理器
+    /// 创建作用域管理器（加载全部作用域）
     pub fn new(project_dir: PathBuf) -> Self {
         let base_dirs = BaseDirectories::new(project_dir);
-        Self { base_dirs }
+        Self { base_dirs, active_scopes: None }
     }
     
-    /// 创建作用域管理器并指定作用域
+    /// 创建作用域管理器并限制到指定的作用域集合
     pub fn new_with_scopes(project_dir: PathBuf, scopes: Vec<PluginScope>) -> Self {
         let base_dirs = BaseDirectories::new(project_dir);
-        // 这里可以添加作用域过滤逻辑，但当前实现中所有作用域都可用
-        Self { base_dirs }
+        let active_scopes = if scopes.is_empty() { None } else { Some(scopes) };
+        Self { base_dirs, active_scopes }
     }
     
     /// 获取基础目录
@@ -148,9 +152,14 @@ impl ScopeManager {
     }
     
     /// 获取所有作用域的插件目录（按优先级排序）
+    /// 若通过 `new_with_scopes` 限制了作用域，则只返回指定作用域的目录。
     pub fn all_plugin_dirs(&self) -> Vec<(PluginScope, PathBuf)> {
         PluginScope::all_scopes()
             .into_iter()
+            .filter(|scope| {
+                self.active_scopes.as_ref()
+                    .map_or(true, |active| active.contains(scope))
+            })
             .map(|scope| (scope, scope.directory(&self.base_dirs)))
             .collect()
     }

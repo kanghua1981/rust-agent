@@ -1025,8 +1025,19 @@ async fn handle_tui_slash(
         }
 
         "/skills" => {
+            // Show project skills (legacy path) + any plugin-provided skills via PM
             let loaded = crate::skills::load_skills(&agent.project_dir);
-            if loaded.is_empty() {
+            let plugin_skills: Vec<_> = if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                pm_lock.get_all_skills()
+                    .into_iter()
+                    .filter(|s| s.plugin_id != "@system")  // @system are already in `loaded`
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            if loaded.is_empty() && plugin_skills.is_empty() {
                 info!("📋 No skills found. Create AGENT.md or add .md files to .agent/skills/");
             } else {
                 head!("── Skills ─────────────────────────────────────────────────────");
@@ -1035,6 +1046,9 @@ async fn handle_tui_slash(
                 }
                 for entry in &loaded.index {
                     line!(vec![Span::raw(format!("  • {} ({}) [on-demand]", entry.name, entry.source))]);
+                }
+                for skill in &plugin_skills {
+                    line!(vec![Span::raw(format!("  • {} [plugin:{}]", skill.name, skill.plugin_id))]);
                 }
             }
         }
@@ -1091,7 +1105,17 @@ async fn handle_tui_slash(
             use tokio_tungstenite::connect_async;
             use tokio_tungstenite::tungstenite::Message;
 
-            let cfg     = crate::workspaces::load(&agent.project_dir);
+            let cfg = if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                let ws = pm_lock.collect_workspace();
+                if ws.nodes.is_empty() && ws.peers.is_empty() {
+                    crate::workspaces::load(&agent.project_dir)
+                } else {
+                    ws
+                }
+            } else {
+                crate::workspaces::load(&agent.project_dir)
+            };
             let remotes = cfg.all_peers().to_vec();
             let cluster_tok = cfg.cluster.token.clone();
 

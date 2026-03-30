@@ -120,6 +120,8 @@ pub struct PluginManager {
     tool_loader: super::tool_loader::ToolLoader,
     /// 技能加载器
     skill_loader: SkillLoader,
+    /// Hook 事件总线（由 Agent 和 ToolExecutor 共享同一 Arc）
+    pub hook_bus: Arc<super::hook_bus::HookBus>,
 }
 
 impl PluginManager {
@@ -134,6 +136,7 @@ impl PluginManager {
             name_plugins: HashMap::new(),
             tool_loader: super::tool_loader::ToolLoader::new(),
             skill_loader: SkillLoader::new(),
+            hook_bus: Arc::new(super::hook_bus::HookBus::new()),
         }
     }
     
@@ -148,12 +151,8 @@ impl PluginManager {
             name_plugins: HashMap::new(),
             tool_loader: super::tool_loader::ToolLoader::new(),
             skill_loader: SkillLoader::new(),
+            hook_bus: Arc::new(super::hook_bus::HookBus::new()),
         }
-    }
-    
-    /// 获取作用域管理器
-    pub fn scope_manager(&self) -> &ScopeManager {
-        &self.scope_manager
     }
     
     /// 加载所有作用域的插件
@@ -264,6 +263,9 @@ impl PluginManager {
                 tracing::warn!("Failed to load skills from plugin {}: {}", plugin_id, e);
             }
         }
+
+        // 注册插件 hook
+        self.hook_bus.register_plugin_hooks(&plugin_id, plugin_path);
         
         tracing::info!("Plugin {} loaded and enabled from scope {:?}", plugin_id, scope);
         
@@ -314,7 +316,7 @@ impl PluginManager {
         Ok(())
     }
     
-    /// 内部移除插件（含工具、技能清理），供冲突解决和 unload 使用
+    /// 内部移除插件（含工具、技能、hook 清理），供冲突解决和 unload 使用
     fn remove_plugin_internal(&mut self, plugin_id: &str) {
         if let Some(plugin) = self.plugins.remove(plugin_id) {
             if let Some(scope_plugins) = self.scope_plugins.get_mut(&plugin.scope) {
@@ -329,19 +331,13 @@ impl PluginManager {
             }
             self.tool_loader.unload_plugin_tools(plugin_id);
             self.skill_loader.unload_plugin_skills(plugin_id);
+            self.hook_bus.unregister_plugin_hooks(plugin_id);
         }
     }
-    
-    /// 获取所有插件
-    pub fn all_plugins(&self) -> Vec<&PluginInstance> {
-        self.plugins.values().collect()
-    }
-    
-    /// 获取启用的插件
-    pub fn enabled_plugins(&self) -> Vec<&PluginInstance> {
-        self.plugins.values()
-            .filter(|p| p.is_enabled())
-            .collect()
+
+    /// 返回 HookBus 的 Arc 引用，供 Agent 和 ToolExecutor 共享。
+    pub fn get_hook_bus(&self) -> Arc<super::hook_bus::HookBus> {
+        self.hook_bus.clone()
     }
     
     /// 加载项目内置技能（AGENT.md / .agent/skills/*.md）注册为 `@system` 伪插件。
@@ -523,14 +519,6 @@ impl PluginManager {
             .collect()
     }
     
-    /// 获取指定插件的技能列表
-    pub fn get_plugin_skills(&self, plugin_id: &str) -> Vec<super::skill_loader::SkillDefinition> {
-        self.skill_loader.get_plugin_skills(plugin_id)
-            .into_iter()
-            .cloned()
-            .collect()
-    }
-    
     /// 列出所有插件（用于CLI命令）
     pub fn list_plugins(&self) -> Vec<PluginInfo> {
         self.plugins.values()
@@ -597,29 +585,6 @@ impl PluginManager {
         }
         
         None
-    }
-    
-    /// 按名称获取插件
-    pub fn get_plugin_by_name(&self, name: &str) -> Option<&PluginInstance> {
-        // 按优先级顺序查找插件
-        for scope in PluginScope::all_scopes() {
-            if let Some(plugin_ids) = self.scope_plugins.get(&scope) {
-                for plugin_id in plugin_ids {
-                    if let Some(plugin) = self.plugins.get(plugin_id) {
-                        if plugin.name() == name {
-                            return Some(plugin);
-                        }
-                    }
-                }
-            }
-        }
-        
-        None
-    }
-    
-    /// 按ID获取插件
-    pub fn get_plugin_by_id(&self, id: &str) -> Option<&PluginInstance> {
-        self.plugins.get(id)
     }
     
     /// 启用插件
@@ -730,8 +695,7 @@ mod tests {
         let mut manager = PluginManager::new(project_dir);
         
         // 测试初始状态
-        assert_eq!(manager.all_plugins().len(), 0);
-        assert_eq!(manager.enabled_plugins().len(), 0);
+        assert_eq!(manager.list_plugins().len(), 0);
         
         // 测试统计信息
         let stats = manager.stats();

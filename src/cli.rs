@@ -598,6 +598,24 @@ pub async fn run(
         // 将项目内技能（AGENT.md / .agent/skills）注册为 @system 插件，
         // 使得 load_skill 工具可以统一查询项目技能和插件技能。
         pm_lock.load_system_skills(&project_dir);
+
+        // Hook 总线：将 PluginManager 的 hook_bus 共享给 Agent（含 ToolExecutor）
+        let hook_bus = pm_lock.get_hook_bus();
+        drop(pm_lock);
+        agent.set_hook_bus(Some(hook_bus.clone()));
+        // ── agent.start hook（fire-and-forget）─────────────────────────────────
+        {
+            use crate::plugin::hook_bus::HookEvent;
+            let session_id = agent.session_id().unwrap_or("none").to_string();
+            hook_bus.emit(HookEvent::new(
+                "agent.start",
+                session_id,
+                serde_json::json!({
+                    "project_dir": project_dir.display().to_string(),
+                    "mode": "cli",
+                }),
+            ));
+        }
     }
     
     // Load plugin tools into tool executor

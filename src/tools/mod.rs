@@ -70,6 +70,8 @@ pub struct ToolExecutor {
     allowed_dir: Option<PathBuf>,
     /// 插件管理器（可选）
     plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
+    /// Hook 事件总线（与 Agent 共享同一 Arc）
+    hook_bus: Option<Arc<crate::plugin::hook_bus::HookBus>>,
 }
 
 /// Trait that all tools must implement
@@ -97,6 +99,7 @@ impl ToolExecutor {
             path_manager: None,
             allowed_dir: None,
             plugin_manager,
+            hook_bus: None,
         };
 
         // Register all built-in tools
@@ -260,6 +263,11 @@ impl ToolExecutor {
         self.allowed_dir = dir;
     }
 
+    /// 设置 Hook 事件总线居用引用。由 Agent::set_hook_bus() 调用。
+    pub fn set_hook_bus(&mut self, bus: Option<Arc<crate::plugin::hook_bus::HookBus>>) {
+        self.hook_bus = bus;
+    }
+
     /// Get all tool definitions for the LLM
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|t| t.definition()).collect()
@@ -358,7 +366,37 @@ impl ToolExecutor {
             }
         }
 
-        match self.tools.get(name) {
+        // ── tool.before hook（intercepting）─────────────────────────────────────
+        // 在执行工具之前发布事件，允许插件 hook 拦截或修改参数。
+        // 脚本失败或超时均降级为 Continue，不阻断主流程。
+        let patched: Option<serde_json::Value> = if let Some(bus) = &self.hook_bus {
+            use crate::plugin::hook_bus::{HookEvent, HookResult};
+            let event = HookEvent::new(
+                "tool.before",
+                "none",
+                serde_json::json!({ "tool_name": name, "params": input }),
+            );
+            match bus.emit_intercepting(event).await {
+                HookResult::Cancel { reason } => {
+                    return ToolResult::error(format!("[hook] tool blocked: {}", reason));
+                }
+                HookResult::PatchParams { params } => {
+                    let mut merged = input.clone();
+                    if let (Some(m), Some(p)) = (merged.as_object_mut(), params.as_object()) {
+                        for (k, v) in p {
+                            m.insert(k.clone(), v.clone());
+                        }
+                    }
+                    Some(merged)
+                }
+                HookResult::Continue => None,
+            }
+        } else {
+            None
+        };
+        let input = patched.as_ref().unwrap_or(input);
+
+        let tool_result = match self.tools.get(name) {
             Some(tool) => {
                 use futures::FutureExt; // catch_unwind on futures
 
@@ -414,7 +452,24 @@ impl ToolExecutor {
                     ToolResult::error(format!("Unknown tool: {}", name))
                 }
             }
+        };
+
+        // ── tool.after hook（fire-and-forget）────────────────────────────────────
+        if let Some(bus) = &self.hook_bus {
+            use crate::plugin::hook_bus::HookEvent;
+            let preview: String = tool_result.output.chars().take(200).collect();
+            bus.emit(HookEvent::new(
+                "tool.after",
+                "none",
+                serde_json::json!({
+                    "tool_name": name,
+                    "success":        !tool_result.is_error,
+                    "output_preview": preview,
+                }),
+            ));
         }
+
+        tool_result
     }
 }
 
