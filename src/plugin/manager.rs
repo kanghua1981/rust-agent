@@ -456,6 +456,44 @@ impl PluginManager {
         entries
     }
 
+    /// 扫描所有已启用插件的 `workspaces.toml`，合并 nodes + peers + cluster token。
+    /// 插件中 `[[node]]` 的 `workdir` 若为相对路径，以插件目录为基准展开为绝对路径。
+    /// 多个插件均设置了 cluster token 时，取第一个非空值。
+    pub fn collect_workspace(&self) -> crate::workspaces::WorkspacesFile {
+        use crate::workspaces::WorkspacesFile;
+        let mut result = WorkspacesFile::default();
+
+        for plugin in self.plugins.values() {
+            if !plugin.is_enabled() {
+                continue;
+            }
+            let ws_path = plugin.path.join("workspaces.toml");
+            let Ok(text) = std::fs::read_to_string(&ws_path) else { continue };
+            let Ok(mut ws) = toml::from_str::<WorkspacesFile>(&text) else {
+                tracing::warn!("Plugin '{}': failed to parse workspaces.toml", plugin.name());
+                continue;
+            };
+            tracing::info!(
+                "Plugin '{}': loaded {} node(s), {} peer(s) from workspaces.toml",
+                plugin.name(), ws.nodes.len(), ws.peers.len()
+            );
+            // 相对路径 workdir → 绝对路径
+            for node in &mut ws.nodes {
+                if let Some(wd) = &node.workdir {
+                    if wd.is_relative() {
+                        node.workdir = Some(plugin.path.join(wd));
+                    }
+                }
+            }
+            result.nodes.extend(ws.nodes);
+            result.peers.extend(ws.peers);
+            if result.cluster.token.is_none() {
+                result.cluster.token = ws.cluster.token;
+            }
+        }
+        result
+    }
+
     /// 获取所有插件工具
     pub fn get_all_tools(&self) -> Vec<super::tool_loader::ToolDefinition> {
         self.tool_loader.all_tools()

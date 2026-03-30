@@ -115,6 +115,11 @@ pub struct ContainerConfig {
     /// tmpfs upper layer — the real project files are never modified.
     /// Set to `true` only for `IsolationMode::Sandbox`.
     pub overlay: bool,
+    /// Host path of `~/.config/rust_agent/` — bound read-only to
+    /// `/root/.config/rust_agent/` so the worker can access global plugins,
+    /// models.toml, skills, etc. without write risk.
+    /// `None` when the directory does not exist on the host.
+    pub global_config_dir: Option<PathBuf>,
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -266,6 +271,22 @@ pub fn setup_rootfs(config: &ContainerConfig) -> io::Result<()> {
             step(&format!("bind_ro extra {:?}", bind.host), bind_ro(&bind.host, &dst))?;
         } else {
             step(&format!("bind_rw extra {:?}", bind.host), bind_rw(&bind.host, &dst))?;
+        }
+    }
+
+    // ~/.config/rust_agent/ — global agent config (plugins, models, skills, …).
+    // Bind read-only to /root/.config/rust_agent/ so the worker's PluginManager
+    // can resolve global plugins and skills without any write risk.
+    // HOME is set to /root in the spawn command so dirs::config_dir() resolves
+    // to /root/.config inside the container, matching this mount.
+    if let Some(ref gcd) = config.global_config_dir {
+        if gcd.exists() {
+            let dst = newroot.join("root/.config/rust_agent");
+            step("mkdir root/.config/rust_agent", fs::create_dir_all(&dst))?;
+            step("bind_ro global_config", bind_ro(gcd, &dst))?;
+            eprintln!("[container] global config bound: {:?} → /root/.config/rust_agent (ro)", gcd);
+        } else {
+            eprintln!("[container] global_config_dir {:?} not found on host, skipping", gcd);
         }
     }
 

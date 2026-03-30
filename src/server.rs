@@ -32,6 +32,7 @@ pub async fn run(
     host: &str,
     port: u16,
     isolation: IsolationMode,
+    ws_cfg: crate::workspaces::WorkspacesFile,
 ) -> Result<()> {
     // Reap zombie worker processes asynchronously via a real SIGCHLD handler.
     //
@@ -61,10 +62,9 @@ pub async fn run(
 
     cleanup_stale_worker_dirs();
 
-    // Load cluster token once at startup.  No token = open server (local use).
-    let ws_cfg = crate::workspaces::load(&project_dir);
+    // cluster token + nodes/peers 由调用方通过插件系统收集后传入，这里直接使用。
+    // No token = open server (local use).
     let cluster_token: Option<String> = ws_cfg.cluster.token.clone();
-    // Keep the full workspaces config behind Arc for the /nodes HTTP endpoint.
     let cached_ws_cfg = Arc::new(ws_cfg);
 
     // Probe capabilities once at startup and cache behind Arc so every probe
@@ -237,6 +237,9 @@ pub async fn run(
         let gid = unsafe { libc::getgid() };
         let extra_binds = config.extra_binds.clone();
         let project_dir_for_container = conn_project_dir.clone();
+        // Resolve ~/.config/rust_agent/ on the host for the global-config bind.
+        let global_config_dir: Option<std::path::PathBuf> = dirs::home_dir()
+            .map(|h| h.join(".config").join("rust_agent"));
 
         // ── Spawn strategy depends on isolation mode ──────────────────────────
         //
@@ -277,11 +280,16 @@ pub async fn run(
                 c.env("AGENT_CLUSTER_TOKEN", tok);
             }
 
+            // Set HOME=/root so dirs::config_dir() resolves to /root/.config
+            // inside the container, matching the global_config bind mount.
+            c.env("HOME", "/root");
+
             // Set up the container rootfs in the child between fork() and exec().
             // SAFETY: pre_exec runs single-threaded in the forked child; we only
             // do pure Linux syscalls and file I/O, no tokio or async.
             let use_overlay = conn_isolation == IsolationMode::Sandbox;
             let exe_clone2 = exe_clone.clone();
+            let global_config_dir_clone = global_config_dir.clone();
             unsafe {
                 c.pre_exec(move || {
                     setup_rootfs(&ContainerConfig {
@@ -291,6 +299,7 @@ pub async fn run(
                         uid,
                         gid,
                         overlay: use_overlay,
+                        global_config_dir: global_config_dir_clone.clone(),
                     })
                 });
             }

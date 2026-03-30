@@ -268,7 +268,26 @@ async fn main() -> Result<()> {
 
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
-        return server::run(config, project_dir, &args.host, args.port, args.isolation).await;
+        // 插件系统收集 workspaces 配置（nodes / peers / cluster token）。
+        // 旧的 .agent/workspaces.toml 仍可作为兼容插件放在插件目录下。
+        let ws_cfg = {
+            let mut pm = plugin::PluginManager::new(project_dir.clone());
+            let _ = pm.load_all_plugins();
+            let from_plugins = pm.collect_workspace();
+            // 兼容兜底：若插件中没有任何 nodes/peers，尝试读旧配置文件
+            if from_plugins.nodes.is_empty() && from_plugins.peers.is_empty() {
+                let legacy = crate::workspaces::load(&project_dir);
+                if !legacy.nodes.is_empty() || !legacy.peers.is_empty() {
+                    tracing::warn!(".agent/workspaces.toml 已废弃，请将 workspaces.toml 放入插件目录");
+                    legacy
+                } else {
+                    from_plugins
+                }
+            } else {
+                from_plugins
+            }
+        };
+        return server::run(config, project_dir, &args.host, args.port, args.isolation, ws_cfg).await;
     }
 
     // MCP server mode: expose tools as a JSON-RPC 2.0 MCP tool server over stdio.
