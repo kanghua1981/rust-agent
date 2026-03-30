@@ -6,8 +6,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::metadata::{PluginMeta, PluginPermissions, SystemRequirements, Components};
+use super::metadata::PluginMeta;
 use super::scope::{PluginScope, ScopeManager};
+use super::skill_loader::SkillLoader;
 use super::PluginError;
 
 /// 插件状态
@@ -105,7 +106,7 @@ impl PluginInstance {
 }
 
 /// 插件管理器
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PluginManager {
     /// 作用域管理器
     scope_manager: Arc<ScopeManager>,
@@ -117,6 +118,8 @@ pub struct PluginManager {
     name_plugins: HashMap<String, Vec<String>>,
     /// 工具加载器
     tool_loader: super::tool_loader::ToolLoader,
+    /// 技能加载器
+    skill_loader: SkillLoader,
 }
 
 impl PluginManager {
@@ -130,6 +133,7 @@ impl PluginManager {
             scope_plugins: HashMap::new(),
             name_plugins: HashMap::new(),
             tool_loader: super::tool_loader::ToolLoader::new(),
+            skill_loader: SkillLoader::new(),
         }
     }
     
@@ -143,6 +147,7 @@ impl PluginManager {
             scope_plugins: HashMap::new(),
             name_plugins: HashMap::new(),
             tool_loader: super::tool_loader::ToolLoader::new(),
+            skill_loader: SkillLoader::new(),
         }
     }
     
@@ -216,13 +221,14 @@ impl PluginManager {
         meta.validate()
             .map_err(|e| PluginError::Validation(e))?;
         
-        // 检查插件名称冲突
-        self.check_plugin_conflict(&meta, scope)?;
+        // 检查并解决插件冲突（高优先级会覆盖低优先级同名插件）
+        self.check_and_resolve_conflict(&meta, scope)?;
         
-        // 创建插件实例
+        // 创建插件实例并立即启用
         let plugin_id = meta.id();
         let plugin_name = meta.name.clone();
-        let plugin_instance = PluginInstance::new(meta, scope, plugin_path.clone());
+        let mut plugin_instance = PluginInstance::new(meta, scope, plugin_path.clone());
+        plugin_instance.enable();
         
         // 注册插件
         self.plugins.insert(plugin_id.clone(), plugin_instance);
@@ -249,44 +255,81 @@ impl PluginManager {
             }
         }
         
-        tracing::info!("Loaded plugin {} from scope {:?}", plugin_id, scope);
+        // 加载插件技能
+        match self.skill_loader.load_skills_from_plugin(&plugin_id, plugin_path) {
+            Ok(skills) => {
+                tracing::info!("Loaded {} skills from plugin {}", skills.len(), plugin_id);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load skills from plugin {}: {}", plugin_id, e);
+            }
+        }
+        
+        tracing::info!("Plugin {} loaded and enabled from scope {:?}", plugin_id, scope);
         
         Ok(())
     }
     
-    /// 检查插件冲突
-    fn check_plugin_conflict(&self, meta: &PluginMeta, new_scope: PluginScope) -> Result<(), PluginError> {
-        let plugin_name = &meta.name;
+    /// 检查并解决插件冲突
+    /// - 新插件优先级更高：移除旧插件（含工具/技能），允许加载
+    /// - 新插件优先级更低：返回 Err，跳过加载
+    /// - 同一作用域同名：返回 Err
+    fn check_and_resolve_conflict(&mut self, meta: &PluginMeta, new_scope: PluginScope) -> Result<(), PluginError> {
+        let plugin_name = meta.name.clone();
         
-        // 检查是否有同名插件
-        if let Some(existing_ids) = self.name_plugins.get(plugin_name) {
-            for plugin_id in existing_ids {
-                if let Some(existing_plugin) = self.plugins.get(plugin_id) {
-                    // 检查作用域优先级
-                    if new_scope.priority() < existing_plugin.scope.priority() {
-                        // 新插件优先级更高，允许加载（会覆盖旧插件）
-                        tracing::info!(
-                            "Plugin {} in scope {:?} will override existing plugin in scope {:?}",
-                            plugin_name, new_scope, existing_plugin.scope
-                        );
-                    } else if new_scope.priority() > existing_plugin.scope.priority() {
-                        // 新插件优先级更低，不允许加载
-                        return Err(PluginError::Conflict(format!(
-                            "Plugin {} already exists in higher priority scope {:?}",
-                            plugin_name, existing_plugin.scope
-                        )));
-                    } else {
-                        // 同一作用域，不允许重复加载
-                        return Err(PluginError::Conflict(format!(
-                            "Plugin {} already exists in scope {:?}",
-                            plugin_name, new_scope
-                        )));
-                    }
-                }
+        // 克隆 ID 列表以避免与 &mut self 的借用冲突
+        let existing_ids: Vec<String> = self.name_plugins
+            .get(&plugin_name)
+            .cloned()
+            .unwrap_or_default();
+        
+        for plugin_id in existing_ids {
+            let existing_scope = match self.plugins.get(&plugin_id) {
+                Some(p) => p.scope,
+                None => continue,
+            };
+            
+            if new_scope.priority() < existing_scope.priority() {
+                // 新插件优先级更高，移除旧插件后允许加载
+                tracing::info!(
+                    "插件 '{}' 在作用域 {:?} 中覆盖作用域 {:?} 的同名插件",
+                    plugin_name, new_scope, existing_scope
+                );
+                self.remove_plugin_internal(&plugin_id);
+            } else if new_scope.priority() > existing_scope.priority() {
+                // 新插件优先级更低，跳过加载
+                return Err(PluginError::Conflict(format!(
+                    "插件 '{}' 已在更高优先级作用域 {:?} 中存在，跳过加载",
+                    plugin_name, existing_scope
+                )));
+            } else {
+                // 同一作用域，不允许重复
+                return Err(PluginError::Conflict(format!(
+                    "插件 '{}' 在作用域 {:?} 中已存在",
+                    plugin_name, new_scope
+                )));
             }
         }
         
         Ok(())
+    }
+    
+    /// 内部移除插件（含工具、技能清理），供冲突解决和 unload 使用
+    fn remove_plugin_internal(&mut self, plugin_id: &str) {
+        if let Some(plugin) = self.plugins.remove(plugin_id) {
+            if let Some(scope_plugins) = self.scope_plugins.get_mut(&plugin.scope) {
+                scope_plugins.remove(plugin_id);
+            }
+            let name = plugin.name().to_string();
+            if let Some(name_plugins) = self.name_plugins.get_mut(&name) {
+                name_plugins.retain(|id| id != plugin_id);
+                if name_plugins.is_empty() {
+                    self.name_plugins.remove(&name);
+                }
+            }
+            self.tool_loader.unload_plugin_tools(plugin_id);
+            self.skill_loader.unload_plugin_skills(plugin_id);
+        }
     }
     
     /// 获取所有插件
@@ -301,6 +344,118 @@ impl PluginManager {
             .collect()
     }
     
+    /// 加载项目内置技能（AGENT.md / .agent/skills/*.md）注册为 `@system` 伪插件。
+    /// 同时扫描 SKILL.md（OpenClaw 格式）。调用方在 load_all_plugins 之后调用此方法，
+    /// 使得 `load_skill` 工具可以通过统一接口查询到项目技能和插件技能。
+    pub fn load_system_skills(&mut self, project_dir: &std::path::Path) {
+        const SYSTEM_PLUGIN: &str = "@system";
+        
+        let loaded = crate::skills::load_skills(project_dir);
+        
+        // 1. 完整加载的技能（AGENT.md / SKILL.md）
+        for skill in &loaded.skills {
+            let desc = skill.content.lines()
+                .map(|l| l.trim())
+                .find(|l| !l.is_empty() && !l.starts_with('#'))
+                .unwrap_or("")
+                .to_string();
+            let def = crate::plugin::skill_loader::SkillDefinition {
+                name: skill.name.clone(),
+                description: desc,
+                content: skill.content.clone(),
+                file_path: project_dir.join(&skill.source),
+                plugin_id: SYSTEM_PLUGIN.to_string(),
+                tags: vec![],
+            };
+            if let Err(e) = self.skill_loader.register_system_skill(def) {
+                tracing::debug!("@system skill '{}' already registered: {}", skill.name, e);
+            }
+        }
+        
+        // 2. 按需索引的技能（.agent/skills/*.md）—— 加载完整正文后注册
+        for entry in &loaded.index {
+            if let Some(skill) = crate::skills::load_skill_by_name(project_dir, &entry.name) {
+                let def = crate::plugin::skill_loader::SkillDefinition {
+                    name: skill.name.clone(),
+                    description: entry.description.clone(),
+                    content: skill.content.clone(),
+                    file_path: project_dir.join(&entry.source),
+                    plugin_id: SYSTEM_PLUGIN.to_string(),
+                    tags: vec![],
+                };
+                if let Err(e) = self.skill_loader.register_system_skill(def) {
+                    tracing::debug!("@system skill '{}' already registered: {}", skill.name, e);
+                }
+            }
+        }
+        
+        tracing::info!(
+            "@system: registered {} skills from project directory",
+            loaded.skills.len() + loaded.index.len()
+        );
+    }
+    
+    /// 按名称查找技能（统一入口：项目技能 + 所有插件技能）。
+    /// 命中 `@system` 表示项目内置技能，命中其他 plugin_id 表示插件提供的技能。
+    pub fn get_skill(&self, name: &str) -> Option<super::skill_loader::SkillDefinition> {
+        self.skill_loader.get_skill(name).cloned()
+    }
+    
+    /// 收集所有已加载插件中的 MCP 服务配置，返回 McpServerEntry 列表。
+    /// 每个插件的 `mcp/` 目录下的 `.toml` 文件会被扫描，支持两种格式：
+    ///   - 单 server：`name = "..."  command = "..."` 等顶级字段
+    ///   - 多 server：`[[server]]` 数组（复用 .agent/mcp.toml 格式）
+    /// 若插件未启用则跳过。
+    pub fn collect_mcp_entries(&self) -> Vec<crate::mcp_client::McpServerEntry> {
+        let mut entries = Vec::new();
+
+        for plugin in self.plugins.values() {
+            if !plugin.is_enabled() {
+                continue;
+            }
+            let mcp_dir = plugin.path.join("mcp");
+            if !mcp_dir.is_dir() {
+                continue;
+            }
+
+            let Ok(dir_entries) = std::fs::read_dir(&mcp_dir) else { continue };
+            for dir_entry in dir_entries.flatten() {
+                let path = dir_entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+
+                // 先尝试多-server 格式 (reuse McpConfig)
+                if let Ok(cfg) = toml::from_str::<crate::mcp_client::McpConfig>(&text) {
+                    if !cfg.servers.is_empty() {
+                        tracing::info!(
+                            "Plugin '{}': loaded {} MCP server(s) from {}",
+                            plugin.name(), cfg.servers.len(), path.display()
+                        );
+                        entries.extend(cfg.servers);
+                        continue;
+                    }
+                }
+                // 再尝试单-server 格式
+                if let Ok(entry) = toml::from_str::<crate::mcp_client::McpServerEntry>(&text) {
+                    tracing::info!(
+                        "Plugin '{}': loaded MCP server '{}' from {}",
+                        plugin.name(), entry.name, path.display()
+                    );
+                    entries.push(entry);
+                } else {
+                    tracing::warn!(
+                        "Plugin '{}': failed to parse MCP config at {}",
+                        plugin.name(), path.display()
+                    );
+                }
+            }
+        }
+
+        entries
+    }
+
     /// 获取所有插件工具
     pub fn get_all_tools(&self) -> Vec<super::tool_loader::ToolDefinition> {
         self.tool_loader.all_tools()
@@ -312,6 +467,30 @@ impl PluginManager {
     /// 执行插件工具
     pub async fn execute_tool(&mut self, tool_name: &str, parameters: &serde_json::Value) -> Result<serde_json::Value, PluginError> {
         self.tool_loader.execute_tool(tool_name, parameters).await
+    }
+    
+    /// 获取所有插件技能
+    pub fn get_all_skills(&self) -> Vec<super::skill_loader::SkillDefinition> {
+        self.skill_loader.all_skills()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+    
+    /// 搜索插件技能（按相关性排序）
+    pub fn search_skills(&self, query: &str) -> Vec<super::skill_loader::SkillDefinition> {
+        self.skill_loader.search_skills(query)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+    
+    /// 获取指定插件的技能列表
+    pub fn get_plugin_skills(&self, plugin_id: &str) -> Vec<super::skill_loader::SkillDefinition> {
+        self.skill_loader.get_plugin_skills(plugin_id)
+            .into_iter()
+            .cloned()
+            .collect()
     }
     
     /// 列出所有插件（用于CLI命令）
@@ -442,6 +621,10 @@ impl PluginManager {
                     self.name_plugins.remove(plugin.name());
                 }
             }
+            
+            // 卸载工具和技能
+            self.tool_loader.unload_plugin_tools(plugin_id);
+            self.skill_loader.unload_plugin_skills(plugin_id);
             
             tracing::info!("Unloaded plugin {}", plugin_id);
             Ok(())

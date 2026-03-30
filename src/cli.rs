@@ -105,13 +105,55 @@ pub async fn handle_plugin_command(subcommand: &str, agent: &mut Agent) {
                 println!("\n🔌  Plugin system is not enabled.");
             }
         }
+        ["skills"] | ["skills", ""] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                let skills = pm_lock.get_all_skills();
+                if skills.is_empty() {
+                    println!("\n📚  No plugin skills available.");
+                } else {
+                    println!("\n📚  {} plugin skill(s):", skills.len());
+                    for skill in &skills {
+                        let tags = if skill.tags.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{}]", skill.tags.join(", "))
+                        };
+                        println!("  • {} (plugin: {}){}", skill.name, skill.plugin_id, tags);
+                        if !skill.description.is_empty() {
+                            println!("    {}", skill.description);
+                        }
+                    }
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
+        ["skills", query] => {
+            if let Some(pm) = &agent.plugin_manager {
+                let pm_lock = pm.lock().await;
+                let skills = pm_lock.search_skills(query);
+                if skills.is_empty() {
+                    println!("\n📚  No plugin skills matching '{}'.", query);
+                } else {
+                    println!("\n📚  {} skill(s) matching '{}':", skills.len(), query);
+                    for skill in &skills {
+                        println!("  • {} (plugin: {}) — {}", skill.name, skill.plugin_id, skill.description);
+                    }
+                }
+            } else {
+                println!("\n🔌  Plugin system is not enabled.");
+            }
+        }
         _ => {
             println!("\n🔌  Plugin command usage:");
-            println!("  /plugin list          - list all plugins");
-            println!("  /plugin enable <name> - enable a plugin");
-            println!("  /plugin disable <name>- disable a plugin");
-            println!("  /plugin info <name>   - show plugin information");
-            println!("  /plugin tools         - list plugin tools");
+            println!("  /plugin list            - list all plugins");
+            println!("  /plugin enable <name>   - enable a plugin");
+            println!("  /plugin disable <name>  - disable a plugin");
+            println!("  /plugin info <name>     - show plugin information");
+            println!("  /plugin tools           - list plugin tools");
+            println!("  /plugin skills          - list all plugin skills");
+            println!("  /plugin skills <query>  - search plugin skills");
         }
     }
 }
@@ -537,9 +579,15 @@ pub async fn run(
     };
     agent.global_session = global_session;
 
-    // Load MCP client tools from .agent/mcp.toml (if present).
-    // Silently skipped when the file doesn't exist or no servers are configured.
-    agent.load_mcp_tools().await;
+    // 检查旧格式 .agent/mcp.toml 是否存在，提示迁移
+    let legacy_mcp = project_dir.join(".agent").join("mcp.toml");
+    if legacy_mcp.exists() {
+        output.on_warning(
+            ".agent/mcp.toml 已废弃：MCP 服务配置请移至插件目录。\
+            \n  创建插件目录 .agent/plugins/<名称>/，并在其中新建 mcp/<服务名>.toml。\
+            \n  详见 docs/plugin_design.md。"
+        );
+    }
 
     // Load plugin tools
     if let Some(pm) = &plugin_manager {
@@ -547,11 +595,59 @@ pub async fn run(
         if let Err(e) = pm_lock.load_all_plugins() {
             output.on_warning(&format!("Failed to load plugins: {}", e));
         }
+        // 将项目内技能（AGENT.md / .agent/skills）注册为 @system 插件，
+        // 使得 load_skill 工具可以统一查询项目技能和插件技能。
+        pm_lock.load_system_skills(&project_dir);
     }
     
     // Load plugin tools into tool executor
     if let Err(e) = agent.load_plugin_tools().await {
         output.on_warning(&format!("Failed to load plugin tools: {}", e));
+    }
+
+    // 将插件的 MCP 服务器连接并注册到工具执行器
+    if let Some(pm) = &plugin_manager {
+        let pm_lock = pm.lock().await;
+        let mcp_entries = pm_lock.collect_mcp_entries();
+        drop(pm_lock);
+        if !mcp_entries.is_empty() {
+            let (loaded, errors) = agent.load_mcp_from_entries(&mcp_entries).await;
+            if !loaded.is_empty() {
+                tracing::info!("Plugin MCP tools registered: {}", loaded.join(", "));
+            }
+            for err in &errors {
+                output.on_warning(&format!("Plugin MCP: {}", err));
+            }
+        }
+    }
+    
+    // 将插件 skills 注入 system_prompt。
+    // @system 技能（项目内置）已由 conversation.rs 注入，这里只补充非 @system 的插件提供的技能。
+    if let Some(pm) = &plugin_manager {
+        let pm_lock = pm.lock().await;
+        let plugin_skills: Vec<_> = pm_lock.get_all_skills()
+            .into_iter()
+            .filter(|s| s.plugin_id != "@system")
+            .collect();
+        if !plugin_skills.is_empty() {
+            let mut section = "\n\n--- Plugin Skills ---".to_string();
+            section.push_str("\n## Available Plugin Skills (use `load_skill` tool with the skill name to read full content)");
+            for skill in &plugin_skills {
+                let tags_hint = if skill.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [tags: {}]", skill.tags.join(", "))
+                };
+                section.push_str(&format!(
+                    "\n- **{}** (plugin: {}){} — {}",
+                    skill.name,
+                    skill.plugin_id,
+                    tags_hint,
+                    skill.description,
+                ));
+            }
+            agent.conversation.system_prompt.push_str(&section);
+        }
     }
 
     // Print sandbox status

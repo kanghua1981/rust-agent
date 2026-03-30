@@ -111,7 +111,8 @@ impl ToolExecutor {
         executor.register(Box::new(batch_read::BatchReadFilesTool));
         executor.register(Box::new(think::ThinkTool));
         executor.register(Box::new(read_pdf::ReadPdfTool));
-        executor.register(Box::new(load_skill::LoadSkillTool));
+        let pm_for_load_skill = executor.plugin_manager.clone();
+        executor.register(Box::new(load_skill::LoadSkillTool::new(pm_for_load_skill)));
         executor.register(Box::new(create_skill::CreateSkillTool));
         executor.register(Box::new(browser::BrowserTool::new()));
         executor.register(Box::new(upload_image::UploadImageTool));
@@ -136,9 +137,6 @@ impl ToolExecutor {
         executor.register(Box::new(subscribe_service::UnsubscribeServiceTool));
         executor.register(Box::new(list_services::ListServicesTool));
 
-        // Dynamically register script tools from tool.json files in skill dirs.
-        executor.load_script_tools_from(&executor.project_dir.clone());
-
         executor
     }
 
@@ -158,6 +156,7 @@ impl ToolExecutor {
                 let plugin_tool = PluginToolWrapper::new(
                     tool.name.clone(),
                     tool.description.clone(),
+                    tool.parameters.clone(),
                     tool.plugin_id.clone(),
                     pm.clone(),
                 );
@@ -175,7 +174,9 @@ impl ToolExecutor {
     }
 
     /// Scan `workdir` for `tool.json` files and register each as a ScriptTool.
-    /// Existing tools with the same name are overwritten (script tools win).
+    /// 保留此方法供测试和外部直接注入用。
+    /// 正常展运而言，script tools 应通过插件系统加载。
+    #[allow(dead_code)]
     fn load_script_tools_from(&mut self, workdir: &std::path::Path) {
         for st in script_tool::load_script_tools(workdir) {
             let name = st.definition().name.clone();
@@ -184,29 +185,6 @@ impl ToolExecutor {
         }
     }
 
-    /// Reload script tools after the working directory changes.
-    /// Built-in tools are unaffected; only script tools are refreshed.
-    pub fn reload_script_tools(&mut self) {
-        // Remove previously registered script tools (identified by checking
-        // whether the tool name is NOT in the static built-in set).
-        // Simplest approach: re-scan and overwrite — no stale entries remain
-        // because script tools from the old dir are simply replaced or
-        // shadowed on next call.
-        let workdir = self.project_dir.clone();
-        self.load_script_tools_from(&workdir);
-    }
-
-    /// Spawn all configured MCP servers (from `.agent/mcp.toml`) and register
-    /// their tools.  Called once after construction from `Agent::load_mcp_tools`.
-    pub async fn load_mcp_tools(&mut self) {
-        let project_dir = self.project_dir.clone();
-        let mcp_tools = crate::mcp_client::connect_all(&project_dir).await;
-        for tool in mcp_tools {
-            let name = tool.definition().name.clone();
-            tracing::info!("MCP tool registered: {name}");
-            self.tools.insert(name, tool);
-        }
-    }
 
     /// Connect to a list of MCP server entries supplied at runtime (e.g. from
     /// a `load_mcp` WebSocket message) and register their tools.
@@ -444,6 +422,8 @@ impl ToolExecutor {
 struct PluginToolWrapper {
     name: String,
     description: String,
+    /// 来自插件工具定义的 JSON Schema，直接透传给 LLM
+    parameters: serde_json::Value,
     plugin_id: String,
     plugin_manager: Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>,
 }
@@ -452,12 +432,20 @@ impl PluginToolWrapper {
     fn new(
         name: String,
         description: String,
+        parameters: Option<serde_json::Value>,
         plugin_id: String,
         plugin_manager: Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>,
     ) -> Self {
+        // 如果插件定义了参数 schema 则使用，否则回退到宽松的 additionalProperties
+        let parameters = parameters.unwrap_or_else(|| serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true,
+        }));
         Self {
             name,
             description,
+            parameters,
             plugin_id,
             plugin_manager,
         }
@@ -470,11 +458,8 @@ impl Tool for PluginToolWrapper {
         ToolDefinition {
             name: self.name.clone(),
             description: self.description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": true,
-            }),
+            // 直接使用插件提供的 schema（已在 new() 中设置默认值）
+            parameters: self.parameters.clone(),
         }
     }
     

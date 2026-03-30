@@ -281,13 +281,18 @@ impl ToolLoader {
         let script_path = tool.script_path.as_ref()
             .ok_or_else(|| PluginError::Load("Shell tool requires script path".to_string()))?;
         
-        // 构建命令参数
+        // 将参数序列化为JSON，通过环境变量传递（支持公嵌套对象、数组等复杂类型）
+        let params_json = serde_json::to_string(parameters)
+            .map_err(|e| PluginError::Json(e))?;
+        
+        // 保留简单 CLI 参数作为向后兼容
         let args = self.build_command_arguments(parameters)?;
         
         // 执行命令
         let output = tokio::process::Command::new("bash")
             .arg(script_path)
             .args(args)
+            .env("AGENT_PARAMS", &params_json)
             .output()
             .await
             .map_err(|e| PluginError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
@@ -311,13 +316,16 @@ impl ToolLoader {
         let script_path = tool.script_path.as_ref()
             .ok_or_else(|| PluginError::Load("Python tool requires script path".to_string()))?;
         
-        // 构建命令参数
+        let params_json = serde_json::to_string(parameters)
+            .map_err(|e| PluginError::Json(e))?;
+        
         let args = self.build_command_arguments(parameters)?;
         
         // 执行命令
         let output = tokio::process::Command::new("python3")
             .arg(script_path)
             .args(args)
+            .env("AGENT_PARAMS", &params_json)
             .output()
             .await
             .map_err(|e| PluginError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
@@ -341,13 +349,16 @@ impl ToolLoader {
         let script_path = tool.script_path.as_ref()
             .ok_or_else(|| PluginError::Load("JavaScript tool requires script path".to_string()))?;
         
-        // 构建命令参数
+        let params_json = serde_json::to_string(parameters)
+            .map_err(|e| PluginError::Json(e))?;
+        
         let args = self.build_command_arguments(parameters)?;
         
         // 执行命令
         let output = tokio::process::Command::new("node")
             .arg(script_path)
             .args(args)
+            .env("AGENT_PARAMS", &params_json)
             .output()
             .await
             .map_err(|e| PluginError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
@@ -399,6 +410,15 @@ impl ToolLoader {
         }
         
         Ok(args)
+    }
+    
+    /// 卸载指定插件的所有工具
+    pub fn unload_plugin_tools(&mut self, plugin_id: &str) {
+        if let Some(tool_names) = self.plugin_tools.remove(plugin_id) {
+            for tool_name in tool_names {
+                self.loaded_tools.remove(&tool_name);
+            }
+        }
     }
     
     /// 清除所有已加载的工具

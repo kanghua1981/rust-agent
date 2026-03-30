@@ -164,12 +164,6 @@ impl Agent {
             path_manager.set_allowed_dir(dir);
         }
     }
-
-    /// Spawn all MCP servers configured in `.agent/mcp.toml` and register
-    /// their tools.  Call once after construction (in CLI / stdio mode).
-    pub async fn load_mcp_tools(&mut self) {
-        self.tool_executor.load_mcp_tools().await;
-    }
     
     /// Load plugin tools from plugin manager
     pub async fn load_plugin_tools(&mut self) -> Result<(), Box<dyn std::error::Error>> {

@@ -5,7 +5,6 @@
 pub mod metadata;
 pub mod scope;
 pub mod manager;
-pub mod loader;
 pub mod tool_loader;
 pub mod skill_loader;
 pub mod cache;
@@ -14,7 +13,6 @@ pub mod cache;
 pub use metadata::PluginMeta;
 pub use scope::PluginScope;
 pub use manager::PluginManager;
-pub use loader::PluginLoader;
 
 /// 插件系统错误类型
 #[derive(Debug, thiserror::Error)]

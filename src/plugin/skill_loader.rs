@@ -330,6 +330,34 @@ impl SkillLoader {
         stats
     }
     
+    /// 向 SkillLoader 注册一个已构造好的技能（供系统默认插件和外部桥接调用）
+    /// `skill.plugin_id` 必须已正确设置
+    pub fn register_system_skill(&mut self, skill: SkillDefinition) -> Result<(), PluginError> {
+        let plugin_id = skill.plugin_id.clone();
+        self.register_skill(skill, &plugin_id)
+    }
+    
+    /// 卸载指定插件的所有技能（同时清理标签索引）
+    pub fn unload_plugin_skills(&mut self, plugin_id: &str) {
+        if let Some(skill_names) = self.plugin_skills.remove(plugin_id) {
+            for skill_name in &skill_names {
+                // 先清理标签索引再删除技能本体
+                if let Some(skill) = self.loaded_skills.get(skill_name) {
+                    let tags = skill.tags.clone();
+                    for tag in &tags {
+                        if let Some(tagged) = self.tag_index.get_mut(tag) {
+                            tagged.retain(|s| s != skill_name);
+                            if tagged.is_empty() {
+                                self.tag_index.remove(tag);
+                            }
+                        }
+                    }
+                }
+                self.loaded_skills.remove(skill_name);
+            }
+        }
+    }
+    
     /// 清除所有已加载的技能
     pub fn clear(&mut self) {
         self.loaded_skills.clear();
