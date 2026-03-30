@@ -1,0 +1,23 @@
+# Hook 2: tool.after — fire_and_forget
+# ============================================================
+# 每次工具执行完毕后记录审计日志（异步，不影响工具返回速度）。
+# 可用于：统计工具使用频次、记录操作审计、触发外部通知。
+# ============================================================
+
+event       = "tool.after"
+mode        = "fire_and_forget"
+description = "工具执行后写入审计日志"
+script      = "hooks/scripts/on_tool_after.sh"
+priority    = 100
+timeout     = 5
+
+# 过滤条件：只关注写操作工具（任意一个字段完全匹配即可触发）
+# 注意：filter 各字段是 AND 关系，需要全部满足
+# 如果只想过滤特定工具，用 tool_name 字段精确匹配：
+# [filter]
+# tool_name = "write_file"
+#
+# 当前不设 filter 表示所有工具都触发
+
+[env]
+AUDIT_LOG = "/tmp/project-stats-audit.log"

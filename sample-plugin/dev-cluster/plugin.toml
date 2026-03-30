@@ -1,0 +1,25 @@
+name        = "dev-cluster"
+version     = "1.0.0"
+description = "多节点开发集群插件，演示 MCP 服务接入（stdio & HTTP）和 workspaces 多节点拓扑配置"
+author      = "Your Name <you@example.com>"
+license     = "MIT"
+repository  = "https://github.com/yourname/dev-cluster-plugin"
+
+[permissions]
+level             = "Standard"
+requires_approval = false
+max_instances     = 1
+
+[system_requirements]
+bash     = ">=4.0"
+node     = ">=18.0"          # filesystem MCP server 需要 Node.js
+commands = ["npx", "curl"]
+
+[config]
+# 远程节点默认超时（秒）
+remote_timeout = 30
+# 是否在启动时探测所有节点可达性
+probe_on_start = true
+
+[components]
+scan_directories = ["tools", "skills", "hooks", "mcp"]

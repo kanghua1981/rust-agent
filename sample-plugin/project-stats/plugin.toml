@@ -1,0 +1,32 @@
+# ============================================================
+# project-stats 插件元数据
+# ============================================================
+# 安装方式：将本目录复制到项目的 .agent/plugins/project-stats/
+
+name        = "project-stats"
+version     = "1.0.0"
+description = "项目统计分析插件，演示工具、技能、Hook 的完整用法"
+author      = "Your Name <you@example.com>"
+license     = "MIT"
+repository  = "https://github.com/yourname/project-stats-plugin"
+
+# ── 权限 ──────────────────────────────────────────────────────
+[permissions]
+level             = "Standard"   # Safe | Standard | Dangerous
+requires_approval = false        # 部署时是否需要用户手动确认
+max_instances     = 1
+
+# ── 系统依赖 ───────────────────────────────────────────────────
+[system_requirements]
+bash     = ">=4.0"
+commands = ["git", "wc", "jq"]   # 运行时必须存在的命令
+
+# ── 默认配置（可在项目 .agent/config.toml 中覆盖）──────────────
+[config]
+log_file       = "/tmp/project-stats.log"   # Hook 日志输出路径
+max_log_lines  = 500                        # 日志保留最大行数
+git_log_limit  = 20                         # git_log 工具默认条数
+
+# ── 组件目录扫描声明 ───────────────────────────────────────────
+[components]
+scan_directories = ["tools", "skills", "hooks"]

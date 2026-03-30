@@ -1,0 +1,22 @@
+# Hook 3: router.decision — intercepting
+# ============================================================
+# 拦截路由决策，允许插件根据外部条件覆盖执行模式。
+# 返回空 / 非 JSON / Continue → 使用内置决策
+# 返回 {"override_mode": "full_pipeline"} → 强制切换模式
+#
+# 可用 override_mode 值：
+#   basic_loop | plan_and_execute | full_pipeline
+# ============================================================
+
+event       = "router.decision"
+mode        = "intercepting"      # 必须是 intercepting 才能覆盖决策
+description = "根据任务关键词将高风险操作升级为完整流水线"
+script      = "hooks/scripts/on_router_decision.sh"
+priority    = 50
+timeout     = 3   # 务必设置较短超时，避免阻塞响应
+
+# 过滤：仅在 proposed_mode 不是 full_pipeline 时才介入
+# （已经是 full_pipeline 则无需干预）
+[filter]
+# 注意：filter 匹配 payload.data 中的字段，字符串精确匹配
+# 这里不加 filter，让脚本自己判断是否需要升级
