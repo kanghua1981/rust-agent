@@ -2,7 +2,6 @@ mod cli;
 mod commands;
 mod config;
 mod confirm;
-mod tui_app;
 mod context;
 mod diff;
 mod llm;
@@ -45,8 +44,6 @@ pub enum RunMode {
     Stdio,
     /// WebSocket server for remote consumers (VS Code, Web UI).
     Server,
-    /// Split-screen ratatui TUI: output pane + always-active input bar.
-    Tui,
     /// Spawned by the server for each connection; handles the agent loop.
     Worker,
     /// MCP (Model Context Protocol) tool server over stdio JSON-RPC 2.0.
@@ -61,10 +58,9 @@ impl std::str::FromStr for RunMode {
             "cli" => Ok(RunMode::Cli),
             "stdio" => Ok(RunMode::Stdio),
             "server" | "ws" | "websocket" => Ok(RunMode::Server),
-            "tui" => Ok(RunMode::Tui),
             "worker" => Ok(RunMode::Worker),
             "mcp" => Ok(RunMode::Mcp),
-            other => Err(format!("unknown mode '{}', expected: cli, stdio, server, tui, worker, mcp", other)),
+            other => Err(format!("unknown mode '{}', expected: cli, stdio, server, worker, mcp", other)),
         }
     }
 }
@@ -75,7 +71,6 @@ impl std::fmt::Display for RunMode {
             RunMode::Cli => write!(f, "cli"),
             RunMode::Stdio => write!(f, "stdio"),
             RunMode::Server => write!(f, "server"),
-            RunMode::Tui => write!(f, "tui"),
             RunMode::Worker => write!(f, "worker"),
             RunMode::Mcp => write!(f, "mcp"),
         }
@@ -117,7 +112,7 @@ struct Args {
     #[arg(long)]
     sessions: bool,
 
-    /// Output mode: cli (default), tui (split-screen ratatui), stdio (JSON protocol), server (WebSocket)
+    /// Output mode: cli (default), stdio (JSON protocol), server (WebSocket)
     #[arg(long, default_value = "cli")]
     mode: RunMode,
 
@@ -227,20 +222,6 @@ async fn main() -> Result<()> {
         std::env::current_dir().unwrap_or_default()
     };
 
-    // TUI mode has its own event loop — launch and return
-    if args.mode == RunMode::Tui {
-        return tui_app::run(
-            config,
-            project_dir,
-            args.prompt,
-            args.resume,
-            args.isolation,
-            args.global_session,
-            args.auto_approve,
-        )
-        .await;
-    }
-
     // Auto-spawn sub-agents configured in models.toml (if we're in CLI mode).
     // We keep the Child handles so we can kill the processes when the main agent exits.
     let mut spawned_children: Vec<std::process::Child> = Vec::new();
@@ -299,7 +280,7 @@ async fn main() -> Result<()> {
     let output: Arc<dyn output::AgentOutput> = match args.mode {
         RunMode::Cli => Arc::new(output::CliOutput::new()),
         RunMode::Stdio => Arc::new(output::StdioOutput::new()),
-        RunMode::Server | RunMode::Tui | RunMode::Worker | RunMode::Mcp => unreachable!(), // handled above
+        RunMode::Server | RunMode::Worker | RunMode::Mcp => unreachable!(), // handled above
     };
 
     // 初始化插件管理器

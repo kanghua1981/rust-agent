@@ -85,6 +85,13 @@ impl ToolLoader {
         }
     }
     
+    /// 将工具名中不符合 `^[a-zA-Z0-9_-]+$` 的字符替换为 `_`。
+    fn sanitize(s: &str) -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect()
+    }
+
     /// 从插件目录加载工具
     pub fn load_tools_from_plugin(&mut self, plugin_id: &str, plugin_path: &Path) -> Result<Vec<ToolDefinition>, PluginError> {
         let tools_dir = plugin_path.join("tools");
@@ -200,7 +207,10 @@ impl ToolLoader {
     
     /// 注册工具
     fn register_tool(&mut self, tool: ToolDefinition, plugin_id: &str) -> Result<(), PluginError> {
-        let tool_full_name = format!("{}@{}", tool.name, plugin_id);
+        // 对工具名和插件 ID 做 slug 化，确保最终工具名满足 `^[a-zA-Z0-9_-]+$`。
+        let safe_name      = Self::sanitize(&tool.name);
+        let safe_plugin_id = Self::sanitize(plugin_id);
+        let tool_full_name = format!("{}__{}", safe_name, safe_plugin_id);
         
         // 检查工具是否已存在
         if self.loaded_tools.contains_key(&tool_full_name) {
@@ -233,11 +243,12 @@ impl ToolLoader {
             return Some(tool);
         }
         
-        // 如果没有@符号，尝试模糊匹配
-        if !tool_name.contains('@') {
+        // 如果没有__分隔符，尝试模糊匹配
+        if !tool_name.contains("__") {
+            let safe = Self::sanitize(tool_name);
             // 查找所有匹配的工具
             for (full_name, tool) in &self.loaded_tools {
-                if full_name.starts_with(&format!("{}@", tool_name)) {
+                if full_name.starts_with(&format!("{}__", safe)) {
                     return Some(tool);
                 }
             }

@@ -802,11 +802,12 @@ impl Tool for CallNodeTool {
                         return ToolResult::error("call_node interrupted by user (Ctrl-C).".to_string());
                     }
 
-                    if elapsed >= total_timeout {
+                    if idle >= total_timeout {
                         let _ = write.send(Message::Close(None)).await;
                         self.output.on_stage_end(&format!("Node:{}", input.target));
                         return ToolResult::error(format!(
-                            "Node '{}' timed out after {}s.", input.target, elapsed.as_secs()
+                            "Node '{}' timed out: no activity for {}s (total elapsed {}s).",
+                            input.target, idle.as_secs(), elapsed.as_secs()
                         ));
                     }
 

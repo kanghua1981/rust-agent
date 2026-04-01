@@ -11,7 +11,7 @@
 - **⚡ 执行前背景注入**: approve 计划时可附带背景上下文，直达 Executor 初始 prompt
 - **🛑 执行中实时指导**: Pipeline 运行时按 `Ctrl+\` 随时暂停并向 Executor 注入补充信息
 - **�🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
-- **📡 五种运行模式**: CLI 交互（默认）、**TUI 分屏界面**（ratatui）、JSON-over-stdio 协议、WebSocket 服务器、**MCP 工具服务器**（Claude Desktop / Cursor 直接接入）
+- **📡 四种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器、**MCP 工具服务器**（Claude Desktop / Cursor 直接接入）
 - **🔌 MCP 双向支持**: **作为 MCP 服务器**（`--mode mcp`）向任何 MCP 主机暴露全部内置工具；**作为 MCP 客户端**（`mcp.toml`）自动连接外部 MCP 服务器并将其工具注册到 Agent 工具列表，LLM 透明调用
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
 - **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换
@@ -179,9 +179,6 @@ model = "sonnet"
 
 # 开启详细日志（调试用）
 ./target/release/agent --verbose
-
-# 分屏 TUI 界面（ratatui，输入输出完全解耦）
-./target/release/agent --mode tui
 ```
 
 #### Stdio 模式（脚本 / VS Code 集成）
@@ -309,52 +306,6 @@ cd web-ui
 - 发送用户消息：`{"type": "user_message", "content": "你的问题"}`
 - 响应确认请求：`{"type": "confirm_response", "approved": true}`
 - 服务端事件格式与 Stdio 模式相同（JSON 帧）
-
-#### TUI 模式（分屏终端界面）
-
-通过 `--mode tui` 启动基于 [ratatui](https://github.com/ratatui-org/ratatui) 的分屏 TUI 界面：
-
-```bash
-# 启动 TUI 模式
-./target/release/agent --mode tui
-
-# 带初始提示
-./target/release/agent --mode tui --prompt "帮我看看项目结构"
-
-# 跳过确认提示（适合自动化）
-./target/release/agent --mode tui --yes
-```
-
-**界面布局**：
-
-```
-┌────────────────────────────────────────┐
-│  输出区（可滚动，显示所有 Agent 输出）  │
-├────────────────────────────────────────┤
-│  状态栏（● 思考中… / ✓ 就绪）         │
-├────────────────────────────────────────┤
-│  > [输入框 — 始终激活]                 │
-└────────────────────────────────────────┘
-```
-
-**快捷键**：
-
-| 按键 | 功能 |
-|------|------|
-| `Enter` | 发送消息 |
-| `↑` / `↓` | 命令历史 |
-| `PgUp` / `PgDn` | 翻页滚动输出区 |
-| `鼠标滚轮` | 滚动输出区 |
-| `Ctrl+C` | 中断 Agent（Agent 空闲时退出） |
-| `Ctrl+Q` | 退出 TUI |
-| `Ctrl+L` | 清空输出区 |
-
-**特点**：
-- 输入框**始终可用**，agent 处理上一条消息时可继续输入下一条（自动排队）
-- 所有斜杠命令（`/plan`、`/model`、`/mode`、`/quit` 等）在 TUI 模式下同样有效
-- 支持彩色输出与 streaming 实时显示
-- 支持鼠标滚轮滚动
-- 自动滚动与手动滚动模式切换
 
 #### MCP 服务器模式（Claude Desktop / Cursor 等接入）
 

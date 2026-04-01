@@ -157,7 +157,7 @@ impl ToolExecutor {
             // 注册每个插件工具
             for tool in tools {
                 let plugin_tool = PluginToolWrapper::new(
-                    tool.name.clone(),
+                    format!("{}__{}", tool.name, tool.plugin_id),
                     tool.description.clone(),
                     tool.parameters.clone(),
                     tool.plugin_id.clone(),
@@ -483,6 +483,14 @@ struct PluginToolWrapper {
     plugin_manager: Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>,
 }
 
+/// 将工具名中不符合 `^[a-zA-Z0-9_-]+$` 的字符替换为 `_`。
+/// Anthropic 和 OpenAI 兼容 API 均要求工具名满足此规则。
+fn sanitize_tool_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 impl PluginToolWrapper {
     fn new(
         name: String,
@@ -498,7 +506,7 @@ impl PluginToolWrapper {
             "additionalProperties": true,
         }));
         Self {
-            name,
+            name: sanitize_tool_name(&name),
             description,
             parameters,
             plugin_id,
@@ -519,10 +527,9 @@ impl Tool for PluginToolWrapper {
     }
     
     async fn execute(&self, input: &serde_json::Value, _project_dir: &Path) -> ToolResult {
-        // 执行插件工具
+        // 执行插件工具（self.name 已经是 name@plugin_id 格式）
         let mut pm_lock = self.plugin_manager.lock().await;
-        let tool_full_name = format!("{}@{}", self.name, self.plugin_id);
-        match pm_lock.execute_tool(&tool_full_name, input).await {
+        match pm_lock.execute_tool(&self.name, input).await {
             Ok(result) => {
                 // 将插件工具的结果转换为ToolResult
                 let output = if let Some(output_str) = result.as_str() {
