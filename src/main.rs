@@ -78,7 +78,7 @@ impl std::fmt::Display for RunMode {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "agent", about = "🤖 Rust Coding Agent - An AI-powered CLI coding assistant")]
+#[command(name = "agent", version = env!("CARGO_PKG_VERSION"), about = "🤖 Rust Coding Agent - An AI-powered CLI coding assistant")]
 struct Args {
     /// Optional initial prompt to start with
     #[arg(short, long)]

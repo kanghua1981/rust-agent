@@ -1,6 +1,6 @@
 [package]
 name = "rust_agent"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "A CLI coding agent powered by LLM, similar to Claude Code"
 license = "MIT"

@@ -6,16 +6,19 @@ use crate::tools::ToolResult;
 
 /// Print the welcome banner
 pub fn print_banner() {
-    let banner = r#"
+    let banner = format!(
+"
 ╔══════════════════════════════════════════════════════════╗
 ║                                                          ║
-║   🤖  Rust Coding Agent  v0.2                            ║
+║   🤖  Rust Coding Agent  v{:<31}║
 ║   An AI-powered CLI coding assistant                     ║
 ║                                                          ║
 ║   Type /help for commands, /quit to exit                 ║
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝
-"#;
+",
+        env!("CARGO_PKG_VERSION"),
+    );
     println!("{}", banner.bright_cyan());
 }
 

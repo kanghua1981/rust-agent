@@ -19,6 +19,7 @@ pub mod list_services;
 pub mod browser;
 pub mod script_tool;
 pub mod upload_image;
+pub mod todo;
 // pub mod git; // Removed - Git operations handled by run_command
 
 use std::sync::Arc;
@@ -119,6 +120,9 @@ impl ToolExecutor {
         executor.register(Box::new(create_skill::CreateSkillTool));
         executor.register(Box::new(browser::BrowserTool::new()));
         executor.register(Box::new(upload_image::UploadImageTool));
+        executor.register(Box::new(todo::TodoWriteTool));
+        executor.register(Box::new(todo::TodoUpdateTool));
+        executor.register(Box::new(todo::TodoReadTool));
         // executor.register(Box::new(git::GitTool)); // Removed - Git operations handled by run_command
 
         // Only register agent-to-agent tools for the main manager agent, not for
