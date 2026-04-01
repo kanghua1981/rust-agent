@@ -712,6 +712,7 @@ pub struct PluginStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::metadata::{PluginPermissions, SystemRequirements, Components};
     use tempfile::tempdir;
     
     #[test]
