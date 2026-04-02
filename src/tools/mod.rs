@@ -393,7 +393,8 @@ impl ToolExecutor {
                     }
                     Some(merged)
                 }
-                HookResult::Continue => None,
+                // Approved / Continue in tool.before context → proceed as-is
+                HookResult::Approved { .. } | HookResult::Continue => None,
             }
         } else {
             None

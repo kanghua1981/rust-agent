@@ -49,12 +49,15 @@ impl HookEvent {
 /// Intercepting 模式的执行结果
 #[derive(Debug)]
 pub enum HookResult {
-    /// 允许继续（所有 hook 均通过）
+    /// 允许继续（所有 hook 均通过），交给下游（UI、自动审批等）决策
     Continue,
     /// 中止当前操作，携带拒绝原因
     Cancel { reason: String },
     /// 修改参数后继续（将 `params` 合并到原始 input）
     PatchParams { params: Value },
+    /// Hook 已代替用户完成审批，直接放行，不再弹 UI
+    /// 脚本输出：`{"approved": true, "message": "<optional>"}` 触发此变体
+    Approved { message: Option<String> },
 }
 
 // ── HookBus ───────────────────────────────────────────────────────────────────
@@ -230,6 +233,15 @@ impl HookBus {
                             .to_string();
                         tracing::info!("[hook] CANCEL '{}': {}", hook.description, reason);
                         return HookResult::Cancel { reason };
+                    }
+
+                    if json.get("approved").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        let message = json
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        tracing::info!("[hook] APPROVED '{}': {:?}", hook.description, message);
+                        return HookResult::Approved { message };
                     }
 
                     if let Some(patch) = json.get("patch_params") {

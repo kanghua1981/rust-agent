@@ -763,7 +763,7 @@ impl Agent {
                 }
                 new_mode
             }
-            // Cancel 不阻断路由，降级为原决策
+            // Cancel / Approved 不阻断路由，降级为原决策
             HookResult::Cancel { reason } => {
                 self.output.on_warning(&format!(
                     "[hook] router.decision cancelled ({}), keeping '{}'",
@@ -771,7 +771,7 @@ impl Agent {
                 ));
                 mode
             }
-            HookResult::Continue => mode,
+            HookResult::Approved { .. } | HookResult::Continue => mode,
         }
     }
 
@@ -817,6 +817,59 @@ impl Agent {
                 text
             }
             Err(e) => format!("(Failed to generate explanation: {})", e),
+        }
+    }
+
+    /// Query the hook system to see if a confirmation should be auto-approved,
+    /// auto-denied, or left to the normal UI flow.
+    ///
+    /// Returns:
+    ///   `Some(true)`  — hook approved; skip UI prompt
+    ///   `Some(false)` — hook denied;   skip UI prompt
+    ///   `None`        — no hook verdict; fall through to normal UI
+    async fn check_confirm_via_hook(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+    ) -> Option<bool> {
+        let bus = self.hook_bus.as_ref()?;
+
+        let session_id = self.session_id.clone().unwrap_or_else(|| "none".to_string());
+
+        let action_type = match tool_name {
+            "write_file"                    => "write_file",
+            "edit_file" | "multi_edit_file" => "edit_file",
+            "run_command"                   => "run_command",
+            "delete_file"                   => "delete_file",
+            _                               => tool_name,
+        };
+
+        let path    = tool_input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let command = tool_input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+
+        let event = crate::plugin::hook_bus::HookEvent::new(
+            "confirm.before",
+            session_id,
+            serde_json::json!({
+                "tool_name":   tool_name,
+                "action_type": action_type,
+                "path":        path,
+                "command":     command,
+            }),
+        );
+
+        match bus.emit_intercepting(event).await {
+            crate::plugin::hook_bus::HookResult::Approved { message } => {
+                if let Some(msg) = &message {
+                    self.output.on_warning(&format!("[hook:confirm] ✅ {}", msg));
+                }
+                Some(true)
+            }
+            crate::plugin::hook_bus::HookResult::Cancel { reason } => {
+                self.output.on_warning(&format!("[hook:confirm] 🚫 blocked: {}", reason));
+                Some(false)
+            }
+            _ => None, // Continue → fall through to UI
         }
     }
 
@@ -931,10 +984,33 @@ impl Agent {
                 })
                 .collect();
 
+            // ── Parallel call_node pre-execution ─────────────────────────────
+            // If the LLM issued multiple call_node in one turn they are
+            // independent by definition — run them concurrently and cache
+            // the results so the sequential for-loop below can pick them up.
+            let parallel_call_nodes: Vec<_> = tool_uses
+                .iter()
+                .filter(|(_, name, _)| name == "call_node")
+                .collect();
+            let mut call_node_cache: std::collections::HashMap<String, crate::tools::ToolResult> =
+                std::collections::HashMap::new();
+            if parallel_call_nodes.len() > 1 {
+                self.output.on_warning(&format!(
+                    "[call_node] Running {} nodes in parallel…",
+                    parallel_call_nodes.len()
+                ));
+                let futs = parallel_call_nodes.iter().map(|(id, name, input)| {
+                    let id   = id.clone();
+                    let exec = self.tool_executor.execute(name, input);
+                    async move { (id, exec.await) }
+                });
+                let paired = futures::future::join_all(futs).await;
+                for (id, result) in paired {
+                    call_node_cache.insert(id, result);
+                }
+            }
+
             for (tool_id, tool_name, tool_input) in tool_uses {
-                // Always show what the LLM wants to do BEFORE asking for
-                // confirmation, so the user has full context.
-                self.output.on_tool_use(&tool_name, &tool_input);
 
                 // ── Virtual tool: ask_user ────────────────────────────────
                 if tool_name == "ask_user" {
@@ -953,27 +1029,36 @@ impl Agent {
 
                 // Check if this tool needs confirmation
                 if needs_confirmation(&tool_name, &tool_input) {
-                    let action = build_confirm_action(&tool_name, &tool_input);
-                    let mut approved = false;
-                    loop {
-                        let result = self.output.confirm(&action);
-                        match result {
-                            crate::confirm::ConfirmResult::Yes
-                            | crate::confirm::ConfirmResult::AlwaysYes => {
-                                approved = true;
-                                break;
+                    // 1. Ask hook system first — a plugin can auto-approve or deny.
+                    let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
+                    let approved = match hook_decision {
+                        Some(decision) => decision,
+                        None => {
+                            // 2. No hook verdict — fall through to normal UI.
+                            let action = build_confirm_action(&tool_name, &tool_input);
+                            let mut ui_approved = false;
+                            loop {
+                                let result = self.output.confirm(&action);
+                                match result {
+                                    crate::confirm::ConfirmResult::Yes
+                                    | crate::confirm::ConfirmResult::AlwaysYes => {
+                                        ui_approved = true;
+                                        break;
+                                    }
+                                    crate::confirm::ConfirmResult::No => break,
+                                    crate::confirm::ConfirmResult::Clarify(question) => {
+                                        // User wants an explanation — ask the LLM
+                                        let explanation = self
+                                            .explain_tool_action(&tool_name, &tool_input, &question)
+                                            .await;
+                                        self.output.on_assistant_text(&explanation);
+                                        // Loop back to re-prompt
+                                    }
+                                }
                             }
-                            crate::confirm::ConfirmResult::No => break,
-                            crate::confirm::ConfirmResult::Clarify(question) => {
-                                // User wants an explanation — ask the LLM
-                                let explanation = self
-                                    .explain_tool_action(&tool_name, &tool_input, &question)
-                                    .await;
-                                self.output.on_assistant_text(&explanation);
-                                // Loop back to re-prompt
-                            }
+                            ui_approved
                         }
-                    }
+                    };
                     if !approved {
                         self.conversation.add_message(Message::tool_result(
                             &tool_id,
@@ -985,7 +1070,10 @@ impl Agent {
                 }
 
                 // For file-modifying tools, show diff preview
-                let result = if matches!(tool_name.as_str(), "edit_file" | "multi_edit_file" | "write_file") {
+                let result = if let Some(cached) = call_node_cache.remove(&tool_id) {
+                    // Already executed in the parallel pre-computation above.
+                    cached
+                } else if matches!(tool_name.as_str(), "edit_file" | "multi_edit_file" | "write_file") {
                     self.execute_with_diff(&tool_name, &tool_input).await
                 } else {
                     self.tool_executor.execute(&tool_name, &tool_input).await
@@ -1728,25 +1816,34 @@ Begin execution now."#,
                 }
 
                 if !readonly_only && needs_confirmation(&tool_name, &tool_input) {
-                    let action = build_confirm_action(&tool_name, &tool_input);
-                    let mut approved = false;
-                    loop {
-                        let result = self.output.confirm(&action);
-                        match result {
-                            crate::confirm::ConfirmResult::Yes
-                            | crate::confirm::ConfirmResult::AlwaysYes => {
-                                approved = true;
-                                break;
+                    // 1. Ask hook system first — a plugin can auto-approve or deny.
+                    let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
+                    let approved = match hook_decision {
+                        Some(decision) => decision,
+                        None => {
+                            // 2. No hook verdict — fall through to normal UI.
+                            let action = build_confirm_action(&tool_name, &tool_input);
+                            let mut ui_approved = false;
+                            loop {
+                                let result = self.output.confirm(&action);
+                                match result {
+                                    crate::confirm::ConfirmResult::Yes
+                                    | crate::confirm::ConfirmResult::AlwaysYes => {
+                                        ui_approved = true;
+                                        break;
+                                    }
+                                    crate::confirm::ConfirmResult::No => break,
+                                    crate::confirm::ConfirmResult::Clarify(question) => {
+                                        let explanation = self
+                                            .explain_tool_action(&tool_name, &tool_input, &question)
+                                            .await;
+                                        self.output.on_assistant_text(&explanation);
+                                    }
+                                }
                             }
-                            crate::confirm::ConfirmResult::No => break,
-                            crate::confirm::ConfirmResult::Clarify(question) => {
-                                let explanation = self
-                                    .explain_tool_action(&tool_name, &tool_input, &question)
-                                    .await;
-                                self.output.on_assistant_text(&explanation);
-                            }
+                            ui_approved
                         }
-                    }
+                    };
                     if !approved {
                         stage_conv.add_message(Message::tool_result(
                             &tool_id,
