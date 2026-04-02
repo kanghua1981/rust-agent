@@ -1,3 +1,5 @@
+#![allow(unused_imports, dead_code)]
+
 //! Protocol module for handling browser communication protocols
 //! 
 //! This module provides implementations for various browser protocols

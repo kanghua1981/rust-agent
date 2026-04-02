@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 //! Snapshot module for capturing structured page information
 //! 
 //! This module provides functionality for creating AI-friendly snapshots

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use thiserror::Error;
 
 /// Main error type for browser automation operations

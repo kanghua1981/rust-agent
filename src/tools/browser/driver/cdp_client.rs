@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 use super::DriverError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio_tungstenite::tungstenite::Message;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 
 /// CDP (Chrome DevTools Protocol) client
 pub struct CdpClient {
@@ -148,7 +150,7 @@ impl CdpClient {
     
     /// Start message handler
     fn start_message_handler(&mut self) {
-        if let Some(connection) = &mut self.connection {
+        if let Some(_connection) = &mut self.connection {
             // TODO: Implement message handler
             // For now, just log that handler would start
             println!("Message handler would start for connection");

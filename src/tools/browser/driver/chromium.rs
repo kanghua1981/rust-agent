@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::{BrowserDriver, DriverError};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -288,7 +290,7 @@ impl BrowserDriver for ChromiumDriver {
         Ok(format!("Executed script on page {}: {}", page_id, script))
     }
     
-    fn take_screenshot(&mut self, page_id: &str, format: &str) -> Result<Vec<u8>, DriverError> {
+    fn take_screenshot(&mut self, page_id: &str, _format: &str) -> Result<Vec<u8>, DriverError> {
         if !self.pages.contains_key(page_id) {
             return Err(DriverError::Browser(format!("Page not found: {}", page_id)));
         }

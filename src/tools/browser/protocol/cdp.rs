@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::{Protocol, ProtocolError, ProtocolMessage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

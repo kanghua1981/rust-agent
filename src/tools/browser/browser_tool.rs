@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::tools::browser::client::{ActionExecutor, BrowserAction, BrowserSession, ScreenshotFormat, SessionManager};
 use crate::tools::browser::config::ConfigManager;
 use crate::tools::browser::error::{BrowserError, BrowserResult};

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::tools::browser::config::BrowserProfile;
 use crate::tools::browser::error::{BrowserError, connection_error};
 use chromiumoxide::browser::Browser;

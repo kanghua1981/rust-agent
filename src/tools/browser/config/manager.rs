@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::profile::BrowserProfile;
 use crate::tools::browser::error::{BrowserError, configuration_error};
 use serde_json;

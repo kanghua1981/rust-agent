@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -210,19 +212,19 @@ impl OperationSequence {
     
     /// Check for circular dependencies
     fn has_circular_dependencies(&self) -> bool {
-        use std::collections::{HashSet, VecDeque};
-        
+        use std::collections::VecDeque;
+
         let mut graph = HashMap::new();
         for (step_id, deps) in &self.dependencies {
             graph.entry(*step_id).or_insert_with(Vec::new).extend(deps);
         }
-        
+
         // Add empty adjacency lists for steps without dependencies
         for step in &self.steps {
             graph.entry(step.id).or_insert_with(Vec::new);
         }
-        
-        // Kahn's algorithm for topological sorting
+
+        // Kahn's algorithm for cycle detection
         let mut in_degree = HashMap::new();
         for (&node, neighbors) in &graph {
             in_degree.entry(node).or_insert(0);
@@ -230,18 +232,18 @@ impl OperationSequence {
                 *in_degree.entry(neighbor).or_insert(0) += 1;
             }
         }
-        
+
         let mut queue = VecDeque::new();
         for (&node, &degree) in &in_degree {
             if degree == 0 {
                 queue.push_back(node);
             }
         }
-        
+
         let mut visited = 0;
         while let Some(node) = queue.pop_front() {
             visited += 1;
-            
+
             if let Some(neighbors) = graph.get(&node) {
                 for &neighbor in neighbors {
                     if let Some(degree) = in_degree.get_mut(&neighbor) {
@@ -253,30 +255,28 @@ impl OperationSequence {
                 }
             }
         }
-        
+
         visited != graph.len()
     }
-    
+
     /// Get step by ID
     pub fn get_step(&self, step_id: usize) -> Option<&OperationStep> {
         self.steps.iter().find(|step| step.id == step_id)
     }
-    
+
     /// Get step execution order considering dependencies
     pub fn get_execution_order(&self) -> Vec<usize> {
-        use std::collections::{HashSet, VecDeque};
-        
+        use std::collections::VecDeque;
+
         let mut graph = HashMap::new();
         for (step_id, deps) in &self.dependencies {
             graph.entry(*step_id).or_insert_with(Vec::new).extend(deps);
         }
-        
-        // Add empty adjacency lists for steps without dependencies
+
         for step in &self.steps {
             graph.entry(step.id).or_insert_with(Vec::new);
         }
-        
-        // Kahn's algorithm
+
         let mut in_degree = HashMap::new();
         for (&node, neighbors) in &graph {
             in_degree.entry(node).or_insert(0);
@@ -284,18 +284,18 @@ impl OperationSequence {
                 *in_degree.entry(neighbor).or_insert(0) += 1;
             }
         }
-        
+
         let mut queue = VecDeque::new();
         for (&node, &degree) in &in_degree {
             if degree == 0 {
                 queue.push_back(node);
             }
         }
-        
+
         let mut order = Vec::new();
         while let Some(node) = queue.pop_front() {
             order.push(node);
-            
+
             if let Some(neighbors) = graph.get(&node) {
                 for &neighbor in neighbors {
                     if let Some(degree) = in_degree.get_mut(&neighbor) {
@@ -307,10 +307,10 @@ impl OperationSequence {
                 }
             }
         }
-        
+
         order
     }
-    
+
     /// Execute sequence sequentially
     pub async fn execute_sequential(&self) -> Vec<StepResult> {
         let mut results = Vec::new();

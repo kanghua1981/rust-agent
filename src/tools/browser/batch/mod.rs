@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 //! Batch operations module for executing sequences of browser actions
 //! 
 //! This module provides functionality for defining, managing, and executing
