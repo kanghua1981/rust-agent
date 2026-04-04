@@ -52,6 +52,7 @@ function App() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           onOpenConnect={() => setShowConnect(true)}
+          onQuickConnect={handleConnect}  // 添加快速连接支持
           onLoadSession={loadSession}
           onNewSession={newSession}
         />

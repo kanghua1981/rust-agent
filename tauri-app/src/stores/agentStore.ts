@@ -268,6 +268,7 @@ export const useAgentStore = create<AgentState>()(
           model: preset.model,
           autoApprove: preset.autoApprove,
           agentMode: preset.agentMode,
+          isolation: preset.isolation || 'container',
         },
       });
     }

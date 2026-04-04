@@ -482,5 +482,6 @@ export interface ConfigPreset {
   model?: string;
   autoApprove: boolean;
   agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+  isolation?: 'normal' | 'container' | 'sandbox';
   createdAt: number;
 }
