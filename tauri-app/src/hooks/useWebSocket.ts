@@ -52,6 +52,7 @@ export const useWebSocket = () => {
     setSandboxChangesData,
     setNodeList,
     setConnectedWorkdir,
+    addConnectionHistory,
   } = useAgentStore();
 
   const sendRaw = useCallback((message: ClientMessage) => {
@@ -437,7 +438,11 @@ export const useWebSocket = () => {
       const wsUrl = params.length > 0 ? `${base}${sep}${params.join('&')}` : base;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
-      ws.onopen = () => { setConnectionStatus('connected'); };
+      ws.onopen = () => { 
+        setConnectionStatus('connected'); 
+        // 添加连接历史记录
+        addConnectionHistory(serverUrl, workdir);
+      };
       ws.onclose = () => { setConnectionStatus('disconnected'); setConnectedWorkdir(null); streamingMsgIdRef.current = null; setStreamingMessageId(null); setIsProcessing(false); };
       ws.onerror = () => { setConnectionStatus('error'); };
       ws.onmessage = (e) => {
@@ -448,7 +453,7 @@ export const useWebSocket = () => {
       setConnectionStatus('error');
       console.error('[ws] connect failed:', err);
     }
-  }, [serverUrl, workdir, isolation, clusterToken, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId]);
+  }, [serverUrl, workdir, isolation, clusterToken, setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId, addConnectionHistory]);
 
   const disconnect = useCallback(() => {
     // Guard: only update global state if this hook instance actually owns a WebSocket.

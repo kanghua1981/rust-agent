@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface SandboxFileChange {
@@ -73,6 +73,9 @@ interface AgentState {
   // 配置预设
   presets: ConfigPreset[];
   
+  // 连接历史记录
+  connectionHistory: ConnectionHistory[];
+  
   // Actions
   setConnectionStatus: (status: ConnectionStatus) => void;
   setServerUrl: (url: string) => void;
@@ -105,6 +108,9 @@ interface AgentState {
   setNodeList: (nodes: VirtualNodeInfo[]) => void;
   setClusterToken: (token: string) => void;
   setConnectedWorkdir: (workdir: string | null) => void;
+  addConnectionHistory: (serverUrl: string, workdir?: string) => void;
+  removeConnectionHistory: (id: string) => void;
+  clearConnectionHistory: () => void;
   reset: () => void;
 }
 
@@ -159,6 +165,7 @@ const initialState = {
   clusterToken: '',
   connectedWorkdir: null,
   presets: persistedConfig.presets || [],
+  connectionHistory: [],
   config: {
     serverUrl: persistedConfig.serverUrl || getDefaultServerUrl(),
     autoApprove: persistedConfig.autoApprove ?? false,
@@ -278,6 +285,45 @@ export const useAgentStore = create<AgentState>()(
   setClusterToken: (token) => set({ clusterToken: token }),
   setConnectedWorkdir: (workdir) => set({ connectedWorkdir: workdir }),
 
+  addConnectionHistory: (serverUrl, workdir) => {
+    const now = Date.now();
+    set((state) => {
+      // 查找是否已有相同serverUrl和workdir的记录
+      const existingIndex = state.connectionHistory.findIndex(
+        h => h.serverUrl === serverUrl && h.workdir === workdir
+      );
+      
+      if (existingIndex >= 0) {
+        // 更新现有记录
+        const updatedHistory = [...state.connectionHistory];
+        updatedHistory[existingIndex] = {
+          ...updatedHistory[existingIndex],
+          lastConnectedAt: now,
+          connectionCount: updatedHistory[existingIndex].connectionCount + 1
+        };
+        return { connectionHistory: updatedHistory };
+      } else {
+        // 添加新记录
+        const newHistory: ConnectionHistory = {
+          id: Date.now().toString(),
+          serverUrl,
+          workdir,
+          connectedAt: now,
+          lastConnectedAt: now,
+          connectionCount: 1
+        };
+        return { connectionHistory: [newHistory, ...state.connectionHistory].slice(0, 20) }; // 最多保留20条记录
+      }
+    });
+  },
+  
+  removeConnectionHistory: (id) =>
+    set((state) => ({
+      connectionHistory: state.connectionHistory.filter(h => h.id !== id),
+    })),
+    
+  clearConnectionHistory: () => set({ connectionHistory: [] }),
+
   clearSession: () => set({
     messages: [],
     toolCalls: [],
@@ -312,6 +358,7 @@ export const useAgentStore = create<AgentState>()(
         config: state.config,
         presets: state.presets,
         nodeList: state.nodeList,
+        connectionHistory: state.connectionHistory,
       }),
     }
   )
