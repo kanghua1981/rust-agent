@@ -258,32 +258,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
           <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} onClick={() => onTabChange('settings')} />
         </div>
 
-        {/* Stats - 移到导航下方 */}
-        {connectionStatus === 'connected' && (
-          <div style={{ marginTop: '20px' }}>
-            <p style={{ fontSize: '10px', fontWeight: '600', color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '8px', paddingLeft: '4px' }}>
-              统计
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {[
-                { label: '消息', value: messages.length },
-                { label: '工具调用', value: toolCalls.length },
-                { label: '待确认', value: pendingConfirmations.length },
-              ].map(s => (
-                <div key={s.label} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '5px 10px',
-                  background: 'var(--bg3)',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                }}>
-                  <span style={{ color: 'var(--text2)' }}>{s.label}</span>
-                  <span style={{ color: 'var(--text)', fontWeight: '600', fontFamily: 'monospace' }}>{s.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+
         
         {/* 预设配置区域 */}
         <PresetsSection

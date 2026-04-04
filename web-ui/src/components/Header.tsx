@@ -14,7 +14,7 @@ const statusConfig = {
 };
 
 export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) => {
-  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges, config } = useAgentStore();
+  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges, config, messages, toolCalls, pendingConfirmations } = useAgentStore();
   const cfg = statusConfig[connectionStatus];
   const isolation = config.isolation ?? 'container';
 
@@ -122,8 +122,69 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
         </div>
       )}
 
+      {/* Stats badges - 只在连接状态下显示 */}
+      {connectionStatus === 'connected' && (
+        <div style={{ display: 'flex', gap: '6px', flexShrink: 0, marginLeft: 'auto' }}>
+          {/* 消息数量徽章 */}
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '2px 8px',
+            background: 'var(--bg3)',
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            fontSize: '11px',
+            fontWeight: '500',
+            color: 'var(--text2)',
+            flexShrink: 0,
+          }}>
+            <span>💬</span>
+            <span>{messages.length}</span>
+          </div>
+          
+          {/* 工具调用徽章 */}
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '2px 8px',
+            background: 'var(--bg3)',
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            fontSize: '11px',
+            fontWeight: '500',
+            color: 'var(--text2)',
+            flexShrink: 0,
+          }}>
+            <span>🔨</span>
+            <span>{toolCalls.length}</span>
+          </div>
+          
+          {/* 待确认徽章（只在有确认时显示） */}
+          {pendingConfirmations.length > 0 && (
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '2px 8px',
+              background: 'rgba(245,158,11,0.15)',
+              border: '1px solid rgba(245,158,11,0.4)',
+              borderRadius: '10px',
+              fontSize: '11px',
+              fontWeight: '500',
+              color: '#f59e0b',
+              flexShrink: 0,
+            }}>
+              <span>⏳</span>
+              <span>{pendingConfirmations.length}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Actions */}
-      <div style={{ display: 'flex', gap: '8px', flexShrink: 0, marginLeft: 'auto' }}>
+      <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
         {connectionStatus !== 'connected' ? (
           <button
             onClick={onOpenConnect}
