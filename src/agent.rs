@@ -44,7 +44,7 @@ use crate::confirm::ConfirmAction;
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
 use crate::llm::{self, LlmClient};
-use crate::memory::Memory;
+use crate::memory_provider::{LocalFileMemory, MemoryEvent, MemoryProvider};
 use crate::model_manager;
 use crate::output::AgentOutput;
 use crate::path_manager;
@@ -60,7 +60,7 @@ pub struct Agent {
     client: Box<dyn LlmClient>,
     tool_executor: ToolExecutor,
     pub conversation: Conversation,
-    pub memory: Memory,
+    pub memory: Arc<dyn MemoryProvider>,
     total_input_tokens: u64,
     total_output_tokens: u64,
     /// Per-role token usage: maps role name → (input_tokens, output_tokens).
@@ -195,7 +195,7 @@ impl Agent {
 
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
-        let memory = Memory::load(&project_dir);
+        let memory: Arc<dyn MemoryProvider> = Arc::new(LocalFileMemory::load(&project_dir));
         let mut conversation = Conversation::new(&project_dir);
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
@@ -252,7 +252,7 @@ impl Agent {
     /// Create agent with a restored conversation
     pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
-        let memory = Memory::load(&project_dir);
+        let memory: Arc<dyn MemoryProvider> = Arc::new(LocalFileMemory::load(&project_dir));
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
@@ -1253,7 +1253,7 @@ impl Agent {
             Some(plan) => plan,
             None => {
                 // Not enough messages to truncate meaningfully
-                context::truncate_conversation(&mut self.conversation, &self.config.model, &self.project_dir);
+                context::truncate_conversation(&mut self.conversation, &self.config.model, self.memory.as_ref());
                 return;
             }
         };
@@ -1274,7 +1274,7 @@ impl Agent {
             }
         };
 
-        context::apply_truncation(&mut self.conversation, &plan, &summary, &self.project_dir);
+        context::apply_truncation(&mut self.conversation, &plan, &summary, self.memory.as_ref());
     }
 
     /// Use the LLM to generate a narrative summary of truncated messages.
@@ -1355,7 +1355,7 @@ Summary:"#,
 
     /// Record a tool action to persistent memory.
     fn record_tool_to_memory(
-        &mut self,
+        &self,
         tool_name: &str,
         tool_input: &serde_json::Value,
         result: &crate::tools::ToolResult,
@@ -1365,8 +1365,7 @@ Summary:"#,
         match tool_name {
             "read_file" => {
                 if !path.is_empty() {
-                    self.memory.touch_file(path, "read");
-                    self.memory.log_action(&format!("read {}", path));
+                    self.memory.record_event(MemoryEvent::FileRead { path: path.to_string() });
                 }
             }
             "write_file" => {
@@ -1376,14 +1375,15 @@ Summary:"#,
                         .and_then(|v| v.as_str())
                         .map(|c| c.lines().count())
                         .unwrap_or(0);
-                    self.memory.touch_file(path, &format!("written ({} lines)", lines));
-                    self.memory.log_action(&format!("wrote {}", path));
+                    self.memory.record_event(MemoryEvent::FileWritten {
+                        path: path.to_string(),
+                        lines,
+                    });
                 }
             }
             "edit_file" => {
                 if !path.is_empty() && !result.is_error {
-                    self.memory.touch_file(path, "edited");
-                    self.memory.log_action(&format!("edited {}", path));
+                    self.memory.record_event(MemoryEvent::FileEdited { path: path.to_string() });
                 }
             }
             "run_command" => {
@@ -1392,8 +1392,8 @@ Summary:"#,
                         .get("command")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let short_cmd = crate::ui::truncate_str(cmd, 60);
-                    self.memory.log_action(&format!("ran `{}`", short_cmd));
+                    let short_cmd = crate::ui::truncate_str(cmd, 60).to_string();
+                    self.memory.record_event(MemoryEvent::CommandRun { command: short_cmd });
                 }
             }
             "grep_search" => {
@@ -1402,11 +1402,10 @@ Summary:"#,
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !pattern.is_empty() {
-                    self.memory.log_action(&format!("searched for `{}`", pattern));
-                }
-                // If a specific path/directory was targeted, record it
-                if !path.is_empty() {
-                    self.memory.touch_file(path, "searched");
+                    self.memory.record_event(MemoryEvent::GrepSearch {
+                        pattern: pattern.to_string(),
+                        path: if path.is_empty() { None } else { Some(path.to_string()) },
+                    });
                 }
             }
             "file_search" => {
@@ -1415,38 +1414,40 @@ Summary:"#,
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !pattern.is_empty() {
-                    self.memory.log_action(&format!("found files matching `{}`", pattern));
+                    self.memory.record_event(MemoryEvent::FileFind { pattern: pattern.to_string() });
                 }
             }
             "list_directory" => {
                 let dir = if path.is_empty() { "." } else { path };
-                self.memory.log_action(&format!("listed {}", dir));
+                self.memory.record_event(MemoryEvent::DirectoryListed { path: dir.to_string() });
             }
             "multi_edit_file" => {
                 if !path.is_empty() && !result.is_error {
-                    let edit_count = tool_input
+                    let edits = tool_input
                         .get("edits")
                         .and_then(|v| v.as_array())
                         .map(|a| a.len())
                         .unwrap_or(0);
-                    self.memory.touch_file(path, &format!("multi-edited ({} edits)", edit_count));
-                    self.memory.log_action(&format!("multi-edited {} ({} edits)", path, edit_count));
+                    self.memory.record_event(MemoryEvent::FileMultiEdited {
+                        path: path.to_string(),
+                        edits,
+                    });
                 }
             }
             "batch_read_files" => {
                 if let Some(paths) = tool_input.get("paths").and_then(|v| v.as_array()) {
-                    for p in paths {
-                        if let Some(s) = p.as_str() {
-                            self.memory.touch_file(s, "read");
-                        }
+                    let collected: Vec<String> = paths
+                        .iter()
+                        .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                        .collect();
+                    if !collected.is_empty() {
+                        self.memory.record_event(MemoryEvent::BatchFilesRead { paths: collected });
                     }
-                    self.memory.log_action(&format!("batch-read {} files", paths.len()));
                 }
             }
             "read_pdf" => {
                 if !path.is_empty() {
-                    self.memory.touch_file(path, "read (PDF)");
-                    self.memory.log_action(&format!("read PDF {}", path));
+                    self.memory.record_event(MemoryEvent::PdfRead { path: path.to_string() });
                 }
             }
             "think" => {
@@ -1454,17 +1455,13 @@ Summary:"#,
             }
             _ => {}
         }
-
-        // Auto-save memory (silent)
-        if let Err(e) = self.memory.save() {
-            tracing::warn!("Failed to save memory: {}", e);
-        }
+        // Auto-save is handled inside LocalFileMemory::record_event — no explicit flush needed.
     }
 
     /// Save memory to disk (public, for use from CLI)
     #[allow(dead_code)]
     pub fn save_memory(&self) {
-        if let Err(e) = self.memory.save() {
+        if let Err(e) = self.memory.flush() {
             tracing::warn!("Failed to save memory: {}", e);
         }
     }
@@ -1877,7 +1874,7 @@ Begin execution now."#,
             // the window limit and cause premature loop termination.
             let status = context::check_context(&stage_conv, &self.config.model);
             if status.needs_truncation {
-                context::truncate_conversation(&mut stage_conv, &self.config.model, &self.project_dir);
+                context::truncate_conversation(&mut stage_conv, &self.config.model, self.memory.as_ref());
             }
         }
 

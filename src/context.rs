@@ -121,13 +121,13 @@ pub fn check_context(conversation: &Conversation, model: &str) -> ContextStatus 
 /// IMPORTANT: tool_use / tool_result messages are always kept as atomic pairs
 /// to satisfy the Anthropic API constraint that every tool_use must be followed
 /// by a tool_result in the very next message.
-pub fn truncate_conversation(conversation: &mut Conversation, model: &str, project_dir: &std::path::Path) {
+pub fn truncate_conversation(conversation: &mut Conversation, model: &str, memory: &dyn crate::memory_provider::MemoryProvider) {
     // Use the plan + apply pipeline with a mechanical summary fallback.
     if let Some(plan) = plan_truncation(conversation, model) {
         let summary = summarize_removed_messages(
             &conversation.messages[plan.remove_start..plan.remove_end],
         );
-        apply_truncation(conversation, &plan, &summary, project_dir);
+        apply_truncation(conversation, &plan, &summary, memory);
     } else {
         // Too few messages — just truncate oversized blocks
         truncate_large_blocks(conversation);
@@ -316,16 +316,10 @@ pub fn apply_truncation(
     conversation: &mut Conversation,
     plan: &TruncationPlan,
     summary: &str,
-    project_dir: &std::path::Path,
+    memory: &dyn crate::memory_provider::MemoryProvider,
 ) {
-    // Save summary to persistent memory
-    {
-        let mut mem = crate::memory::Memory::load(project_dir);
-        mem.log_truncation_summary(summary);
-        if let Err(e) = mem.save() {
-            tracing::warn!("Failed to save truncation summary to memory: {}", e);
-        }
-    }
+    // Delegate to the memory provider — backend decides how to persist.
+    memory.log_truncation(summary);
 
     // Build new message list
     let mut new_messages: Vec<Message> = Vec::new();

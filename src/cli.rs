@@ -317,7 +317,7 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             SlashResult::Continue
         }
         "/memory" => {
-            let mem = &agent.memory;
+            let mem = agent.memory.as_ref();
             if mem.is_empty() {
                 println!(
                     "\n{}  Memory is empty. It will grow as you use the agent.",
@@ -325,15 +325,17 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
                 );
             } else {
                 println!("\n{}  Agent Memory ({} entries):", "🧠", mem.entry_count());
-                if !mem.knowledge.is_empty() {
+                let knowledge = mem.knowledge();
+                if !knowledge.is_empty() {
                     println!("  {} {}:", "📖", "Project Knowledge".bright_cyan());
-                    for fact in &mem.knowledge {
+                    for fact in &knowledge {
                         println!("    {} {}", "•".dimmed(), fact);
                     }
                 }
-                if !mem.file_map.is_empty() {
+                let file_map = mem.file_map();
+                if !file_map.is_empty() {
                     println!("  {} {}:", "📁", "Key Files".bright_cyan());
-                    for (path, desc) in &mem.file_map {
+                    for (path, desc) in &file_map {
                         if desc.is_empty() {
                             println!("    {} {}", "•".dimmed(), path.bright_white());
                         } else {
@@ -346,9 +348,10 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
                         }
                     }
                 }
-                if !mem.session_log.is_empty() {
+                let session_log = mem.session_log();
+                if !session_log.is_empty() {
                     println!("  {} {}:", "📝", "Session Log".bright_cyan());
-                    for entry in &mem.session_log {
+                    for entry in &session_log {
                         println!("    {} {}", "•".dimmed(), entry.dimmed());
                     }
                 }

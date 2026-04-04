@@ -6,6 +6,7 @@ mod context;
 mod diff;
 mod llm;
 mod memory;
+mod memory_provider;
 mod mcp_client;
 mod mcp_server;
 mod model_manager;
