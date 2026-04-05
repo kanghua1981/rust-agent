@@ -136,7 +136,16 @@ impl Config {
             model_alias,
             sub_agents,
             extra_binds: models_cfg.extra_binds.clone(),
-            memory: Default::default(),
+            memory: {
+                // Determine the project directory (same logic as main.rs)
+                let project_dir = args.workdir.as_ref().map(|w| {
+                    std::path::Path::new(w)
+                        .canonicalize()
+                        .unwrap_or_else(|_| std::path::PathBuf::from(w))
+                });
+                let config_path = project_dir.as_deref().map(|d| d.join(".agent").join("memory.toml"));
+                crate::memory::factory::load_memory_config(config_path.as_deref())
+            },
         })
     }
 
