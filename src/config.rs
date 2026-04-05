@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::memory::MemoryConfig;
 use crate::model_manager;
 use crate::Args;
 
@@ -21,6 +22,9 @@ pub struct Config {
     /// Extra bind-mounts injected into every worker container (from models.toml).
     #[serde(default)]
     pub extra_binds: Vec<crate::container::ExtraBindMount>,
+    /// Memory backend configuration.
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +136,7 @@ impl Config {
             model_alias,
             sub_agents,
             extra_binds: models_cfg.extra_binds.clone(),
+            memory: Default::default(),
         })
     }
 
@@ -167,6 +172,7 @@ impl Config {
             model_alias: Some(resolved.alias.clone()),
             sub_agents: self.sub_agents.clone(),
             extra_binds: self.extra_binds.clone(),
+            memory: self.memory.clone(),
         }
     }
 

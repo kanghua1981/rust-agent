@@ -819,6 +819,11 @@ pub async fn run(
                         handle_plugin_command(subcommand, &mut agent).await;
                         continue;
                     }
+                    // Memory consolidation
+                    if input == "/consolidate" {
+                        handle_consolidate_command(&mut agent).await;
+                        continue;
+                    }
                     
                     let handled = handle_slash_command(input, &mut agent);
                     match handled {
@@ -939,6 +944,28 @@ async fn handle_summary_command(input: &str, agent: &mut Agent) {
         }
         // Summary loading not implemented in this branch
         println!("{}  Summary loading is not available in this branch.", "⚠️");
+    }
+}
+
+/// Handle `/consolidate` — run a "dreaming pass": distil session log + existing
+/// knowledge into a refined knowledge set using the LLM. No conversation context
+/// is consumed; the output goes directly into `.agent/memory.md`.
+async fn handle_consolidate_command(agent: &mut Agent) {
+    if agent.memory.is_empty() {
+        println!("\n{}  Memory is empty — nothing to consolidate.", "🧠");
+        return;
+    }
+    println!("\n{}  Consolidating memory…", "🧠");
+    match agent.consolidate_memory().await {
+        Ok(0) => println!("  No new knowledge extracted."),
+        Ok(n) => println!(
+            "  {}  Extracted {} knowledge item{}. Run {} to review.",
+            "✅",
+            n,
+            if n == 1 { "" } else { "s" },
+            "/memory".bright_white()
+        ),
+        Err(e) => println!("  {}  Consolidation failed: {}", "❌", e),
     }
 }
 

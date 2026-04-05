@@ -44,9 +44,9 @@ use crate::confirm::ConfirmAction;
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
 use crate::llm::{self, LlmClient};
-use crate::memory_provider::{LocalFileMemory, MemoryEvent, MemoryProvider};
+use crate::memory::{LocalFileMemory, MemoryEvent, MemoryProvider};
 use crate::model_manager;
-use crate::output::AgentOutput;
+use crate::output::{AgentOutput, SilentOutput};
 use crate::path_manager;
 use crate::sandbox::Sandbox;
 use crate::service::{ServiceEvent, SERVICE_EVENT_TX};
@@ -93,6 +93,8 @@ pub struct Agent {
     pub plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
     /// Hook 事件总线（与 PluginManager 共享同一 Arc）
     hook_bus: Option<Arc<crate::plugin::hook_bus::HookBus>>,
+    /// Number of completed message turns. Used to trigger periodic knowledge extraction.
+    knowledge_extract_turns: u32,
 }
 
 impl Agent {
@@ -195,7 +197,13 @@ impl Agent {
 
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
-        let memory: Arc<dyn MemoryProvider> = Arc::new(LocalFileMemory::load(&project_dir));
+        let memory: Arc<dyn MemoryProvider> = crate::memory::create_memory_provider(
+            &config.memory,
+            &project_dir,
+        ).unwrap_or_else(|e| {
+            tracing::warn!("Failed to create memory provider: {}, falling back to local file memory", e);
+            Arc::new(LocalFileMemory::load(&project_dir))
+        });
         let mut conversation = Conversation::new(&project_dir);
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
@@ -229,6 +237,7 @@ impl Agent {
             force_mode: None,
             plugin_manager,
             hook_bus: None,
+            knowledge_extract_turns: 0,
         };
         
         // Set path manager in tool executor
@@ -284,6 +293,7 @@ impl Agent {
             force_mode: None,
             plugin_manager,
             hook_bus: None,
+            knowledge_extract_turns: 0,
         };
         
         // Set path manager in tool executor
@@ -614,8 +624,17 @@ impl Agent {
             "You are a task classifier. Reply with exactly one word.".to_string();
         classify_conv.add_message(Message::user(&prompt));
 
-        // Use a fast call with no tools — minimal cost
-        match self.call_llm_as_role("router", &classify_conv, &[]).await {
+        // Use SilentOutput so the classifier's single-word reply never reaches the user.
+        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
+        let role_cfg = self.role_configs.get("router");
+        let cfg = role_cfg.unwrap_or(&self.config);
+        let result = match cfg.provider {
+            Provider::Anthropic =>
+                streaming::stream_anthropic_response(cfg, &classify_conv, &[], &*silent).await,
+            Provider::OpenAI | Provider::Compatible =>
+                streaming::stream_openai_response(cfg, &classify_conv, &[], &*silent).await,
+        };
+        match result {
             Ok(response) => {
                 let text: String = response
                     .content
@@ -898,8 +917,18 @@ impl Agent {
             }
         }
 
+        // Prepend relevant memory context to this turn (file-map + session-log scored
+        // by keyword overlap with the user message). This keeps the system prompt lean
+        // while still surfacing relevant history at each turn.
+        let recall = self.memory.recall_relevant(user_input);
+        let enriched_input = if recall.is_empty() {
+            user_input.to_string()
+        } else {
+            format!("{}\n\n{}", recall, user_input)
+        };
+
         // Add user message
-        self.conversation.add_message(Message::user(user_input));
+        self.conversation.add_message(Message::user(&enriched_input));
 
         // Check context window before sending
         self.check_and_manage_context().await;
@@ -907,6 +936,11 @@ impl Agent {
         let tool_defs = Self::with_ask_user(self.tool_executor.definitions());
         let mut iterations = 0;
         let max_iterations = self.config.max_tool_iterations;
+
+        // Per-turn tracking for record_interaction (zero extra LLM calls)
+        let mut turn_tools_used: Vec<String> = Vec::new();
+        let mut turn_had_errors = false;
+        let turn_start_tokens = self.total_input_tokens + self.total_output_tokens;
 
         loop {
             // Check for Ctrl-C interrupt between iterations
@@ -1081,6 +1115,10 @@ impl Agent {
 
                 self.output.on_tool_result(&tool_name, &result);
 
+                // Track tool name and error status for this turn's episode record
+                turn_tools_used.push(tool_name.clone());
+                if result.is_error { turn_had_errors = true; }
+
                 // Record to persistent memory
                 self.record_tool_to_memory(&tool_name, &tool_input, &result);
 
@@ -1151,7 +1189,165 @@ impl Agent {
             .map(|m| m.text_content())
             .unwrap_or_default();
 
+        // Periodic knowledge extraction: every 5 turns, silently distill facts.
+        self.knowledge_extract_turns += 1;
+        if self.knowledge_extract_turns % 5 == 0 {
+            self.extract_and_store_knowledge().await;
+        }
+
+        // Record complete interaction episode to intelligent memory.
+        // intent_summary = first sentence of the assistant reply (zero extra tokens).
+        let intent_summary = {
+            let text = final_text.trim();
+            text.split(['.', '\n', '\u{3002}']) // '。' for CJK
+                .next()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| text.chars().take(120).collect())
+        };
+        let turn_tokens = ((self.total_input_tokens + self.total_output_tokens)
+            .saturating_sub(turn_start_tokens)) as u32;
+        let (outcome_ok, outcome_detail) = if turn_had_errors {
+            (false, "One or more tool calls encountered errors".to_string())
+        } else {
+            (true, intent_summary.clone())
+        };
+        self.memory.record_interaction(
+            user_input,
+            &intent_summary,
+            &turn_tools_used,
+            outcome_ok,
+            &outcome_detail,
+            &[], // lessons extracted separately by extract_and_store_knowledge
+            None,
+            turn_tokens,
+        );
+
         Ok(final_text)
+    }
+
+    // ── Knowledge extraction ──────────────────────────────────────────────────
+
+    /// Extract project facts from the recent conversation and store them in memory.
+    ///
+    /// Called automatically every 5 turns inside `process_message`. Uses a
+    /// `SilentOutput` so it produces no visible output.
+    async fn extract_and_store_knowledge(&self) {
+        // Collect the last 10 messages as source material
+        let msgs = &self.conversation.messages;
+        let window: Vec<_> = msgs.iter().rev().take(10).collect();
+        if window.is_empty() {
+            return;
+        }
+
+        let mut context = String::new();
+        for msg in window.into_iter().rev() {
+            let role = match msg.role {
+                Role::User      => "User",
+                Role::Assistant => "Assistant",
+                Role::System    => continue,
+            };
+            context.push_str(&format!("{}: {}\n", role, msg.text_content()));
+        }
+
+        let prompt = format!(
+            "From the conversation below, extract 1-3 concise project facts worth \
+            remembering across sessions. Only facts that are durable (architecture, \
+            file locations, key decisions, recurring patterns). \
+            Return ONLY a bullet list with no preamble: one fact per line starting with `-`.\n\n{}",
+            context
+        );
+
+        let mut conv = Conversation::new(&self.project_dir);
+        conv.system_prompt = "You are a knowledge extractor. Be concise.".to_string();
+        conv.add_message(Message::user(&prompt));
+
+        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
+        let cfg = self.role_configs.get("summarizer").unwrap_or(&self.config);
+        let result = match cfg.provider {
+            Provider::Anthropic =>
+                streaming::stream_anthropic_response(cfg, &conv, &[], &*silent).await,
+            Provider::OpenAI | Provider::Compatible =>
+                streaming::stream_openai_response(cfg, &conv, &[], &*silent).await,
+        };
+
+        if let Ok(response) = result {
+            let text: String = response.content.iter()
+                .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                .collect();
+            let facts: Vec<String> = text.lines()
+                .map(|l| l.trim().trim_start_matches('-').trim().to_string())
+                .filter(|l| l.len() > 10)
+                .take(3)
+                .collect();
+            if !facts.is_empty() {
+                self.memory.record_event(crate::memory::MemoryEvent::KnowledgeExtracted { facts });
+            }
+        }
+    }
+
+    /// Manually consolidate memory: read recent session log and all existing knowledge,
+    /// ask LLM to distill into improved knowledge entries and compress the log.
+    ///
+    /// Called by the `/consolidate` CLI command.
+    pub async fn consolidate_memory(&self) -> anyhow::Result<usize> {
+        let existing_knowledge = self.memory.knowledge();
+        let session_log = self.memory.session_log();
+
+        if session_log.is_empty() && existing_knowledge.is_empty() {
+            return Ok(0);
+        }
+
+        let mut prompt = String::from(
+            "You are distilling an AI agent's memory. \
+            Given the session log and existing knowledge below, \
+            produce an improved, deduplicated list of up to 10 project knowledge facts.\n\
+            Rules: each fact must be a single sentence, durable across sessions, \
+            no timestamps, no trivial observations.\n\
+            Return ONLY the bullet list starting each line with `-`.\n\n"
+        );
+
+        if !existing_knowledge.is_empty() {
+            prompt.push_str("## Existing Knowledge\n");
+            for k in &existing_knowledge {
+                prompt.push_str(&format!("- {}\n", k));
+            }
+        }
+        if !session_log.is_empty() {
+            prompt.push_str("\n## Session Log (most recent activity)\n");
+            for entry in session_log.iter().rev().take(30) {
+                prompt.push_str(&format!("- {}\n", entry));
+            }
+        }
+
+        let mut conv = Conversation::new(&self.project_dir);
+        conv.system_prompt = "You are a memory consolidation assistant.".to_string();
+        conv.add_message(Message::user(&prompt));
+
+        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
+        let cfg = self.role_configs.get("summarizer").unwrap_or(&self.config);
+        let response = match cfg.provider {
+            Provider::Anthropic =>
+                streaming::stream_anthropic_response(cfg, &conv, &[], &*silent).await?,
+            Provider::OpenAI | Provider::Compatible =>
+                streaming::stream_openai_response(cfg, &conv, &[], &*silent).await?,
+        };
+
+        let text: String = response.content.iter()
+            .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+            .collect();
+
+        let facts: Vec<String> = text.lines()
+            .map(|l| l.trim().trim_start_matches('-').trim().to_string())
+            .filter(|l| l.len() > 10)
+            .take(10)
+            .collect();
+
+        let count = facts.len();
+        if count > 0 {
+            self.memory.record_event(crate::memory::MemoryEvent::KnowledgeExtracted { facts });
+        }
+        Ok(count)
     }
 
     /// Execute a tool with diff preview for file modifications
@@ -1489,8 +1685,9 @@ Summary:"#,
             }
             if !memory.file_map.is_empty() {
                 memory_section.push_str("\n\n## Known Important Files");
-                for (path, desc) in &memory.file_map {
-                    memory_section.push_str(&format!("\n- {}: {}", path, desc));
+                for entry in &memory.file_map {
+                    memory_section.push_str(&format!("\n- {} [{}] {}: {}",
+                        entry.path, entry.importance_label(), entry.last_accessed, entry.description));
                 }
             }
         }

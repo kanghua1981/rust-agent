@@ -168,11 +168,13 @@ impl Conversation {
             tracing::info!("Loaded {} skill(s) into system prompt", loaded.len());
         }
 
-        // Load persistent memory
+        // Load persistent memory — only knowledge facts go into the system prompt.
+        // File-map and session-log are injected per-turn via recall_relevant() in agent.rs.
         let mem = crate::memory::Memory::load(project_dir);
-        if !mem.is_empty() {
-            system_prompt.push_str(&mem.to_system_prompt_section());
-            tracing::info!("Loaded {} memory entries into system prompt", mem.entry_count());
+        let knowledge_section = mem.to_system_prompt_knowledge();
+        if !knowledge_section.is_empty() {
+            system_prompt.push_str(&knowledge_section);
+            tracing::info!("Loaded {} knowledge entries into system prompt", mem.knowledge.len());
         }
 
         // Add sub-agents information to system prompt

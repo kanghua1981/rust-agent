@@ -121,7 +121,7 @@ pub fn check_context(conversation: &Conversation, model: &str) -> ContextStatus 
 /// IMPORTANT: tool_use / tool_result messages are always kept as atomic pairs
 /// to satisfy the Anthropic API constraint that every tool_use must be followed
 /// by a tool_result in the very next message.
-pub fn truncate_conversation(conversation: &mut Conversation, model: &str, memory: &dyn crate::memory_provider::MemoryProvider) {
+pub fn truncate_conversation(conversation: &mut Conversation, model: &str, memory: &dyn crate::memory::MemoryProvider) {
     // Use the plan + apply pipeline with a mechanical summary fallback.
     if let Some(plan) = plan_truncation(conversation, model) {
         let summary = summarize_removed_messages(
@@ -316,7 +316,7 @@ pub fn apply_truncation(
     conversation: &mut Conversation,
     plan: &TruncationPlan,
     summary: &str,
-    memory: &dyn crate::memory_provider::MemoryProvider,
+    memory: &dyn crate::memory::MemoryProvider,
 ) {
     // Delegate to the memory provider — backend decides how to persist.
     memory.log_truncation(summary);

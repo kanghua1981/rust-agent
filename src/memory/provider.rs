@@ -25,7 +25,7 @@
 
 use std::sync::Mutex;
 
-use crate::memory::Memory;
+use super::Memory;
 
 // ── Event vocabulary ─────────────────────────────────────────────────────────
 
@@ -34,6 +34,8 @@ use crate::memory::Memory;
 /// Using an enum keeps the call-sites clean and lets each backend decide
 /// exactly how to represent each event in its storage model.
 pub enum MemoryEvent {
+    /// Raw knowledge facts extracted by LLM from the conversation.
+    KnowledgeExtracted { facts: Vec<String> },
     FileRead { path: String },
     FileWritten { path: String, lines: usize },
     FileEdited { path: String },
@@ -67,15 +69,48 @@ pub trait MemoryProvider: Send + Sync {
     /// Record a context-window truncation summary (produced when history is compressed).
     fn log_truncation(&self, summary: &str);
 
+    /// Record a complete interaction episode (prompt → outcome → lessons).
+    ///
+    /// Providers that support rich episode storage (e.g. `IntelligentMemory`)
+    /// override this. Simple providers use the no-op default.
+    #[allow(clippy::too_many_arguments)]
+    fn record_interaction(
+        &self,
+        _prompt: &str,
+        _intent_summary: &str,
+        _tools_used: &[String],
+        _outcome_success: bool,
+        _outcome_detail: &str,
+        _lessons: &[String],
+        _feedback: Option<&str>,
+        _tokens: u32,
+    ) {
+        // no-op for basic providers
+    }
+
     // ── Recall ─────────────────────────────────────────────────────────────
 
-    /// Return a section of text ready to inject into the system prompt.
+    /// Return the **project knowledge** section for injection into the system prompt.
+    ///
+    /// Intentionally small (≤5 entries). File-map and session-log are *not*
+    /// included here — use `recall_relevant()` for per-turn contextual recall.
     fn recall(&self) -> String;
+
+    /// Retrieve file-map and session-log entries relevant to `query`.
+    ///
+    /// Scores entries by keyword overlap and access frequency. The result is
+    /// prepended to the user message for the current turn only, so irrelevant
+    /// entries consume zero tokens.
+    fn recall_relevant(&self, query: &str) -> String;
 
     // ── Maintenance ────────────────────────────────────────────────────────
 
     /// Persist any in-memory state to durable storage.
     fn flush(&self) -> anyhow::Result<()>;
+
+    /// Directly add a knowledge fact to the knowledge section.
+    /// Used by the knowledge extraction pipeline.
+    fn add_knowledge(&self, fact: &str);
 
     // ── Introspection (for CLI display) ────────────────────────────────────
 
@@ -165,6 +200,12 @@ impl MemoryProvider for LocalFileMemory {
             MemoryEvent::DirectoryListed { path } => {
                 m.log_action(&format!("listed {}", path));
             }
+            MemoryEvent::KnowledgeExtracted { facts } => {
+                for fact in &facts {
+                    m.add_knowledge(fact);
+                }
+                m.log_action(&format!("extracted {} knowledge items", facts.len()));
+            }
             MemoryEvent::Custom { action } => {
                 m.log_action(&action);
             }
@@ -185,11 +226,23 @@ impl MemoryProvider for LocalFileMemory {
     }
 
     fn recall(&self) -> String {
-        self.inner.lock().unwrap().to_system_prompt_section()
+        self.inner.lock().unwrap().to_system_prompt_knowledge()
+    }
+
+    fn recall_relevant(&self, query: &str) -> String {
+        self.inner.lock().unwrap().recall_relevant(query)
     }
 
     fn flush(&self) -> anyhow::Result<()> {
         self.inner.lock().unwrap().save().map_err(Into::into)
+    }
+
+    fn add_knowledge(&self, fact: &str) {
+        let mut m = self.inner.lock().unwrap();
+        m.add_knowledge(fact);
+        if let Err(e) = m.save() {
+            tracing::warn!("Failed to save knowledge: {}", e);
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -205,7 +258,10 @@ impl MemoryProvider for LocalFileMemory {
     }
 
     fn file_map(&self) -> Vec<(String, String)> {
-        self.inner.lock().unwrap().file_map.clone()
+        self.inner.lock().unwrap().file_map
+            .iter()
+            .map(|e| (e.path.clone(), format!("{} (×{}, {})", e.description, e.access_count, e.last_accessed)))
+            .collect()
     }
 
     fn session_log(&self) -> Vec<String> {
@@ -227,7 +283,9 @@ impl MemoryProvider for NullMemory {
     fn record_event(&self, _event: MemoryEvent) {}
     fn log_truncation(&self, _summary: &str) {}
     fn recall(&self) -> String { String::new() }
+    fn recall_relevant(&self, _query: &str) -> String { String::new() }
     fn flush(&self) -> anyhow::Result<()> { Ok(()) }
+    fn add_knowledge(&self, _fact: &str) {}
     fn is_empty(&self) -> bool { true }
     fn entry_count(&self) -> usize { 0 }
     fn knowledge(&self) -> Vec<String> { vec![] }
