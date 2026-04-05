@@ -1,3 +1,5 @@
+#![allow(unused_imports, dead_code)]
+
 //! Browser driver module for low-level browser control
 //! 
 //! This module provides abstractions for different browser drivers

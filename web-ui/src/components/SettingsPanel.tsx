@@ -38,6 +38,7 @@ export const SettingsPanel: React.FC = () => {
     model: string;
     autoApprove: boolean;
     agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+    isolation: 'normal' | 'container' | 'sandbox';
   }>({
     name: '',
     serverUrl: 'ws://localhost:9527',
@@ -45,6 +46,7 @@ export const SettingsPanel: React.FC = () => {
     model: '',
     autoApprove: false,
     agentMode: 'auto',
+    isolation: 'container',
   });
 
   const handleIsolationChange = (mode: 'normal' | 'container' | 'sandbox') => {
@@ -87,6 +89,7 @@ export const SettingsPanel: React.FC = () => {
       model: '',
       autoApprove: false,
       agentMode: 'auto' as 'auto' | 'simple' | 'plan' | 'pipeline',
+      isolation: 'container',
     });
   };
 
@@ -98,6 +101,7 @@ export const SettingsPanel: React.FC = () => {
       model: preset.model || '',
       autoApprove: preset.autoApprove,
       agentMode: preset.agentMode,
+      isolation: preset.isolation || 'container',
     });
     setEditingPreset(preset.id);
     setShowNewPreset(true);
@@ -117,6 +121,7 @@ export const SettingsPanel: React.FC = () => {
         model: preset.model,
         autoApprove: preset.autoApprove,
         agentMode: preset.agentMode,
+        isolation: preset.isolation || 'container',
       });
     }
     // 应用预设后保持当前标签页为"预设"标签页
@@ -327,6 +332,12 @@ export const SettingsPanel: React.FC = () => {
                       }}>
                         {preset.agentMode}
                       </span>
+                      <span style={{
+                        fontSize: '10px', color: 'var(--text3)', background: 'var(--bg3)',
+                        padding: '2px 6px', borderRadius: '4px',
+                      }}>
+                        {preset.isolation || 'container'}
+                      </span>
                       {preset.autoApprove && (
                         <span style={{
                           fontSize: '10px', color: 'var(--green)', background: 'var(--green-dim)',
@@ -445,6 +456,18 @@ export const SettingsPanel: React.FC = () => {
                       <option value="simple">单层</option>
                       <option value="plan">计划</option>
                       <option value="pipeline">流水线</option>
+                    </select>
+                  </Field>
+
+                  <Field label="隔离模式">
+                    <select
+                      value={presetForm.isolation}
+                      onChange={(e) => setPresetForm(p => ({ ...p, isolation: e.target.value as any }))}
+                      style={selectStyle}
+                    >
+                      <option value="normal">直接运行（无容器）</option>
+                      <option value="container">容器模式（默认）</option>
+                      <option value="sandbox">沙盒模式</option>
                     </select>
                   </Field>
 

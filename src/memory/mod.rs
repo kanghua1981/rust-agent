@@ -8,20 +8,50 @@
 //! - **File Map**: important files encountered (max 15), LRU ordered
 //! - **Session Log**: rolling action log (max 20), oldest dropped
 
+pub mod provider;
+pub mod factory;
+pub mod http;
+pub mod intelligent;
+
+// Re-export commonly used items so external code can use `crate::memory::*`
+pub use provider::{LocalFileMemory, MemoryEvent, MemoryProvider, NullMemory};
+pub use factory::{create_memory_provider, MemoryBackend, MemoryConfig};
+pub use intelligent::IntelligentMemory;
+
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
-// Section size limits (lines)
+// Section size limits
 #[allow(dead_code)]
 const MAX_KNOWLEDGE: usize = 10;
-const MAX_FILE_MAP: usize = 15;
-const MAX_SESSION_LOG: usize = 20;
+const MAX_FILE_MAP: usize = 20;
+const MAX_SESSION_LOG: usize = 30;
+
+/// A tracked file entry with rich access metadata.
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub path: String,
+    pub description: String,
+    /// How many times the file has been accessed.
+    pub access_count: u32,
+    /// Timestamp string of the last access ("MM-DD HH:MM").
+    pub last_accessed: String,
+}
+
+impl FileEntry {
+    /// Derived importance label based on access frequency.
+    pub fn importance_label(&self) -> &str {
+        if self.access_count >= 5 { "high" }
+        else if self.access_count >= 2 { "medium" }
+        else { "low" }
+    }
+}
 
 /// In-memory representation of the agent's persistent memory.
 #[derive(Debug, Clone)]
 pub struct Memory {
     pub knowledge: Vec<String>,
-    pub file_map: Vec<(String, String)>, // (path, description)
+    pub file_map: Vec<FileEntry>,
     pub session_log: Vec<String>,
     file_path: PathBuf,
 }
@@ -79,13 +109,35 @@ impl Memory {
                     self.knowledge.push(entry.to_string());
                 }
                 "filemap" => {
-                    // Format: "path: description" or just "path"
-                    if let Some((path, desc)) = entry.split_once(": ") {
-                        self.file_map
-                            .push((path.trim().to_string(), desc.trim().to_string()));
+                    // New format: "path | description | count:N | timestamp"
+                    // Old format: "path: description" or "path"
+                    let parts: Vec<&str> = entry.splitn(4, " | ").collect();
+                    if parts.len() >= 2 {
+                        let path = parts[0].trim().to_string();
+                        let description = parts[1].trim().to_string();
+                        let access_count = parts.get(2)
+                            .and_then(|s| s.trim().strip_prefix("count:"))
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1);
+                        let last_accessed = parts.get(3)
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(short_timestamp);
+                        self.file_map.push(FileEntry { path, description, access_count, last_accessed });
+                    } else if let Some((path, desc)) = entry.split_once(": ") {
+                        // Migrate old format
+                        self.file_map.push(FileEntry {
+                            path: path.trim().to_string(),
+                            description: desc.trim().to_string(),
+                            access_count: 1,
+                            last_accessed: short_timestamp(),
+                        });
                     } else {
-                        self.file_map
-                            .push((entry.to_string(), String::new()));
+                        self.file_map.push(FileEntry {
+                            path: entry.to_string(),
+                            description: String::new(),
+                            access_count: 1,
+                            last_accessed: short_timestamp(),
+                        });
                     }
                 }
                 "sessionlog" => {
@@ -138,19 +190,32 @@ impl Memory {
     }
 
     /// Record a file that was accessed or modified.
-    /// If the file is already tracked, update its description and
-    /// move it to the end (most recently used).
+    /// Increments access_count, updates description and timestamp,
+    /// and moves the entry to the end (most recently used).
     pub fn touch_file(&mut self, path: &str, description: &str) {
         let path = path.trim().to_string();
         if path.is_empty() {
             return;
         }
+        let ts = short_timestamp();
 
-        // Remove existing entry for this path (we'll re-add at the end)
-        self.file_map.retain(|(p, _)| p != &path);
-
-        self.file_map
-            .push((path, description.trim().to_string()));
+        // Update existing entry if present, then move to end
+        if let Some(pos) = self.file_map.iter().position(|e| e.path == path) {
+            let mut entry = self.file_map.remove(pos);
+            entry.access_count += 1;
+            entry.last_accessed = ts;
+            if !description.is_empty() {
+                entry.description = description.trim().to_string();
+            }
+            self.file_map.push(entry);
+        } else {
+            self.file_map.push(FileEntry {
+                path,
+                description: description.trim().to_string(),
+                access_count: 1,
+                last_accessed: ts,
+            });
+        }
 
         // Prune: drop least recently used (front of list)
         while self.file_map.len() > MAX_FILE_MAP {
@@ -200,7 +265,7 @@ impl Memory {
         Ok(())
     }
 
-    /// Format memory as Markdown.
+    /// Format memory as Markdown (persisted to `.agent/memory.md`).
     fn to_markdown(&self) -> String {
         let mut lines = Vec::new();
 
@@ -217,17 +282,14 @@ impl Memory {
             lines.push(String::new());
         }
 
-        // File Map
+        // File Map — rich format: path | description | count:N | timestamp
         lines.push("## File Map\n".to_string());
         if self.file_map.is_empty() {
             lines.push("_(No files recorded yet)_\n".to_string());
         } else {
-            for (path, desc) in &self.file_map {
-                if desc.is_empty() {
-                    lines.push(format!("- {}", path));
-                } else {
-                    lines.push(format!("- {}: {}", path, desc));
-                }
+            for entry in &self.file_map {
+                lines.push(format!("- {} | {} | count:{} | {}",
+                    entry.path, entry.description, entry.access_count, entry.last_accessed));
             }
             lines.push(String::new());
         }
@@ -246,44 +308,103 @@ impl Memory {
         lines.join("\n")
     }
 
-    /// Format memory as a compact string for injection into the system prompt.
-    /// This is intentionally terse to minimize token usage.
-    pub fn to_system_prompt_section(&self) -> String {
-        if self.is_empty() {
+    /// Format only the top-5 knowledge facts for injection into the system prompt.
+    ///
+    /// Intentionally small — file_map and session_log are **not** included here;
+    /// they are retrieved on demand via `recall_relevant()` and prepended to each
+    /// user message, so only contextually relevant entries consume tokens.
+    pub fn to_system_prompt_knowledge(&self) -> String {
+        if self.knowledge.is_empty() {
+            return String::new();
+        }
+        let mut parts = Vec::new();
+        parts.push("\n\n--- Project Knowledge (from memory) ---".to_string());
+        // Most recent = most refined; cap at 5 to stay token-frugal
+        let start = self.knowledge.len().saturating_sub(5);
+        for fact in &self.knowledge[start..] {
+            parts.push(format!("• {}", fact));
+        }
+        parts.join("\n")
+    }
+
+    /// Retrieve file-map and session-log entries relevant to `query`.
+    ///
+    /// Scores each entry by keyword overlap with the query, weighted by
+    /// access frequency. Returns a compact context block suitable for
+    /// prepending to a single user message turn.
+    pub fn recall_relevant(&self, query: &str) -> String {
+        // Tokenise query: meaningful words only (>2 chars)
+        let query_words: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '/')
+            .filter(|w| w.len() > 2)
+            .map(|w| w.to_lowercase())
+            .collect();
+
+        // Score file_map entries
+        let mut scored_files: Vec<(&FileEntry, usize)> = self.file_map.iter().map(|entry| {
+            let haystack = format!("{} {}", entry.path, entry.description).to_lowercase();
+            let kw_score = if query_words.is_empty() { 0 } else {
+                query_words.iter().filter(|w| haystack.contains(w.as_str())).count()
+            };
+            // Weight: keyword hits × 10 + access_count (so frequent files surface even on weak match)
+            let score = kw_score * 10 + entry.access_count as usize;
+            (entry, score)
+        })
+        .filter(|(_, s)| *s > 0)
+        .collect();
+        scored_files.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Score session_log entries (iterate in reverse so recent ones score first)
+        let mut scored_logs: Vec<(&String, usize)> = if query_words.is_empty() {
+            vec![]
+        } else {
+            self.session_log.iter().rev().map(|entry| {
+                let haystack = entry.to_lowercase();
+                let score = query_words.iter().filter(|w| haystack.contains(w.as_str())).count();
+                (entry, score)
+            })
+            .filter(|(_, s)| *s > 0)
+            .collect()
+        };
+        // Keep sorted by score, reverse-chronological within same score (already rev'd above)
+        scored_logs.sort_by(|a, b| b.1.cmp(&a.1));
+
+        if scored_files.is_empty() && scored_logs.is_empty() {
             return String::new();
         }
 
         let mut parts = Vec::new();
-        parts.push("\n\n--- Agent Memory (from previous sessions) ---".to_string());
+        parts.push("--- Relevant Memory Context ---".to_string());
 
-        if !self.knowledge.is_empty() {
-            parts.push("Known facts:".to_string());
-            for fact in &self.knowledge {
-                parts.push(format!("• {}", fact));
-            }
-        }
-
-        if !self.file_map.is_empty() {
-            parts.push("Key files:".to_string());
-            for (path, desc) in &self.file_map {
-                if desc.is_empty() {
-                    parts.push(format!("• {}", path));
+        if !scored_files.is_empty() {
+            parts.push("Related files:".to_string());
+            for (entry, _) in scored_files.iter().take(6) {
+                let tag = format!("[{}]", entry.importance_label());
+                if entry.description.is_empty() {
+                    parts.push(format!("• {} {} (×{}, {})",
+                        tag, entry.path, entry.access_count, entry.last_accessed));
                 } else {
-                    parts.push(format!("• {} – {}", path, desc));
+                    parts.push(format!("• {} {} – {} (×{}, {})",
+                        tag, entry.path, entry.description,
+                        entry.access_count, entry.last_accessed));
                 }
             }
         }
 
-        if !self.session_log.is_empty() {
-            parts.push("Recent actions:".to_string());
-            // Only include the last 10 for the prompt to save tokens
-            let start = self.session_log.len().saturating_sub(10);
-            for entry in &self.session_log[start..] {
+        if !scored_logs.is_empty() {
+            parts.push("Related history:".to_string());
+            for (entry, _) in scored_logs.iter().take(5) {
                 parts.push(format!("• {}", entry));
             }
         }
 
         parts.join("\n")
+    }
+
+    /// Full memory dump (for debugging / `/memory` display).
+    #[allow(dead_code)]
+    pub fn to_system_prompt_section(&self) -> String {
+        self.to_system_prompt_knowledge()
     }
 
     /// Check if the memory is completely empty.

@@ -50,6 +50,7 @@ pub const ALL_COMMANDS: &[CommandMeta] = &[
     CommandMeta::new("/usage",   "",                           "Show token usage statistics"),
     CommandMeta::new("/context", "",                           "Show context window status"),
     CommandMeta::new("/memory",  "",                           "Show persistent memory"),
+    CommandMeta::new("/consolidate", "",                      "Distil session log into knowledge (dreaming pass)"),
     CommandMeta::new("/skills",  "",                           "List loaded project skills"),
     // ── Session ──────────────────────────────────────────────────────────────
     CommandMeta::new("/save",     "",                          "Save current session"),

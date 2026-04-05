@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Message } from '../types/agent';
 import { useAgentStore } from '../stores/agentStore';
@@ -38,6 +38,24 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
   const diffs = useAgentStore(state => state.diffs);
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  
+  // 复制功能状态
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
+  // 复制消息内容到剪贴板
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus('success');
+      setTimeout(() => setCopyStatus('idle'), 2000); // 2秒后重置状态
+      return true;
+    } catch (err) {
+      console.error('复制失败:', err);
+      setCopyStatus('error');
+      setTimeout(() => setCopyStatus('idle'), 2000);
+      return false;
+    }
+  };
 
   if (isSystem) {
     // Pipeline stage header
@@ -140,6 +158,7 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
             wordBreak: 'break-word',
             display: 'inline-block',
             maxWidth: '100%',
+            position: 'relative',
           }}>
             {isUser ? (
               <span style={{ whiteSpace: 'pre-wrap', fontSize: '14px' }}>{message.content}</span>
@@ -153,6 +172,51 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
                   message.content ? <ReactMarkdown>{message.content}</ReactMarkdown> : null
                 )}
                 {isStreaming && <span className="cursor" />}
+              </div>
+            )}
+            
+            {/* 复制按钮 - 右下角 */}
+            <button
+              onClick={() => copyToClipboard(message.content)}
+              style={{
+                position: 'absolute',
+                bottom: '6px',
+                right: '6px',
+                background: isUser ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.05)',
+                border: 'none',
+                borderRadius: '4px',
+                width: '24px',
+                height: '24px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '12px',
+                color: isUser ? 'rgba(255,255,255,0.8)' : 'var(--text3)',
+                cursor: 'pointer',
+                opacity: 0.6,
+                transition: 'opacity 0.2s',
+              }}
+              onMouseOver={(e) => e.currentTarget.style.opacity = '1'}
+              onMouseOut={(e) => e.currentTarget.style.opacity = '0.6'}
+              title="复制消息"
+            >
+              {copyStatus === 'success' ? '✓' : copyStatus === 'error' ? '✗' : '📋'}
+            </button>
+            
+            {/* 复制状态提示 */}
+            {copyStatus !== 'idle' && (
+              <div style={{
+                position: 'absolute',
+                bottom: '-24px',
+                right: '0',
+                fontSize: '11px',
+                padding: '2px 6px',
+                background: copyStatus === 'success' ? 'rgba(16,185,129,0.9)' : 'rgba(239,68,68,0.9)',
+                color: '#fff',
+                borderRadius: '4px',
+                whiteSpace: 'nowrap',
+              }}>
+                {copyStatus === 'success' ? '已复制' : '复制失败'}
               </div>
             )}
           </div>

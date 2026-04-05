@@ -1,9 +1,10 @@
 use crate::tools::browser::error::{BrowserError, BrowserResult};
 use crate::tools::browser::runtime::BrowserState;
 use crate::tools::browser::snapshot::{AiSnapshot, AriaSnapshot};
-use crate::tools::browser::batch::{OperationSequence, OperationStep, ResultAggregator};
+
 use crate::tools::browser::protocol::ProtocolMessage;
 use chromiumoxide::cdp::browser_protocol::page::{CaptureScreenshotFormat, CaptureScreenshotParams};
+use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -214,12 +215,13 @@ pub struct ActionExecutor;
 
 impl ActionExecutor {
     /// Execute a browser action
-    pub async fn execute(
-        &self,
+    pub fn execute<'a>(
+        &'a self,
         browser_state: Arc<Mutex<BrowserState>>,
-        page_name: &str,
+        page_name: &'a str,
         action: BrowserAction,
-    ) -> BrowserResult<String> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = BrowserResult<String>> + Send + 'a>> {
+        Box::pin(async move {
         match action {
             BrowserAction::Navigate { url, wait_seconds } => {
                 self.navigate(browser_state, page_name, &url, wait_seconds).await
@@ -336,6 +338,7 @@ impl ActionExecutor {
                 self.send_protocol_message(browser_state, page_name, &message_type, &data).await
             }
         }
+        }) // close Box::pin(async move {
     }
     
     /// Navigate to a URL
@@ -419,72 +422,52 @@ impl ActionExecutor {
         page_name: &str,
         wait_seconds: u64,
     ) -> BrowserResult<String> {
-        let mut state = browser_state.lock().await;
-        
-        // Get navigation timeout from profile before getting page state
-        let navigation_timeout = state.profile().navigation_timeout;
-        
-        let page_state = state.get_page(page_name)
-            .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found", page_name)))?;
-        
-        let url;
-        {
-            let tab_state = page_state.tab_state_mut();
-            
-            // Check if we can go back
-            if tab_state.history_position == 0 {
-                return Err(BrowserError::Operation("Already at the beginning of history".to_string()));
-            }
-            
-            tab_state.history_position -= 1;
-            url = tab_state.history[tab_state.history_position].clone();
-            tab_state.loading = true;
-        }
-        
-        let page = page_state.page_mut();
-        
-        // Use JavaScript to go back
+        // Collect what we need under the lock, then drop it before async operations.
+        let (page, navigation_timeout) = {
+            let mut state = browser_state.lock().await;
+            let navigation_timeout = state.profile().navigation_timeout;
+            let page_state = state.get_page(page_name)
+                .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found", page_name)))?;
+            // Mark as loading
+            page_state.tab_state_mut().loading = true;
+            (page_state.page().clone(), navigation_timeout)
+        };
+
+        // Perform navigation without holding the lock.
         page.evaluate("window.history.back()")
             .await
             .map_err(|e| BrowserError::Operation(format!("Failed to go back: {}", e)))?;
-        
-        // Wait for navigation with timeout
+
         let timeout = Duration::from_secs(navigation_timeout);
-        match tokio::time::timeout(timeout, page.wait_for_navigation()).await {
-            Ok(Ok(_)) => {
-                // Get page title before releasing page reference
-                let page_title = page.get_title().await.ok().flatten();
-                
-                {
-                    let tab_state = page_state.tab_state_mut();
-                    tab_state.loading = false;
-                    
-                    // Set page title if available
-                    if let Some(title) = page_title {
-                        tab_state.title = Some(title);
-                    }
-                    
-                    // Update URL
-                    tab_state.url = Some(url.clone());
-                }
-                
-                // Wait additional seconds if specified
-                if wait_seconds > 0 {
-                    sleep(Duration::from_secs(wait_seconds)).await;
-                }
-                
-                Ok(format!("Navigated back to {}", url))
+        let nav_result = tokio::time::timeout(timeout, page.wait_for_navigation()).await;
+
+        // Read actual URL and title from the browser.
+        let actual_url = page.evaluate("window.location.href")
+            .await.ok()
+            .and_then(|r| r.into_value::<String>().ok());
+        let actual_title = page.get_title().await.ok().flatten();
+
+        // Update state with real values.
+        let mut state = browser_state.lock().await;
+        let page_state = state.get_page(page_name)
+            .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found after go_back", page_name)))?;
+        let tab_state = page_state.tab_state_mut();
+        tab_state.loading = false;
+        if let Some(url) = actual_url.clone() { tab_state.url = Some(url); }
+        if let Some(title) = actual_title { tab_state.title = Some(title); }
+        // Keep history position consistent (decrement if possible)
+        if tab_state.history_position > 0 { tab_state.history_position -= 1; }
+        drop(state);
+
+        match nav_result {
+            Ok(Ok(_)) | Ok(Err(_)) => {
+                if wait_seconds > 0 { sleep(Duration::from_secs(wait_seconds)).await; }
+                let url_display = actual_url.unwrap_or_else(|| "(unknown)".to_string());
+                Ok(format!("Navigated back to {}", url_display))
             }
-            Ok(Err(e)) => {
-                let tab_state = page_state.tab_state_mut();
-                tab_state.loading = false;
-                Err(BrowserError::Operation(format!("Navigation completed but wait failed: {}", e)))
-            }
-            Err(_) => {
-                let tab_state = page_state.tab_state_mut();
-                tab_state.loading = false;
-                Err(BrowserError::Operation(format!("Navigation timeout after {} seconds", timeout.as_secs())))
-            }
+            Err(_) => Err(BrowserError::Timeout(
+                format!("go_back timeout after {} seconds", navigation_timeout)
+            )),
         }
     }
     
@@ -495,72 +478,53 @@ impl ActionExecutor {
         page_name: &str,
         wait_seconds: u64,
     ) -> BrowserResult<String> {
-        let mut state = browser_state.lock().await;
-        
-        // Get navigation timeout from profile before getting page state
-        let navigation_timeout = state.profile().navigation_timeout;
-        
-        let page_state = state.get_page(page_name)
-            .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found", page_name)))?;
-        
-        let url;
-        {
-            let tab_state = page_state.tab_state_mut();
-            
-            // Check if we can go forward
-            if tab_state.history_position >= tab_state.history.len() - 1 {
-                return Err(BrowserError::Operation("Already at the end of history".to_string()));
-            }
-            
-            tab_state.history_position += 1;
-            url = tab_state.history[tab_state.history_position].clone();
-            tab_state.loading = true;
-        }
-        
-        let page = page_state.page_mut();
-        
-        // Use JavaScript to go forward
+        // Collect what we need under the lock, then drop it before async operations.
+        let (page, navigation_timeout) = {
+            let mut state = browser_state.lock().await;
+            let navigation_timeout = state.profile().navigation_timeout;
+            let page_state = state.get_page(page_name)
+                .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found", page_name)))?;
+            page_state.tab_state_mut().loading = true;
+            (page_state.page().clone(), navigation_timeout)
+        };
+
+        // Perform navigation without holding the lock.
         page.evaluate("window.history.forward()")
             .await
             .map_err(|e| BrowserError::Operation(format!("Failed to go forward: {}", e)))?;
-        
-        // Wait for navigation with timeout
+
         let timeout = Duration::from_secs(navigation_timeout);
-        match tokio::time::timeout(timeout, page.wait_for_navigation()).await {
-            Ok(Ok(_)) => {
-                // Get page title before releasing page reference
-                let page_title = page.get_title().await.ok().flatten();
-                
-                {
-                    let tab_state = page_state.tab_state_mut();
-                    tab_state.loading = false;
-                    
-                    // Set page title if available
-                    if let Some(title) = page_title {
-                        tab_state.title = Some(title);
-                    }
-                    
-                    // Update URL
-                    tab_state.url = Some(url.clone());
-                }
-                
-                // Wait additional seconds if specified
-                if wait_seconds > 0 {
-                    sleep(Duration::from_secs(wait_seconds)).await;
-                }
-                
-                Ok(format!("Navigated forward to {}", url))
+        let nav_result = tokio::time::timeout(timeout, page.wait_for_navigation()).await;
+
+        // Read actual URL and title from the browser.
+        let actual_url = page.evaluate("window.location.href")
+            .await.ok()
+            .and_then(|r| r.into_value::<String>().ok());
+        let actual_title = page.get_title().await.ok().flatten();
+
+        // Update state with real values.
+        let mut state = browser_state.lock().await;
+        let page_state = state.get_page(page_name)
+            .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found after go_forward", page_name)))?;
+        let tab_state = page_state.tab_state_mut();
+        tab_state.loading = false;
+        if let Some(url) = actual_url.clone() { tab_state.url = Some(url); }
+        if let Some(title) = actual_title { tab_state.title = Some(title); }
+        // Keep history position consistent (advance if possible)
+        if tab_state.history_position + 1 < tab_state.history.len() {
+            tab_state.history_position += 1;
+        }
+        drop(state);
+
+        match nav_result {
+            Ok(Ok(_)) | Ok(Err(_)) => {
+                if wait_seconds > 0 { sleep(Duration::from_secs(wait_seconds)).await; }
+                let url_display = actual_url.unwrap_or_else(|| "(unknown)".to_string());
+                Ok(format!("Navigated forward to {}", url_display))
             }
-            Ok(Err(e)) => {
-                let tab_state = page_state.tab_state_mut();
-                tab_state.loading = false;
-                Err(BrowserError::Operation(format!("Navigation completed but wait failed: {}", e)))
-            }
-            Err(_) => {
-                let tab_state = page_state.tab_state_mut();
-                tab_state.loading = false;
-                Err(BrowserError::Operation(format!("Navigation timeout after {} seconds", timeout.as_secs())))
-            }
+            Err(_) => Err(BrowserError::Timeout(
+                format!("go_forward timeout after {} seconds", navigation_timeout)
+            )),
         }
     }
     
@@ -867,29 +831,28 @@ impl ActionExecutor {
         selector: &str,
         wait_seconds: u64,
     ) -> BrowserResult<String> {
-        // chromiumoxide doesn't have direct hover method
-        // We'll use JavaScript instead
-        let script = format!(
-            r#"
-            const element = document.querySelector('{}');
-            if (element) {{
-                const event = new MouseEvent('mouseover', {{
-                    view: window,
-                    bubbles: true,
-                    cancelable: true
-                }});
-                element.dispatchEvent(event);
-                return true;
-            }}
-            return false;
-            "#,
-            selector.replace("'", "\\'")
-        );
-        
-        let result = self.execute_script(browser_state, page_name, &script).await?;
-        sleep(Duration::from_secs(wait_seconds)).await;
-        
-        Ok(format!("Hovered over element: {}. Result: {}", selector, result))
+        // Use chromiumoxide's native hover which dispatches real CDP mouse events,
+        // triggering CSS :hover and pointer-event handlers correctly.
+        let page = {
+            let mut state = browser_state.lock().await;
+            let page_state = state.get_page(page_name)
+                .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found", page_name)))?;
+            page_state.page().clone()
+        };
+
+        let element = page.find_element(selector)
+            .await
+            .map_err(|e| BrowserError::Operation(format!("Failed to find element '{}': {}", selector, e)))?;
+
+        element.hover()
+            .await
+            .map_err(|e| BrowserError::Operation(format!("Failed to hover over element '{}': {}", selector, e)))?;
+
+        if wait_seconds > 0 {
+            sleep(Duration::from_secs(wait_seconds)).await;
+        }
+
+        Ok(format!("Hovered over element: {}", selector))
     }
     
     /// Scroll to element
@@ -983,63 +946,41 @@ impl ActionExecutor {
         file_path: &str,
         wait_seconds: u64,
     ) -> BrowserResult<String> {
-        // First, check if file exists and get absolute path
         if !std::path::Path::new(file_path).exists() {
             return Err(BrowserError::Operation(format!("File not found: {}", file_path)));
         }
-        
+
         let absolute_path = std::fs::canonicalize(file_path)
-            .map_err(|e| BrowserError::Operation(format!("Failed to get absolute path: {}", e)))?;
-        
-        // Get page state to ensure page exists
-        {
+            .map_err(|e| BrowserError::Operation(format!("Failed to resolve file path: {}", e)))?;
+
+        // Clone page reference so we don't hold the lock during async CDP calls.
+        let page = {
             let mut state = browser_state.lock().await;
             let page_state = state.get_page(page_name)
                 .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found", page_name)))?;
-            
-            let page = page_state.page_mut();
-            
-            // Click the file input element to trigger file chooser
-            page.find_element(selector)
-                .await
-                .map_err(|e| BrowserError::Operation(format!("Failed to find element '{}': {}", selector, e)))?
-                .click()
-                .await
-                .map_err(|e| BrowserError::Operation(format!("Failed to click element '{}': {}", selector, e)))?;
+            page_state.page().clone()
+        };
+
+        let element = page.find_element(selector)
+            .await
+            .map_err(|e| BrowserError::Operation(format!("Failed to find file input '{}': {}", selector, e)))?;
+
+        // Use CDP DOM.setFileInputFiles to set real file bytes via backend_node_id.
+        let backend_node_id = element.backend_node_id;
+        let params = SetFileInputFilesParams::builder()
+            .files(vec![absolute_path.to_string_lossy().into_owned()])
+            .backend_node_id(backend_node_id)
+            .build()
+            .map_err(|e| BrowserError::Operation(format!("Failed to build SetFileInputFiles params: {}", e)))?;
+        page.execute(params)
+            .await
+            .map_err(|e| BrowserError::Operation(format!("Failed to set file on input '{}': {}", selector, e)))?;
+
+        if wait_seconds > 0 {
+            sleep(Duration::from_secs(wait_seconds)).await;
         }
-        
-        // Wait for file chooser dialog
-        sleep(Duration::from_millis(500)).await;
-        
-        // Use JavaScript to set the file input value
-        let script = format!(
-            r#"
-            (function() {{
-                const input = document.querySelector('{}');
-                if (!input) {{
-                    return 'Element not found';
-                }}
-                
-                // Create a DataTransfer object and FileList
-                const dataTransfer = new DataTransfer();
-                const file = new File([''], '{}', {{ type: 'application/octet-stream' }});
-                dataTransfer.items.add(file);
-                input.files = dataTransfer.files;
-                
-                // Trigger change event
-                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                
-                return 'File set successfully';
-            }})()
-            "#,
-            selector,
-            absolute_path.to_string_lossy()
-        );
-        
-        let result = self.execute_script(browser_state, page_name, &script).await?;
-        sleep(Duration::from_secs(wait_seconds)).await;
-        
-        Ok(format!("Uploaded file '{}' to element '{}'. Result: {}", file_path, selector, result))
+
+        Ok(format!("Uploaded '{}' to input '{}'", absolute_path.display(), selector))
     }
     
     /// Select dropdown option
@@ -1695,43 +1636,342 @@ impl ActionExecutor {
         snapshot_type: &str,
         output_path: Option<&str>,
     ) -> BrowserResult<String> {
-        // First, get page state to ensure page exists
-        {
+        let page = {
             let mut state = browser_state.lock().await;
-            let _page_state = state.get_page(page_name)
+            let page_state = state.get_page(page_name)
                 .ok_or_else(|| BrowserError::NotFound(format!("Page '{}' not found", page_name)))?;
-        }
-        
-        // Get page HTML for snapshot
-        let html = self.get_html(browser_state.clone(), page_name).await?;
-        
+            page_state.page().clone()
+        };
+
         match snapshot_type {
             "ai" => {
-                let snapshot = AiSnapshot::new();
+                // Extract page structure via JavaScript and parse into AiSnapshot.
+                let script = r#"
+(function() {
+    var ts = Math.floor(Date.now() / 1000);
+    var result = {
+        title: document.title || null,
+        url: window.location.href || null,
+        main_content: '',
+        structure: [],
+        interactive_elements: [],
+        images: [],
+        tables: [],
+        metadata: {},
+        accessibility_score: 100,
+        semantic_elements: [],
+        timestamp: ts
+    };
+
+    // Meta tags
+    document.querySelectorAll('meta[name], meta[property]').forEach(function(m) {
+        var n = m.getAttribute('name') || m.getAttribute('property');
+        var c = m.getAttribute('content');
+        if (n && c) result.metadata[n] = c.substring(0, 200);
+    });
+
+    // Main content text
+    var mainEl = document.querySelector('main, [role="main"], article, #content, .content, .main');
+    result.main_content = ((mainEl || document.body || document.documentElement)
+        .textContent || '').trim().replace(/\s+/g, ' ').substring(0, 3000);
+
+    // Heading-based structure
+    document.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(function(h) {
+        var level = parseInt(h.tagName[1], 10);
+        var nextSib = h.nextElementSibling;
+        var content = nextSib ? (nextSib.textContent || '').trim().replace(/\s+/g, ' ').substring(0, 500) : '';
+        result.structure.push({
+            heading_level: level,
+            heading_text: (h.textContent || '').trim().substring(0, 200),
+            content: content,
+            id: h.id || null,
+            aria_label: h.getAttribute('aria-label') || null
+        });
+    });
+
+    // Interactive elements (capped at 50)
+    var seen = 0;
+    document.querySelectorAll('a[href],button,input:not([type="hidden"]),select,textarea,[role="button"],[role="link"],[role="menuitem"]').forEach(function(el) {
+        if (seen >= 50) return;
+        seen++;
+        var rect = el.getBoundingClientRect();
+        var label = el.getAttribute('aria-label') ||
+            el.getAttribute('placeholder') || el.getAttribute('title') ||
+            (el.textContent || '').trim().substring(0, 100) || el.getAttribute('value') || null;
+        var sel = el.id ? '#' + el.id :
+            (el.name ? el.tagName.toLowerCase() + '[name="' + el.name + '"]' :
+            el.tagName.toLowerCase() + (el.className ? '.' + el.className.trim().split(/\s+/)[0] : ''));
+        result.interactive_elements.push({
+            element_type: el.tagName.toLowerCase(),
+            label: label,
+            selector: sel,
+            aria_role: el.getAttribute('role') || null,
+            aria_label: el.getAttribute('aria-label') || null,
+            visible: rect.width > 0 && rect.height > 0,
+            enabled: !el.disabled
+        });
+    });
+
+    // Images (capped at 20)
+    seen = 0;
+    document.querySelectorAll('img').forEach(function(img) {
+        if (seen >= 20) return;
+        seen++;
+        var alt = img.getAttribute('alt');
+        result.images.push({
+            src: img.src || img.getAttribute('src') || '',
+            alt: alt !== null ? alt : null,
+            dimensions: (img.naturalWidth > 0 && img.naturalHeight > 0) ? [img.naturalWidth, img.naturalHeight] : null,
+            title: img.getAttribute('title') || null,
+            decorative: alt === '' || img.getAttribute('role') === 'presentation'
+        });
+    });
+
+    // Tables (capped at 5)
+    seen = 0;
+    document.querySelectorAll('table').forEach(function(table) {
+        if (seen >= 5) return;
+        seen++;
+        var rows = table.querySelectorAll('tr');
+        var headers = [];
+        var data = [];
+        rows.forEach(function(row, ri) {
+            var cells = row.querySelectorAll('th,td');
+            var rowData = [];
+            cells.forEach(function(cell) {
+                var text = (cell.textContent || '').trim().substring(0, 100);
+                if (cell.tagName === 'TH' || ri === 0) { headers.push(text); }
+                else { rowData.push(text); }
+            });
+            if (rowData.length > 0 && ri > 0) data.push(rowData);
+        });
+        var caption = table.querySelector('caption');
+        result.tables.push({
+            caption: caption ? (caption.textContent || '').trim() : null,
+            rows: rows.length,
+            columns: rows.length > 0 ? rows[0].querySelectorAll('th,td').length : 0,
+            headers: headers.slice(0, 10),
+            data: data.slice(0, 5),
+            has_proper_markup: table.querySelector('th') !== null
+        });
+    });
+
+    // Semantic elements
+    ['header','footer','nav','main','article','section','aside'].forEach(function(tag) {
+        var els = document.querySelectorAll(tag);
+        for (var i = 0; i < Math.min(els.length, 3); i++) {
+            var el = els[i];
+            result.semantic_elements.push({
+                tag: tag,
+                content: (el.textContent || '').trim().replace(/\s+/g, ' ').substring(0, 200),
+                aria_role: el.getAttribute('role') || null,
+                aria_label: el.getAttribute('aria-label') || null
+            });
+        }
+    });
+
+    // Simple accessibility score
+    var score = 100;
+    score -= document.querySelectorAll('img:not([alt])').length * 5;
+    score -= document.querySelectorAll('input:not([id]):not([aria-label]):not([placeholder])').length * 3;
+    score -= document.querySelectorAll('button:empty:not([aria-label])').length * 4;
+    result.accessibility_score = Math.max(0, Math.min(100, score));
+
+    return JSON.stringify(result);
+})()
+"#;
+                let eval_result = page.evaluate(script)
+                    .await
+                    .map_err(|e| BrowserError::Operation(format!("Failed to extract page snapshot: {}", e)))?;
+
+                let json_str: String = eval_result
+                    .into_value()
+                    .map_err(|e| BrowserError::Operation(format!("Snapshot JS did not return a string: {}", e)))?;
+
+                let mut snapshot: AiSnapshot = serde_json::from_str(&json_str)
+                    .map_err(|e| BrowserError::Operation(format!("Failed to parse AI snapshot JSON: {}", e)))?;
+
+                // Ensure timestamp is fresh
+                snapshot.timestamp = chrono::Utc::now().timestamp();
+
                 let result = snapshot.to_markdown();
-                
+
                 if let Some(path) = output_path {
-                    std::fs::write(path, &result)
-                        .map_err(|e| BrowserError::Io(e))?;
-                    Ok(format!("AI snapshot saved to {}", path))
+                    std::fs::write(path, &result).map_err(BrowserError::Io)?;
+                    Ok(format!("AI snapshot saved to {} ({} chars, {} sections, {} interactive elements)",
+                        path, result.len(), snapshot.structure.len(), snapshot.interactive_elements.len()))
                 } else {
-                    Ok(format!("AI snapshot generated: {}", result))
+                    Ok(result)
                 }
             }
+
             "aria" => {
-                let snapshot = AriaSnapshot::new();
-                let result = snapshot.to_json()
+                let script = r#"
+(function() {
+    var result = {
+        page_title: document.title || null,
+        landmarks: [],
+        roles: [],
+        properties: [],
+        live_regions: [],
+        focusable_elements: [],
+        tab_order: [],
+        violations: [],
+        aria_tree: [],
+        announcements: []
+    };
+
+    // Landmarks
+    var landmarkMap = { HEADER:'banner', FOOTER:'contentinfo', MAIN:'main', NAV:'navigation', ASIDE:'complementary', FORM:'form' };
+    var validLandmarks = ['banner','main','navigation','contentinfo','complementary','search','form','region'];
+    document.querySelectorAll('header,main,nav,footer,aside,form,section,[role]').forEach(function(el) {
+        var role = el.getAttribute('role') || (landmarkMap[el.tagName] || '');
+        if (!validLandmarks.includes(role)) return;
+        var rect = el.getBoundingClientRect();
+        result.landmarks.push({
+            landmark_type: role,
+            label: el.getAttribute('aria-label') || el.getAttribute('title') || null,
+            selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
+            unique: true,
+            position: [rect.left, rect.top, rect.width, rect.height]
+        });
+    });
+
+    // ARIA roles summary
+    var roleCount = {};
+    document.querySelectorAll('[role]').forEach(function(el) {
+        var r = el.getAttribute('role');
+        if (r) roleCount[r] = (roleCount[r] || 0) + 1;
+    });
+    Object.keys(roleCount).forEach(function(role) {
+        result.roles.push({ role: role, selector: '[role="' + role + '"]', description: null, valid: true, count: roleCount[role] });
+    });
+
+    // ARIA properties (10 per attribute type)
+    ['aria-label','aria-describedby','aria-labelledby','aria-hidden','aria-expanded',
+     'aria-selected','aria-checked','aria-disabled','aria-live','aria-atomic'].forEach(function(attr) {
+        var els = document.querySelectorAll('[' + attr + ']');
+        for (var i = 0; i < Math.min(els.length, 10); i++) {
+            var el = els[i];
+            result.properties.push({
+                name: attr,
+                value: el.getAttribute(attr) || '',
+                selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
+                valid: true,
+                property_type: 'aria'
+            });
+        }
+    });
+
+    // Live regions
+    document.querySelectorAll('[aria-live]').forEach(function(el) {
+        result.live_regions.push({
+            live_type: el.getAttribute('aria-live') || 'polite',
+            selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
+            atomic: el.getAttribute('aria-atomic') === 'true',
+            relevant: el.getAttribute('aria-relevant') || null,
+            content: (el.textContent || '').trim().substring(0, 200)
+        });
+    });
+
+    // Focusable elements (capped at 30)
+    var focusableSel = 'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    var seen = 0;
+    document.querySelectorAll(focusableSel).forEach(function(el) {
+        if (seen >= 30) return;
+        seen++;
+        result.focusable_elements.push({
+            element_type: el.tagName.toLowerCase(),
+            selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
+            tab_index: typeof el.tabIndex !== 'undefined' ? el.tabIndex : null,
+            focusable_by_default: true,
+            has_focus: el === document.activeElement,
+            label: el.getAttribute('aria-label') || (el.textContent || '').trim().substring(0, 50) || null
+        });
+    });
+
+    // Tab order (capped at 20)
+    seen = 0;
+    document.querySelectorAll(focusableSel).forEach(function(el) {
+        if (seen >= 20) return;
+        seen++;
+        result.tab_order.push({
+            position: seen,
+            selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
+            element_type: el.tagName.toLowerCase(),
+            label: el.getAttribute('aria-label') || (el.textContent || '').trim().substring(0, 50) || null,
+            reachable: el.tabIndex >= 0
+        });
+    });
+
+    // Accessibility violations
+    document.querySelectorAll('img:not([alt])').forEach(function(el) {
+        result.violations.push({
+            violation_type: 'missing_alt_text', wcag_guideline: '1.1.1', severity: 'high',
+            selector: el.id ? '#' + el.id : 'img[src="' + (el.src || '').split('/').pop() + '"]',
+            description: 'Image missing alt attribute',
+            fix: 'Add alt="" for decorative images or a descriptive alt text'
+        });
+    });
+    document.querySelectorAll('button:not([aria-label]):not([aria-labelledby])').forEach(function(el) {
+        if (!(el.textContent || '').trim()) {
+            result.violations.push({
+                violation_type: 'unlabeled_button', wcag_guideline: '4.1.2', severity: 'high',
+                selector: el.id ? '#' + el.id : 'button',
+                description: 'Button has no accessible label',
+                fix: 'Add text content or aria-label to button'
+            });
+        }
+    });
+    document.querySelectorAll('input:not([id]):not([aria-label]):not([aria-labelledby])').forEach(function(el) {
+        if (el.type !== 'hidden' && el.type !== 'submit' && el.type !== 'button') {
+            result.violations.push({
+                violation_type: 'input_no_label', wcag_guideline: '1.3.1', severity: 'medium',
+                selector: el.name ? 'input[name="' + el.name + '"]' : 'input[type="' + (el.type || 'text') + '"]',
+                description: 'Input has no associated label',
+                fix: 'Add aria-label or associate input with a <label> element'
+            });
+        }
+    });
+
+    return JSON.stringify(result);
+})()
+"#;
+                let eval_result = page.evaluate(script)
+                    .await
+                    .map_err(|e| BrowserError::Operation(format!("Failed to extract ARIA snapshot: {}", e)))?;
+
+                let json_str: String = eval_result
+                    .into_value()
+                    .map_err(|e| BrowserError::Operation(format!("ARIA snapshot JS did not return a string: {}", e)))?;
+
+                let snapshot: AriaSnapshot = serde_json::from_str(&json_str)
+                    .map_err(|e| BrowserError::Operation(format!("Failed to parse ARIA snapshot JSON: {}", e)))?;
+
+                let score = snapshot.accessibility_score();
+                let summary = snapshot.summary();
+                let result_json = snapshot.to_json()
                     .map_err(|e| BrowserError::Operation(format!("Failed to serialize ARIA snapshot: {}", e)))?;
-                
+
                 if let Some(path) = output_path {
-                    std::fs::write(path, &result)
-                        .map_err(|e| BrowserError::Io(e))?;
-                    Ok(format!("ARIA snapshot saved to {}", path))
+                    std::fs::write(path, &result_json).map_err(BrowserError::Io)?;
+                    Ok(format!("ARIA snapshot saved to {} (score: {}%, {} violations, {} landmarks)",
+                        path, score,
+                        summary.get("violations").unwrap_or(&0),
+                        summary.get("landmarks").unwrap_or(&0)))
                 } else {
-                    Ok(format!("ARIA snapshot generated: {}", result))
+                    Ok(format!("ARIA Score: {}%  |  Landmarks: {}  |  Roles: {}  |  Violations: {}\n\n{}",
+                        score,
+                        summary.get("landmarks").unwrap_or(&0),
+                        summary.get("roles").unwrap_or(&0),
+                        summary.get("violations").unwrap_or(&0),
+                        result_json))
                 }
             }
-            _ => Err(BrowserError::Operation(format!("Unknown snapshot type: {}", snapshot_type))),
+
+            _ => Err(BrowserError::Operation(
+                format!("Unknown snapshot type: '{}'. Use 'ai' or 'aria'.", snapshot_type)
+            )),
         }
     }
     
@@ -1743,48 +1983,207 @@ impl ActionExecutor {
         operations: &[Value],
         parallel: bool,
     ) -> BrowserResult<String> {
-        // Create operation sequence
-        let mut sequence = OperationSequence::new("batch");
-        
+        if operations.is_empty() {
+            return Ok("Batch: 0 operations (nothing to do)".to_string());
+        }
+
+        // Parse all operations into BrowserActions upfront so we can fail fast on bad input.
+        let mut actions: Vec<(usize, BrowserAction)> = Vec::with_capacity(operations.len());
         for (i, op) in operations.iter().enumerate() {
-            let step = OperationStep::from_json(op)
-                .map_err(|e| BrowserError::Operation(format!("Failed to parse operation {}: {}", i, e)))?;
-            sequence.add_step(step);
+            match Self::batch_op_to_action(op) {
+                Ok(action) => actions.push((i, action)),
+                Err(e) => return Err(BrowserError::Operation(
+                    format!("Operation {} parse error: {}", i, e)
+                )),
+            }
         }
-        
-        // Execute sequence
-        let step_results = if parallel {
-            sequence.execute_parallel().await
+
+        let total = actions.len();
+        let mut lines: Vec<String> = Vec::with_capacity(total);
+
+        if parallel {
+            // Run all actions sequentially but collect ALL results (don't stop on error).
+            // True concurrent spawning isn't available here because chromiumoxide futures
+            // are not Send; for browser automation on a single page this is also safer.
+            let mut ok_count = 0usize;
+            for (idx, action) in actions {
+                let start = std::time::Instant::now();
+                match self.execute(browser_state.clone(), page_name, action).await {
+                    Ok(msg) => {
+                        ok_count += 1;
+                        let ms = start.elapsed().as_millis();
+                        lines.push(format!("Step {}: OK ({}ms) — {}", idx + 1, ms,
+                            msg.lines().next().unwrap_or("").chars().take(120).collect::<String>()));
+                    }
+                    Err(e) => {
+                        let ms = start.elapsed().as_millis();
+                        lines.push(format!("Step {}: ERROR ({}ms) — {}", idx + 1, ms, e));
+                    }
+                }
+            }
+            lines.insert(0, format!("Batch parallel: {}/{} succeeded", ok_count, total));
         } else {
-            sequence.execute_sequential().await
-        };
-        
-        // Convert to result_aggregator::StepResult
-        let results: Vec<crate::tools::browser::batch::result_aggregator::StepResult> = step_results.into_iter()
-            .map(|sr| crate::tools::browser::batch::result_aggregator::StepResult {
-                step_id: sr.step_id,
-                step_name: sr.step_name,
-                success: sr.success,
-                message: sr.message,
-                error: sr.error,
-                duration_ms: sr.duration_ms,
-                retry_attempts: sr.retry_attempts,
-                output_data: sr.output_data,
-                start_timestamp: sr.start_timestamp,
-                end_timestamp: sr.end_timestamp,
-            })
-            .collect();
-        
-        // Aggregate results
-        let mut aggregator = crate::tools::browser::batch::ResultAggregator::new(
-            crate::tools::browser::batch::AggregationStrategy::All
-        );
-        for result in results {
-            aggregator.add_result(result);
+            // Sequential: stop on first error by default.
+            let mut ok_count = 0usize;
+            for (idx, action) in actions {
+                let start = std::time::Instant::now();
+                match self.execute(browser_state.clone(), page_name, action).await {
+                    Ok(msg) => {
+                        ok_count += 1;
+                        let ms = start.elapsed().as_millis();
+                        lines.push(format!("Step {}: OK ({}ms) — {}", idx + 1, ms,
+                            msg.lines().next().unwrap_or("").chars().take(120).collect::<String>()));
+                    }
+                    Err(e) => {
+                        let ms = start.elapsed().as_millis();
+                        lines.push(format!("Step {}: ERROR ({}ms) — {}", idx + 1, ms, e));
+                        lines.insert(0, format!("Batch sequential: {}/{} succeeded (stopped on error)", ok_count, total));
+                        return Ok(lines.join("\n"));
+                    }
+                }
+            }
+            lines.insert(0, format!("Batch sequential: {}/{} succeeded", ok_count, total));
         }
-        let aggregated = aggregator.get_aggregated_result();
-        
-        Ok(format!("Batch execution completed. Results: {:?}", aggregated))
+
+        Ok(lines.join("\n"))
+    }
+
+    /// Convert a batch operation JSON value into a BrowserAction.
+    fn batch_op_to_action(op: &Value) -> Result<BrowserAction, String> {
+        // Accept both "action" and "action_type" as the discriminator key.
+        let action_type = op.get("action")
+            .or_else(|| op.get("action_type"))
+            .and_then(|v| v.as_str())
+            .ok_or("Operation missing 'action' or 'action_type' field")?
+            .to_lowercase();
+
+        // Parameters may live inline at the top level or in a nested "parameters" object.
+        let params_obj;
+        let p: &Value = if let Some(nested) = op.get("parameters").filter(|v| v.is_object()) {
+            // Merge top-level keys (except action/action_type) into a temporary Value.
+            let mut merged = nested.clone();
+            if let (Value::Object(ref mut m), Some(Value::Object(top))) =
+                (&mut merged, Some(op.clone()))
+            {
+                for (k, v) in top {
+                    if k != "action" && k != "action_type" && k != "parameters" {
+                        m.entry(k).or_insert(v);
+                    }
+                }
+            }
+            params_obj = merged;
+            &params_obj
+        } else {
+            op
+        };
+
+        let str_field = |key: &str| -> Result<String, String> {
+            p.get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| format!("Missing field '{}' for action '{}'", key, action_type))
+        };
+        let u64_field = |key: &str, default: u64| -> u64 {
+            p.get(key).and_then(|v| v.as_u64()).unwrap_or(default)
+        };
+
+        let fmt_field = |key: &str| -> ScreenshotFormat {
+            match p.get(key).and_then(|v| v.as_str()).unwrap_or("png") {
+                "jpeg" | "jpg" => ScreenshotFormat::Jpeg,
+                "webp" => ScreenshotFormat::WebP,
+                _ => ScreenshotFormat::Png,
+            }
+        };
+
+        match action_type.as_str() {
+            "navigate" => Ok(BrowserAction::Navigate {
+                url: str_field("url")?,
+                wait_seconds: u64_field("wait_seconds", 2),
+            }),
+            "click" => Ok(BrowserAction::Click {
+                selector: str_field("selector")?,
+                wait_seconds: u64_field("wait_seconds", 1),
+            }),
+            "type" | "type_text" => Ok(BrowserAction::Type {
+                selector: str_field("selector")?,
+                text: str_field("text")?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "screenshot" | "take_screenshot" => Ok(BrowserAction::Screenshot {
+                output_path: p.get("output_path").and_then(|v| v.as_str())
+                    .unwrap_or("/tmp/batch_screenshot.png").to_string(),
+                format: fmt_field("format"),
+                quality: p.get("quality").and_then(|v| v.as_i64()),
+            }),
+            "execute_script" | "run_script" => Ok(BrowserAction::ExecuteScript {
+                script: str_field("script").or_else(|_| str_field("code"))?,
+            }),
+            "evaluate" => Ok(BrowserAction::Evaluate {
+                expression: str_field("expression").or_else(|_| str_field("script"))?,
+            }),
+            "get_html" | "html" => Ok(BrowserAction::GetHtml),
+            "get_text" | "text" => Ok(BrowserAction::GetText {
+                selector: str_field("selector")?,
+            }),
+            "find_elements" | "find" => Ok(BrowserAction::FindElements {
+                selector: str_field("selector")?,
+            }),
+            "hover" => Ok(BrowserAction::Hover {
+                selector: str_field("selector")?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "scroll_to" | "scroll" => Ok(BrowserAction::ScrollTo {
+                selector: str_field("selector")?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "wait_for_element" | "wait_element" => Ok(BrowserAction::WaitForElement {
+                selector: str_field("selector")?,
+                timeout_seconds: u64_field("timeout_seconds", 10),
+            }),
+            "wait_for_navigation" | "wait_navigation" => Ok(BrowserAction::WaitForNavigation {
+                timeout_seconds: u64_field("timeout_seconds", 30),
+            }),
+            "go_back" | "back" => Ok(BrowserAction::GoBack {
+                wait_seconds: u64_field("wait_seconds", 1),
+            }),
+            "go_forward" | "forward" => Ok(BrowserAction::GoForward {
+                wait_seconds: u64_field("wait_seconds", 1),
+            }),
+            "press_key" | "key" => Ok(BrowserAction::PressKey {
+                key: str_field("key")?,
+                selector: p.get("selector").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "select_option" | "select" => Ok(BrowserAction::SelectOption {
+                selector: str_field("selector")?,
+                value: str_field("value")?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "check" => Ok(BrowserAction::Check {
+                selector: str_field("selector")?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "uncheck" => Ok(BrowserAction::Uncheck {
+                selector: str_field("selector")?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "upload_file" | "upload" => Ok(BrowserAction::UploadFile {
+                selector: str_field("selector")?,
+                file_path: str_field("file_path").or_else(|_| str_field("path"))?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "right_click" => Ok(BrowserAction::RightClick {
+                selector: str_field("selector")?,
+                wait_seconds: u64_field("wait_seconds", 0),
+            }),
+            "get_cookies" | "cookies" => Ok(BrowserAction::GetCookies),
+            "create_snapshot" | "snapshot" => Ok(BrowserAction::CreateSnapshot {
+                snapshot_type: p.get("snapshot_type").and_then(|v| v.as_str())
+                    .unwrap_or("ai").to_string(),
+                output_path: p.get("output_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            }),
+            other => Err(format!("Unsupported batch action type: '{}'", other)),
+        }
     }
     
     /// Get driver information

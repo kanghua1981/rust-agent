@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::memory::MemoryConfig;
 use crate::model_manager;
 use crate::Args;
 
@@ -21,6 +22,9 @@ pub struct Config {
     /// Extra bind-mounts injected into every worker container (from models.toml).
     #[serde(default)]
     pub extra_binds: Vec<crate::container::ExtraBindMount>,
+    /// Memory backend configuration.
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +136,16 @@ impl Config {
             model_alias,
             sub_agents,
             extra_binds: models_cfg.extra_binds.clone(),
+            memory: {
+                // Determine the project directory (same logic as main.rs)
+                let project_dir = args.workdir.as_ref().map(|w| {
+                    std::path::Path::new(w)
+                        .canonicalize()
+                        .unwrap_or_else(|_| std::path::PathBuf::from(w))
+                });
+                let config_path = project_dir.as_deref().map(|d| d.join(".agent").join("memory.toml"));
+                crate::memory::factory::load_memory_config(config_path.as_deref())
+            },
         })
     }
 
@@ -167,6 +181,7 @@ impl Config {
             model_alias: Some(resolved.alias.clone()),
             sub_agents: self.sub_agents.clone(),
             extra_binds: self.extra_binds.clone(),
+            memory: self.memory.clone(),
         }
     }
 

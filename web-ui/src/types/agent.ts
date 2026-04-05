@@ -482,5 +482,16 @@ export interface ConfigPreset {
   model?: string;
   autoApprove: boolean;
   agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+  isolation?: 'normal' | 'container' | 'sandbox';
   createdAt: number;
+}
+
+// 连接历史记录
+export interface ConnectionHistory {
+  id: string;
+  serverUrl: string;
+  workdir?: string;
+  connectedAt: number;
+  lastConnectedAt: number;
+  connectionCount: number;
 }

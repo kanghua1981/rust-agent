@@ -1,5 +1,6 @@
+#![allow(dead_code)]
+
 use super::{ProtocolError, ProtocolMessage};
-use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 /// Protocol serializer

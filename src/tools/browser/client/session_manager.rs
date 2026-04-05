@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::tools::browser::error::{BrowserError, BrowserResult};
 use crate::tools::browser::runtime::BrowserManager;
 use serde::{Deserialize, Serialize};

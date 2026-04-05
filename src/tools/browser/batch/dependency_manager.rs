@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::algo::toposort;
@@ -80,7 +82,7 @@ impl DependencyManager {
     }
     
     /// Add a dependency between steps
-    pub fn add_dependency(&mut self, dependent: usize, dependency: usize, dependency_type: DependencyType) -> Result<(), String> {
+    pub fn add_dependency(&mut self, dependent: usize, dependency: usize, _dependency_type: DependencyType) -> Result<(), String> {
         // Ensure both steps exist
         if !self.step_to_node.contains_key(&dependent) {
             return Err(format!("Dependent step {} not found", dependent));

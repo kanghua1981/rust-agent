@@ -213,6 +213,333 @@ fn parse_event(ev: &Value) -> NodeEvent {
     }
 }
 
+// ── Single-node WebSocket execution ────────────────────────────────────────────
+/// Connect to one agent node, send `prompt`, and drive the event loop until the
+/// remote agent sends `Done` or `Error`.
+///
+/// When `silent = true` (parallel broadcast mode) streaming tokens, thinking and
+/// tool events are suppressed and interactive confirmations are force-approved.
+/// The final answer is still collected and returned as the `ToolResult` output.
+async fn ws_run_node(
+    target_name: &str,
+    url: &str,
+    prompt: &str,
+    exec_mode: Option<&str>,
+    auto_approve: bool,
+    timeout_secs: u64,
+    output: &Arc<dyn AgentOutput>,
+    silent: bool,
+) -> ToolResult {
+    if !silent {
+        output.on_warning(&format!("[call_node] connecting to {} (target={})", url, target_name));
+    } else {
+        tracing::debug!("[call_node] parallel: connecting to {} (target={})", url, target_name);
+    }
+
+    let (ws_stream, _) = match connect_async(url).await {
+        Ok(c) => c,
+        Err(e) => return ToolResult::error(format!(
+            "Failed to connect to node '{}' at {}: {}", target_name, url, e
+        )),
+    };
+    let (mut write, mut read) = ws_stream.split();
+
+    if let Some(mode) = exec_mode {
+        let mode_msg = json!({ "type": "set_mode", "data": { "mode": mode } });
+        let _ = write.send(Message::Text(mode_msg.to_string().into())).await;
+    }
+    let initial_msg = json!({
+        "type": "user_message",
+        "data": { "text": prompt }
+    });
+    if let Err(e) = write.send(Message::Text(initial_msg.to_string().into())).await {
+        return ToolResult::error(format!("Failed to send task to node: {}", e));
+    }
+
+    let mut streaming_answer = String::new();
+    let mut connect_header   = String::new();
+    let total_timeout  = Duration::from_secs(timeout_secs);
+    let start_time     = Instant::now();
+    let mut last_msg_at       = Instant::now();
+    let mut last_reported_min: u64 = 0;
+
+    loop {
+        tokio::select! {
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        last_msg_at = Instant::now();
+                        let event: Value = match serde_json::from_str(&text) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        match parse_event(&event) {
+                            NodeEvent::StreamStart => {
+                                if !silent { output.on_stream_start(); }
+                            }
+                            NodeEvent::StreamEnd => {
+                                if !silent { output.on_stream_end(); }
+                            }
+                            NodeEvent::StreamingToken(token) if !token.is_empty() => {
+                                if !silent { output.on_streaming_text(&token); }
+                                streaming_answer.push_str(&token);
+                            }
+                            NodeEvent::AssistantText(t) if !t.is_empty() => {
+                                if !silent { output.on_assistant_text(&t); }
+                                streaming_answer = t;
+                            }
+                            NodeEvent::Thinking(thought) if !thought.is_empty() => {
+                                if !silent {
+                                    output.on_warning(&format!("[node:{}] {}", target_name, thought));
+                                }
+                            }
+                            NodeEvent::ToolUse { name, input: tool_input } => {
+                                if !silent {
+                                    output.on_tool_use(&format!("↳ {}", name), &tool_input);
+                                }
+                            }
+                            NodeEvent::ToolResult { name, output: tool_out } => {
+                                if !silent {
+                                    output.on_tool_result(
+                                        &format!("↳ {}", name),
+                                        &ToolResult::success(tool_out),
+                                    );
+                                }
+                            }
+                            NodeEvent::ConfirmRequest { action, details } => {
+                                let approved = if auto_approve || silent || crate::confirm::is_auto_approve() {
+                                    if silent {
+                                        output.on_warning(&format!(
+                                            "[node:{}] parallel mode — auto-approving '{}'",
+                                            target_name, action
+                                        ));
+                                    }
+                                    true
+                                } else {
+                                    let confirm_action = match action.as_str() {
+                                        "write_file" => ConfirmAction::WriteFile {
+                                            path: details.clone().unwrap_or_default(),
+                                            lines: 0,
+                                        },
+                                        "edit_file" => ConfirmAction::EditFile {
+                                            path: details.clone().unwrap_or_default(),
+                                        },
+                                        "delete_file" => ConfirmAction::DeleteFile {
+                                            path: details.clone().unwrap_or_default(),
+                                        },
+                                        _ => ConfirmAction::RunCommand {
+                                            command: match &details {
+                                                Some(d) => format!("[node:{}] {} — {}", target_name, action, d),
+                                                None    => format!("[node:{}] {}", target_name, action),
+                                            },
+                                        },
+                                    };
+                                    matches!(
+                                        output.confirm(&confirm_action),
+                                        ConfirmResult::Yes | ConfirmResult::AlwaysYes
+                                    )
+                                };
+                                let response = json!({
+                                    "type": "confirm_response",
+                                    "data": { "approved": approved }
+                                });
+                                let _ = write.send(Message::Text(response.to_string().into())).await;
+                            }
+                            NodeEvent::AskUser(question) => {
+                                let out = output.clone();
+                                let answer = tokio::task::spawn_blocking(move || {
+                                    out.ask_user(&question)
+                                }).await.unwrap_or_default();
+                                let response = json!({
+                                    "type": "ask_user_response",
+                                    "data": { "answer": answer }
+                                });
+                                let _ = write.send(Message::Text(response.to_string().into())).await;
+                            }
+                            NodeEvent::ReviewPlan(plan) => {
+                                let out = output.clone();
+                                let review = tokio::task::spawn_blocking(move || {
+                                    out.review_plan(&plan)
+                                }).await.unwrap_or(PlanReview::Reject);
+                                let (approved, feedback, context) = match review {
+                                    PlanReview::Approve               => (true,  String::new(), String::new()),
+                                    PlanReview::ApproveWithContext(c) => (true,  String::new(), c),
+                                    PlanReview::Reject                => (false, String::new(), String::new()),
+                                    PlanReview::Refine(fb)            => (true,  fb,            String::new()),
+                                };
+                                let mut data = json!({ "approved": approved, "feedback": feedback });
+                                if !context.is_empty() { data["context"] = json!(context); }
+                                let response = json!({ "type": "review_plan_response", "data": data });
+                                let _ = write.send(Message::Text(response.to_string().into())).await;
+                            }
+                            NodeEvent::Done(text) => {
+                                let final_text = if !text.is_empty() { text } else { streaming_answer };
+                                let _ = write.send(Message::Close(None)).await;
+                                if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+                                return ToolResult::success(format!(
+                                    "{}Node '{}' completed.\n{}", connect_header, target_name, final_text
+                                ));
+                            }
+                            NodeEvent::Error(msg) => {
+                                let _ = write.send(Message::Close(None)).await;
+                                if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+                                return ToolResult::error(format!(
+                                    "Node '{}' error: {}", target_name, msg
+                                ));
+                            }
+                            NodeEvent::Ready { workdir, sandbox, caps, virtual_nodes } => {
+                                let wd = workdir.as_deref().unwrap_or("(server default)");
+                                let sb = match sandbox {
+                                    Some(true)  => "sandbox",
+                                    Some(false) => "normal",
+                                    None        => "container",
+                                };
+                                let caps_summary = if let Some(ref c) = caps {
+                                    let arch = c["arch"].as_str().unwrap_or("?");
+                                    let os   = c["os"].as_str().unwrap_or("?");
+                                    let cpu  = c["cpu_cores"].as_u64().unwrap_or(0);
+                                    let ram  = c["ram_gb"].as_u64().unwrap_or(0);
+                                    let gpus_arr = c["gpus"].as_array().map(|a| a.len()).unwrap_or(0);
+                                    let gpu_str = if gpus_arr > 0 {
+                                        let names: Vec<&str> = c["gpus"].as_array().unwrap()
+                                            .iter().filter_map(|g| g["name"].as_str()).collect();
+                                        format!("  GPU: {}", names.join(", "))
+                                    } else {
+                                        String::new()
+                                    };
+                                    format!(
+                                        "  Arch: {}/{}  CPU: {} cores  RAM: {} GiB{}",
+                                        os, arch, cpu, ram, gpu_str
+                                    )
+                                } else {
+                                    String::new()
+                                };
+                                let vnode_table = if !virtual_nodes.is_empty() {
+                                    let mut t = String::from("\n  Virtual nodes:\n");
+                                    t.push_str(&format!(
+                                        "  {:<22} {:<12} {}\n",
+                                        "NAME", "ISOLATION", "WORKDIR / TAGS"
+                                    ));
+                                    t.push_str(&format!("  {}\n", "─".repeat(72)));
+                                    for vn in &virtual_nodes {
+                                        let sb_str = match vn.isolation.as_deref() {
+                                            Some(m) => m,
+                                            None => if vn.sandbox { "sandbox" } else { "container" },
+                                        };
+                                        let tags_str = if vn.tags.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!("  [{}]", vn.tags.join(", "))
+                                        };
+                                        t.push_str(&format!(
+                                            "  {:<22} {:<8} {}{}\n",
+                                            vn.name, sb_str, vn.workdir, tags_str
+                                        ));
+                                    }
+                                    t
+                                } else {
+                                    String::new()
+                                };
+                                if !silent {
+                                    connect_header = format!(
+                                        "[Node '{}' connected — workdir: {}  isolation: {}]\n{}{}\n",
+                                        target_name, wd, sb, caps_summary, vnode_table
+                                    );
+                                }
+                                if !virtual_nodes.is_empty() {
+                                    let raw_url = if url.contains('?') {
+                                        url.splitn(2, '?').next().unwrap_or(url).to_string()
+                                    } else {
+                                        url.to_string()
+                                    };
+                                    workspaces::update_route_table(
+                                        target_name, &raw_url, &virtual_nodes,
+                                    );
+                                }
+                                output.on_warning(&format!(
+                                    "[call_node] node '{}' ready — workdir={} sandbox={}",
+                                    target_name, wd, sb
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        // Connection closed before Done/Error — node crashed or network dropped.
+                        if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+                        let partial = if streaming_answer.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" Partial output:\n{}", streaming_answer)
+                        };
+                        return ToolResult::error(format!(
+                            "Node '{}' disconnected without completing (connection closed unexpectedly).{}",
+                            target_name, partial
+                        ));
+                    }
+                    Some(Err(e)) => {
+                        if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+                        return ToolResult::error(format!(
+                            "WebSocket error from node '{}': {}", target_name, e
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            _ = tokio::time::sleep(PING_INTERVAL) => {
+                let elapsed = start_time.elapsed();
+                let idle    = last_msg_at.elapsed();
+                let elapsed_min = elapsed.as_secs() / 60;
+
+                if is_interrupted() {
+                    let _ = write.send(Message::Close(None)).await;
+                    if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+                    return ToolResult::error("call_node interrupted by user (Ctrl-C).".to_string());
+                }
+
+                if idle >= total_timeout {
+                    let _ = write.send(Message::Close(None)).await;
+                    if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+                    return ToolResult::error(format!(
+                        "Node '{}' timed out: no activity for {}s (total elapsed {}s).",
+                        target_name, idle.as_secs(), elapsed.as_secs()
+                    ));
+                }
+
+                if idle >= INACTIVITY_ABORT {
+                    let _ = write.send(Message::Close(None)).await;
+                    if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+                    return ToolResult::error(format!(
+                        "Node '{}' appears stuck: no activity for {}s.",
+                        target_name, idle.as_secs()
+                    ));
+                }
+
+                let _ = write.send(Message::Ping(vec![].into())).await;
+
+                if idle >= INACTIVITY_WARN && idle < INACTIVITY_WARN + PING_INTERVAL {
+                    output.on_warning(&format!(
+                        "[node:{}] no activity for {}s — waiting (Ctrl-C to abort)",
+                        target_name, idle.as_secs()
+                    ));
+                }
+
+                if elapsed_min > last_reported_min {
+                    last_reported_min = elapsed_min;
+                    output.on_warning(&format!(
+                        "[node:{}] {}m{}s elapsed (Ctrl-C to abort)",
+                        target_name, elapsed_min, elapsed.as_secs() % 60
+                    ));
+                }
+            }
+        }
+    }
+
+    // Unreachable: all exit paths above return explicitly.
+    if !silent { output.on_stage_end(&format!("Node:{}", target_name)); }
+    ToolResult::error(format!("Node '{}' exited unexpectedly.", target_name))
+}
+
 // ── Tool impl ─────────────────────────────────────────────────────────────────
 
 pub struct CallNodeTool {
@@ -436,25 +763,84 @@ impl Tool for CallNodeTool {
                         tag
                     ));
                 }
-                if matching.len() > 1 {
-                    let rest: Vec<_> = matching[1..].iter()
+                if matching.len() == 1 {
+                    let first = matching[0];
+                    (
+                        first["url"].as_str().unwrap_or("").to_string(),
+                        first["workdir"].as_str().map(|s| s.to_string()),
+                        first["isolation"].as_str().map(|s| s.to_string())
+                            .or_else(|| first["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
+                        first["exec_mode"].as_str().map(|s| s.to_string()),
+                        cluster_token,
+                    )
+                } else {
+                    // ── Parallel broadcast ────────────────────────────────────────────
+                    let names: Vec<String> = matching.iter()
                         .map(|n| n["name"].as_str().unwrap_or("?").to_string())
                         .collect();
                     self.output.on_warning(&format!(
-                        "[call_node] all:{} matched {} nodes — running first; \
-                         parallel broadcast planned for Phase 3. Skipped: {}",
-                        tag, matching.len(), rest.join(", ")
+                        "[call_node] all:{} — broadcasting to {} nodes in parallel: {}",
+                        tag, names.len(), names.join(", ")
                     ));
+                    if !input.auto_approve && !crate::confirm::is_auto_approve() {
+                        self.output.on_warning(
+                            "[call_node] parallel mode: tool confirmations from all nodes will be auto-approved"
+                        );
+                    }
+
+                    // Resolve (name, final_url, exec_mode) for every matching node.
+                    struct NodeTarget { name: String, url: String, exec_mode: Option<String> }
+                    let targets: Vec<NodeTarget> = matching.iter().map(|n| {
+                        let nw  = n["workdir"].as_str().map(|s| s.to_string());
+                        let ni  = n["isolation"].as_str().map(|s| s.to_string())
+                            .or_else(|| n["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None }));
+                        let ne  = n["exec_mode"].as_str().map(|s| s.to_string());
+                        let eff_wd  = input.workdir.as_deref().or(nw.as_deref());
+                        let eff_iso = input.isolation.as_deref().or(ni.as_deref());
+                        let eff_em  = input.exec_mode.as_deref()
+                            .filter(|m| *m != "auto")
+                            .or_else(|| ne.as_deref().filter(|m| *m != "auto"))
+                            .map(|s| s.to_string());
+                        let base = crate::workspaces::with_path(n["url"].as_str().unwrap_or(""), "/agent");
+                        let url  = build_url(&base, eff_wd, eff_iso, cluster_token.as_deref());
+                        NodeTarget { name: n["name"].as_str().unwrap_or("?").to_string(), url, exec_mode: eff_em }
+                    }).collect();
+
+                    let prompt       = input.prompt.clone();
+                    let timeout_secs = input.timeout_secs;
+                    let futs: Vec<_> = targets.into_iter().map(|t| {
+                        let prompt = prompt.clone();
+                        let output = self.output.clone();
+                        async move {
+                            let r = ws_run_node(
+                                &t.name, &t.url, &prompt,
+                                t.exec_mode.as_deref(),
+                                true,          // auto_approve — forced in parallel mode
+                                timeout_secs,
+                                &output,
+                                true,          // silent — suppress interleaved streaming
+                            ).await;
+                            (t.name, r)
+                        }
+                    }).collect();
+
+                    let results = futures::future::join_all(futs).await;
+
+                    // ── Aggregate results ─────────────────────────────────────────────
+                    let ok_count  = results.iter().filter(|(_, r)| !r.is_error).count();
+                    let err_count = results.len() - ok_count;
+                    let parts: Vec<String> = results.iter().map(|(name, r)| {
+                        let icon = if r.is_error { "✗" } else { "✓" };
+                        format!("### [{}] {}\n{}", name, icon, r.output)
+                    }).collect();
+                    let summary = format!(
+                        "Broadcast complete: {}/{} succeeded{}\n\n{}",
+                        ok_count, results.len(),
+                        if err_count > 0 { format!(" ({} failed)", err_count) } else { String::new() },
+                        parts.join("\n\n")
+                    );
+                    return ToolResult::success(summary);
                 }
-                let first = matching[0];
-                (
-                    first["url"].as_str().unwrap_or("").to_string(),
-                    first["workdir"].as_str().map(|s| s.to_string()),
-                    first["isolation"].as_str().map(|s| s.to_string())
-                        .or_else(|| first["sandbox"].as_bool().and_then(|b| if b { Some("sandbox".to_string()) } else { None })),
-                    first["exec_mode"].as_str().map(|s| s.to_string()),
-                    cluster_token,
-                )
             } else {
                 // Named target — look up in entries returned by parent's /nodes.
                 let found = nodes.iter().find(|n| n["name"].as_str() == Some(input.target.as_str()));
@@ -549,300 +935,15 @@ impl Tool for CallNodeTool {
         let base_url = crate::workspaces::with_path(&base_url, "/agent");
         let url = build_url(&base_url, effective_workdir, effective_isolation, cluster_token.as_deref());
 
-        // ── Connect ───────────────────────────────────────────────────────────
-        self.output.on_warning(&format!("[call_node] connecting to {} (target={})", url, input.target));
+        // ── Execute ──────────────────────────────────────────────────────────
+        return ws_run_node(
+            &input.target, &url, &input.prompt,
+            effective_exec_mode,
+            input.auto_approve,
+            input.timeout_secs,
+            &self.output,
+            false,
+        ).await;
 
-        let (ws_stream, _) = match connect_async(&url).await {
-            Ok(c) => c,
-            Err(e) => return ToolResult::error(format!(
-                "Failed to connect to node '{}' at {}: {}", input.target, url, e
-            )),
-        };
-        let (mut write, mut read) = ws_stream.split();
-
-        // ── Send initial task ─────────────────────────────────────────────────
-        // Force execution mode on the remote node BEFORE the user message so the
-        // agent picks it up when processing this turn.
-        if let Some(mode) = effective_exec_mode {
-            let mode_msg = json!({ "type": "set_mode", "data": { "mode": mode } });
-            let _ = write.send(Message::Text(mode_msg.to_string().into())).await;
-        }
-        let initial_msg = json!({
-            "type": "user_message",
-            "data": { "text": input.prompt }
-        });
-        if let Err(e) = write.send(Message::Text(initial_msg.to_string().into())).await {
-            return ToolResult::error(format!("Failed to send task to node: {}", e));
-        }
-
-        // ── Event loop ────────────────────────────────────────────────────────
-        let mut streaming_answer = String::new();
-        // Set when the Ready frame arrives; prepended to every ToolResult so
-        // the manager LLM sees where the worker is and what mode it runs in.
-        let mut connect_header = String::new();
-        let total_timeout = Duration::from_secs(input.timeout_secs);
-        let start_time = Instant::now();
-        let mut last_msg_at = Instant::now();
-        let mut last_reported_min: u64 = 0;
-
-        loop {
-            tokio::select! {
-                msg = read.next() => {
-                    match msg {
-                        Some(Ok(Message::Text(text))) => {
-                            last_msg_at = Instant::now();
-                            let event: Value = match serde_json::from_str(&text) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-                            match parse_event(&event) {
-                                NodeEvent::StreamStart => {
-                                    self.output.on_stream_start();
-                                }
-                                NodeEvent::StreamEnd => {
-                                    self.output.on_stream_end();
-                                }
-                                NodeEvent::StreamingToken(token) if !token.is_empty() => {
-                                    self.output.on_streaming_text(&token);
-                                    streaming_answer.push_str(&token);
-                                }
-                                NodeEvent::AssistantText(text) if !text.is_empty() => {
-                                    self.output.on_assistant_text(&text);
-                                    streaming_answer = text;
-                                }
-                                NodeEvent::Thinking(thought) if !thought.is_empty() => {
-                                    self.output.on_warning(&format!("[node:{}] {}", input.target, thought));
-                                }
-                                NodeEvent::ToolUse { name, input: tool_input } => {
-                                    self.output.on_tool_use(&format!("↳ {}", name), &tool_input);
-                                }
-                                NodeEvent::ToolResult { name, output: tool_out } => {
-                                    self.output.on_tool_result(
-                                        &format!("↳ {}", name),
-                                        &ToolResult::success(tool_out),
-                                    );
-                                }
-                                NodeEvent::ConfirmRequest { action, details } => {
-                                    let approved = if input.auto_approve || crate::confirm::is_auto_approve() {
-                                        true
-                                    } else {
-                                        let confirm_action = match action.as_str() {
-                                            "write_file" => ConfirmAction::WriteFile {
-                                                path: details.clone().unwrap_or_default(),
-                                                lines: 0,
-                                            },
-                                            "edit_file" => ConfirmAction::EditFile {
-                                                path: details.clone().unwrap_or_default(),
-                                            },
-                                            "delete_file" => ConfirmAction::DeleteFile {
-                                                path: details.clone().unwrap_or_default(),
-                                            },
-                                            _ => ConfirmAction::RunCommand {
-                                                command: match &details {
-                                                    Some(d) => format!("[node:{}] {} — {}", input.target, action, d),
-                                                    None => format!("[node:{}] {}", input.target, action),
-                                                },
-                                            },
-                                        };
-                                        matches!(
-                                            self.output.confirm(&confirm_action),
-                                            ConfirmResult::Yes | ConfirmResult::AlwaysYes
-                                        )
-                                    };
-                                    let response = json!({
-                                        "type": "confirm_response",
-                                        "data": { "approved": approved }
-                                    });
-                                    let _ = write.send(Message::Text(response.to_string().into())).await;
-                                }
-                                NodeEvent::AskUser(question) => {
-                                    let output = self.output.clone();
-                                    let answer = tokio::task::spawn_blocking(move || {
-                                        output.ask_user(&question)
-                                    }).await.unwrap_or_default();
-                                    let response = json!({
-                                        "type": "ask_user_response",
-                                        "data": { "answer": answer }
-                                    });
-                                    let _ = write.send(Message::Text(response.to_string().into())).await;
-                                }
-                                NodeEvent::ReviewPlan(plan) => {
-                                    let output = self.output.clone();
-                                    let review = tokio::task::spawn_blocking(move || {
-                                        output.review_plan(&plan)
-                                    }).await.unwrap_or(PlanReview::Reject);
-                                    let (approved, feedback, context) = match review {
-                                        PlanReview::Approve              => (true,  String::new(), String::new()),
-                                        PlanReview::ApproveWithContext(c) => (true,  String::new(), c),
-                                        PlanReview::Reject               => (false, String::new(), String::new()),
-                                        PlanReview::Refine(fb)           => (true,  fb,            String::new()),
-                                    };
-                                    let mut data = json!({ "approved": approved, "feedback": feedback });
-                                    if !context.is_empty() {
-                                        data["context"] = json!(context);
-                                    }
-                                    let response = json!({ "type": "review_plan_response", "data": data });
-                                    let _ = write.send(Message::Text(response.to_string().into())).await;
-                                }
-                                NodeEvent::Done(text) => {
-                                    let final_text = if !text.is_empty() { text } else { streaming_answer };
-                                    let _ = write.send(Message::Close(None)).await;
-                                    self.output.on_stage_end(&format!("Node:{}", input.target));
-                                    return ToolResult::success(format!(
-                                        "{}Node '{}' completed.\n{}", connect_header, input.target, final_text
-                                    ));
-                                }
-                                NodeEvent::Error(msg) => {
-                                    let _ = write.send(Message::Close(None)).await;
-                                    self.output.on_stage_end(&format!("Node:{}", input.target));
-                                    return ToolResult::error(format!(
-                                        "Node '{}' error: {}", input.target, msg
-                                    ));
-                                }
-                                NodeEvent::Ready { workdir, sandbox, caps, virtual_nodes } => {
-                                    let wd = workdir.as_deref().unwrap_or("(server default)");
-                                    // Translate legacy bool to isolation string for display.
-                                    let sb = match sandbox {
-                                        Some(true)  => "sandbox",
-                                        Some(false) => "normal",
-                                        None        => "container",
-                                    };
-
-                                    // Build caps summary line.
-                                    let caps_summary = if let Some(ref c) = caps {
-                                        let arch = c["arch"].as_str().unwrap_or("?");
-                                        let os   = c["os"].as_str().unwrap_or("?");
-                                        let cpu  = c["cpu_cores"].as_u64().unwrap_or(0);
-                                        let ram  = c["ram_gb"].as_u64().unwrap_or(0);
-                                        let gpus_arr = c["gpus"].as_array().map(|a| a.len()).unwrap_or(0);
-                                        let gpu_str = if gpus_arr > 0 {
-                                            let names: Vec<&str> = c["gpus"].as_array().unwrap()
-                                                .iter().filter_map(|g| g["name"].as_str()).collect();
-                                            format!("  GPU: {}", names.join(", "))
-                                        } else {
-                                            String::new()
-                                        };
-                                        format!(
-                                            "  Arch: {}/{}  CPU: {} cores  RAM: {} GiB{}",
-                                            os, arch, cpu, ram, gpu_str
-                                        )
-                                    } else {
-                                        String::new()
-                                    };
-
-                                    // Build virtual-nodes table.
-                                    let vnode_table = if !virtual_nodes.is_empty() {
-                                        let mut t = String::from("\n  Virtual nodes:\n");
-                                        t.push_str(&format!(
-                                            "  {:<22} {:<12} {}\n",
-                                            "NAME", "ISOLATION", "WORKDIR / TAGS"
-                                        ));
-                                        t.push_str(&format!("  {}\n", "─".repeat(72)));
-                                        for vn in &virtual_nodes {
-                                            let sb_str = match vn.isolation.as_deref() {
-                                                Some(m) => m,
-                                                None => if vn.sandbox { "sandbox" } else { "container" },
-                                            };
-                                            let tags_str = if vn.tags.is_empty() {
-                                                String::new()
-                                            } else {
-                                                format!("  [{}]", vn.tags.join(", "))
-                                            };
-                                            t.push_str(&format!(
-                                                "  {:<22} {:<8} {}{}\n",
-                                                vn.name, sb_str, vn.workdir, tags_str
-                                            ));
-                                        }
-                                        t
-                                    } else {
-                                        String::new()
-                                    };
-
-                                    connect_header = format!(
-                                        "[Node '{}' connected — workdir: {}  isolation: {}]\n{}{}\n",
-                                        input.target, wd, sb, caps_summary, vnode_table
-                                    );
-
-                                    // Update the in-process route table so future any:tag calls work.
-                                    if !virtual_nodes.is_empty() {
-                                        let raw_url = if url.contains('?') {
-                                            url.splitn(2, '?').next().unwrap_or(&url).to_string()
-                                        } else {
-                                            url.clone()
-                                        };
-                                        workspaces::update_route_table(
-                                            &input.target, &raw_url, &virtual_nodes,
-                                        );
-                                    }
-
-                                    self.output.on_warning(&format!(
-                                        "[call_node] node '{}' ready — workdir={} sandbox={}",
-                                        input.target, wd, sb
-                                    ));
-                                }
-                                _ => {}
-                            }
-                        }
-                        Some(Ok(Message::Close(_))) | None => break,
-                        Some(Err(e)) => {
-                            self.output.on_stage_end(&format!("Node:{}", input.target));
-                            return ToolResult::error(format!("WebSocket error from node '{}': {}", input.target, e));
-                        }
-                        _ => {}
-                    }
-                }
-                _ = tokio::time::sleep(PING_INTERVAL) => {
-                    let elapsed = start_time.elapsed();
-                    let idle    = last_msg_at.elapsed();
-                    let elapsed_min = elapsed.as_secs() / 60;
-
-                    if is_interrupted() {
-                        let _ = write.send(Message::Close(None)).await;
-                        self.output.on_stage_end(&format!("Node:{}", input.target));
-                        return ToolResult::error("call_node interrupted by user (Ctrl-C).".to_string());
-                    }
-
-                    if idle >= total_timeout {
-                        let _ = write.send(Message::Close(None)).await;
-                        self.output.on_stage_end(&format!("Node:{}", input.target));
-                        return ToolResult::error(format!(
-                            "Node '{}' timed out: no activity for {}s (total elapsed {}s).",
-                            input.target, idle.as_secs(), elapsed.as_secs()
-                        ));
-                    }
-
-                    if idle >= INACTIVITY_ABORT {
-                        let _ = write.send(Message::Close(None)).await;
-                        self.output.on_stage_end(&format!("Node:{}", input.target));
-                        return ToolResult::error(format!(
-                            "Node '{}' appears stuck: no activity for {}s.",
-                            input.target, idle.as_secs()
-                        ));
-                    }
-
-                    let _ = write.send(Message::Ping(vec![].into())).await;
-
-                    if idle >= INACTIVITY_WARN && idle < INACTIVITY_WARN + PING_INTERVAL {
-                        self.output.on_warning(&format!(
-                            "[node:{}] no activity for {}s — waiting (Ctrl-C to abort)",
-                            input.target, idle.as_secs()
-                        ));
-                    }
-
-                    if elapsed_min > last_reported_min {
-                        last_reported_min = elapsed_min;
-                        self.output.on_warning(&format!(
-                            "[node:{}] {}m{}s elapsed (Ctrl-C to abort)",
-                            input.target, elapsed_min, elapsed.as_secs() % 60
-                        ));
-                    }
-                }
-            }
-        }
-
-        self.output.on_stage_end(&format!("Node:{}", input.target));
-        ToolResult::success(format!(
-            "{}Node '{}' connection closed.\n{}", connect_header, input.target, streaming_answer
-        ))
     }
 }

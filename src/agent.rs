@@ -44,9 +44,9 @@ use crate::confirm::ConfirmAction;
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
 use crate::llm::{self, LlmClient};
-use crate::memory::Memory;
+use crate::memory::{LocalFileMemory, MemoryEvent, MemoryProvider};
 use crate::model_manager;
-use crate::output::AgentOutput;
+use crate::output::{AgentOutput, SilentOutput};
 use crate::path_manager;
 use crate::sandbox::Sandbox;
 use crate::service::{ServiceEvent, SERVICE_EVENT_TX};
@@ -60,7 +60,7 @@ pub struct Agent {
     client: Box<dyn LlmClient>,
     tool_executor: ToolExecutor,
     pub conversation: Conversation,
-    pub memory: Memory,
+    pub memory: Arc<dyn MemoryProvider>,
     total_input_tokens: u64,
     total_output_tokens: u64,
     /// Per-role token usage: maps role name → (input_tokens, output_tokens).
@@ -93,6 +93,8 @@ pub struct Agent {
     pub plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
     /// Hook 事件总线（与 PluginManager 共享同一 Arc）
     hook_bus: Option<Arc<crate::plugin::hook_bus::HookBus>>,
+    /// Number of completed message turns. Used to trigger periodic knowledge extraction.
+    knowledge_extract_turns: u32,
 }
 
 impl Agent {
@@ -195,7 +197,13 @@ impl Agent {
 
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
-        let memory = Memory::load(&project_dir);
+        let memory: Arc<dyn MemoryProvider> = crate::memory::create_memory_provider(
+            &config.memory,
+            &project_dir,
+        ).unwrap_or_else(|e| {
+            tracing::warn!("Failed to create memory provider: {}, falling back to local file memory", e);
+            Arc::new(LocalFileMemory::load(&project_dir))
+        });
         let mut conversation = Conversation::new(&project_dir);
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
@@ -229,6 +237,7 @@ impl Agent {
             force_mode: None,
             plugin_manager,
             hook_bus: None,
+            knowledge_extract_turns: 0,
         };
         
         // Set path manager in tool executor
@@ -252,7 +261,7 @@ impl Agent {
     /// Create agent with a restored conversation
     pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
-        let memory = Memory::load(&project_dir);
+        let memory: Arc<dyn MemoryProvider> = Arc::new(LocalFileMemory::load(&project_dir));
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
@@ -284,6 +293,7 @@ impl Agent {
             force_mode: None,
             plugin_manager,
             hook_bus: None,
+            knowledge_extract_turns: 0,
         };
         
         // Set path manager in tool executor
@@ -614,8 +624,17 @@ impl Agent {
             "You are a task classifier. Reply with exactly one word.".to_string();
         classify_conv.add_message(Message::user(&prompt));
 
-        // Use a fast call with no tools — minimal cost
-        match self.call_llm_as_role("router", &classify_conv, &[]).await {
+        // Use SilentOutput so the classifier's single-word reply never reaches the user.
+        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
+        let role_cfg = self.role_configs.get("router");
+        let cfg = role_cfg.unwrap_or(&self.config);
+        let result = match cfg.provider {
+            Provider::Anthropic =>
+                streaming::stream_anthropic_response(cfg, &classify_conv, &[], &*silent).await,
+            Provider::OpenAI | Provider::Compatible =>
+                streaming::stream_openai_response(cfg, &classify_conv, &[], &*silent).await,
+        };
+        match result {
             Ok(response) => {
                 let text: String = response
                     .content
@@ -763,7 +782,7 @@ impl Agent {
                 }
                 new_mode
             }
-            // Cancel 不阻断路由，降级为原决策
+            // Cancel / Approved 不阻断路由，降级为原决策
             HookResult::Cancel { reason } => {
                 self.output.on_warning(&format!(
                     "[hook] router.decision cancelled ({}), keeping '{}'",
@@ -771,7 +790,7 @@ impl Agent {
                 ));
                 mode
             }
-            HookResult::Continue => mode,
+            HookResult::Approved { .. } | HookResult::Continue => mode,
         }
     }
 
@@ -820,6 +839,59 @@ impl Agent {
         }
     }
 
+    /// Query the hook system to see if a confirmation should be auto-approved,
+    /// auto-denied, or left to the normal UI flow.
+    ///
+    /// Returns:
+    ///   `Some(true)`  — hook approved; skip UI prompt
+    ///   `Some(false)` — hook denied;   skip UI prompt
+    ///   `None`        — no hook verdict; fall through to normal UI
+    async fn check_confirm_via_hook(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+    ) -> Option<bool> {
+        let bus = self.hook_bus.as_ref()?;
+
+        let session_id = self.session_id.clone().unwrap_or_else(|| "none".to_string());
+
+        let action_type = match tool_name {
+            "write_file"                    => "write_file",
+            "edit_file" | "multi_edit_file" => "edit_file",
+            "run_command"                   => "run_command",
+            "delete_file"                   => "delete_file",
+            _                               => tool_name,
+        };
+
+        let path    = tool_input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let command = tool_input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+
+        let event = crate::plugin::hook_bus::HookEvent::new(
+            "confirm.before",
+            session_id,
+            serde_json::json!({
+                "tool_name":   tool_name,
+                "action_type": action_type,
+                "path":        path,
+                "command":     command,
+            }),
+        );
+
+        match bus.emit_intercepting(event).await {
+            crate::plugin::hook_bus::HookResult::Approved { message } => {
+                if let Some(msg) = &message {
+                    self.output.on_warning(&format!("[hook:confirm] ✅ {}", msg));
+                }
+                Some(true)
+            }
+            crate::plugin::hook_bus::HookResult::Cancel { reason } => {
+                self.output.on_warning(&format!("[hook:confirm] 🚫 blocked: {}", reason));
+                Some(false)
+            }
+            _ => None, // Continue → fall through to UI
+        }
+    }
+
     /// Process a user message and return the final text response.
     /// This handles the full agent loop: send message → receive response →
     /// if tool use → execute tools → send results → repeat until done.
@@ -845,8 +917,18 @@ impl Agent {
             }
         }
 
+        // Prepend relevant memory context to this turn (file-map + session-log scored
+        // by keyword overlap with the user message). This keeps the system prompt lean
+        // while still surfacing relevant history at each turn.
+        let recall = self.memory.recall_relevant(user_input);
+        let enriched_input = if recall.is_empty() {
+            user_input.to_string()
+        } else {
+            format!("{}\n\n{}", recall, user_input)
+        };
+
         // Add user message
-        self.conversation.add_message(Message::user(user_input));
+        self.conversation.add_message(Message::user(&enriched_input));
 
         // Check context window before sending
         self.check_and_manage_context().await;
@@ -854,6 +936,11 @@ impl Agent {
         let tool_defs = Self::with_ask_user(self.tool_executor.definitions());
         let mut iterations = 0;
         let max_iterations = self.config.max_tool_iterations;
+
+        // Per-turn tracking for record_interaction (zero extra LLM calls)
+        let mut turn_tools_used: Vec<String> = Vec::new();
+        let mut turn_had_errors = false;
+        let turn_start_tokens = self.total_input_tokens + self.total_output_tokens;
 
         loop {
             // Check for Ctrl-C interrupt between iterations
@@ -931,10 +1018,33 @@ impl Agent {
                 })
                 .collect();
 
+            // ── Parallel call_node pre-execution ─────────────────────────────
+            // If the LLM issued multiple call_node in one turn they are
+            // independent by definition — run them concurrently and cache
+            // the results so the sequential for-loop below can pick them up.
+            let parallel_call_nodes: Vec<_> = tool_uses
+                .iter()
+                .filter(|(_, name, _)| name == "call_node")
+                .collect();
+            let mut call_node_cache: std::collections::HashMap<String, crate::tools::ToolResult> =
+                std::collections::HashMap::new();
+            if parallel_call_nodes.len() > 1 {
+                self.output.on_warning(&format!(
+                    "[call_node] Running {} nodes in parallel…",
+                    parallel_call_nodes.len()
+                ));
+                let futs = parallel_call_nodes.iter().map(|(id, name, input)| {
+                    let id   = id.clone();
+                    let exec = self.tool_executor.execute(name, input);
+                    async move { (id, exec.await) }
+                });
+                let paired = futures::future::join_all(futs).await;
+                for (id, result) in paired {
+                    call_node_cache.insert(id, result);
+                }
+            }
+
             for (tool_id, tool_name, tool_input) in tool_uses {
-                // Always show what the LLM wants to do BEFORE asking for
-                // confirmation, so the user has full context.
-                self.output.on_tool_use(&tool_name, &tool_input);
 
                 // ── Virtual tool: ask_user ────────────────────────────────
                 if tool_name == "ask_user" {
@@ -953,27 +1063,36 @@ impl Agent {
 
                 // Check if this tool needs confirmation
                 if needs_confirmation(&tool_name, &tool_input) {
-                    let action = build_confirm_action(&tool_name, &tool_input);
-                    let mut approved = false;
-                    loop {
-                        let result = self.output.confirm(&action);
-                        match result {
-                            crate::confirm::ConfirmResult::Yes
-                            | crate::confirm::ConfirmResult::AlwaysYes => {
-                                approved = true;
-                                break;
+                    // 1. Ask hook system first — a plugin can auto-approve or deny.
+                    let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
+                    let approved = match hook_decision {
+                        Some(decision) => decision,
+                        None => {
+                            // 2. No hook verdict — fall through to normal UI.
+                            let action = build_confirm_action(&tool_name, &tool_input);
+                            let mut ui_approved = false;
+                            loop {
+                                let result = self.output.confirm(&action);
+                                match result {
+                                    crate::confirm::ConfirmResult::Yes
+                                    | crate::confirm::ConfirmResult::AlwaysYes => {
+                                        ui_approved = true;
+                                        break;
+                                    }
+                                    crate::confirm::ConfirmResult::No => break,
+                                    crate::confirm::ConfirmResult::Clarify(question) => {
+                                        // User wants an explanation — ask the LLM
+                                        let explanation = self
+                                            .explain_tool_action(&tool_name, &tool_input, &question)
+                                            .await;
+                                        self.output.on_assistant_text(&explanation);
+                                        // Loop back to re-prompt
+                                    }
+                                }
                             }
-                            crate::confirm::ConfirmResult::No => break,
-                            crate::confirm::ConfirmResult::Clarify(question) => {
-                                // User wants an explanation — ask the LLM
-                                let explanation = self
-                                    .explain_tool_action(&tool_name, &tool_input, &question)
-                                    .await;
-                                self.output.on_assistant_text(&explanation);
-                                // Loop back to re-prompt
-                            }
+                            ui_approved
                         }
-                    }
+                    };
                     if !approved {
                         self.conversation.add_message(Message::tool_result(
                             &tool_id,
@@ -985,13 +1104,20 @@ impl Agent {
                 }
 
                 // For file-modifying tools, show diff preview
-                let result = if matches!(tool_name.as_str(), "edit_file" | "multi_edit_file" | "write_file") {
+                let result = if let Some(cached) = call_node_cache.remove(&tool_id) {
+                    // Already executed in the parallel pre-computation above.
+                    cached
+                } else if matches!(tool_name.as_str(), "edit_file" | "multi_edit_file" | "write_file") {
                     self.execute_with_diff(&tool_name, &tool_input).await
                 } else {
                     self.tool_executor.execute(&tool_name, &tool_input).await
                 };
 
                 self.output.on_tool_result(&tool_name, &result);
+
+                // Track tool name and error status for this turn's episode record
+                turn_tools_used.push(tool_name.clone());
+                if result.is_error { turn_had_errors = true; }
 
                 // Record to persistent memory
                 self.record_tool_to_memory(&tool_name, &tool_input, &result);
@@ -1063,7 +1189,165 @@ impl Agent {
             .map(|m| m.text_content())
             .unwrap_or_default();
 
+        // Periodic knowledge extraction: every 5 turns, silently distill facts.
+        self.knowledge_extract_turns += 1;
+        if self.knowledge_extract_turns % 5 == 0 {
+            self.extract_and_store_knowledge().await;
+        }
+
+        // Record complete interaction episode to intelligent memory.
+        // intent_summary = first sentence of the assistant reply (zero extra tokens).
+        let intent_summary = {
+            let text = final_text.trim();
+            text.split(['.', '\n', '\u{3002}']) // '。' for CJK
+                .next()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| text.chars().take(120).collect())
+        };
+        let turn_tokens = ((self.total_input_tokens + self.total_output_tokens)
+            .saturating_sub(turn_start_tokens)) as u32;
+        let (outcome_ok, outcome_detail) = if turn_had_errors {
+            (false, "One or more tool calls encountered errors".to_string())
+        } else {
+            (true, intent_summary.clone())
+        };
+        self.memory.record_interaction(
+            user_input,
+            &intent_summary,
+            &turn_tools_used,
+            outcome_ok,
+            &outcome_detail,
+            &[], // lessons extracted separately by extract_and_store_knowledge
+            None,
+            turn_tokens,
+        );
+
         Ok(final_text)
+    }
+
+    // ── Knowledge extraction ──────────────────────────────────────────────────
+
+    /// Extract project facts from the recent conversation and store them in memory.
+    ///
+    /// Called automatically every 5 turns inside `process_message`. Uses a
+    /// `SilentOutput` so it produces no visible output.
+    async fn extract_and_store_knowledge(&self) {
+        // Collect the last 10 messages as source material
+        let msgs = &self.conversation.messages;
+        let window: Vec<_> = msgs.iter().rev().take(10).collect();
+        if window.is_empty() {
+            return;
+        }
+
+        let mut context = String::new();
+        for msg in window.into_iter().rev() {
+            let role = match msg.role {
+                Role::User      => "User",
+                Role::Assistant => "Assistant",
+                Role::System    => continue,
+            };
+            context.push_str(&format!("{}: {}\n", role, msg.text_content()));
+        }
+
+        let prompt = format!(
+            "From the conversation below, extract 1-3 concise project facts worth \
+            remembering across sessions. Only facts that are durable (architecture, \
+            file locations, key decisions, recurring patterns). \
+            Return ONLY a bullet list with no preamble: one fact per line starting with `-`.\n\n{}",
+            context
+        );
+
+        let mut conv = Conversation::new(&self.project_dir);
+        conv.system_prompt = "You are a knowledge extractor. Be concise.".to_string();
+        conv.add_message(Message::user(&prompt));
+
+        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
+        let cfg = self.role_configs.get("summarizer").unwrap_or(&self.config);
+        let result = match cfg.provider {
+            Provider::Anthropic =>
+                streaming::stream_anthropic_response(cfg, &conv, &[], &*silent).await,
+            Provider::OpenAI | Provider::Compatible =>
+                streaming::stream_openai_response(cfg, &conv, &[], &*silent).await,
+        };
+
+        if let Ok(response) = result {
+            let text: String = response.content.iter()
+                .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                .collect();
+            let facts: Vec<String> = text.lines()
+                .map(|l| l.trim().trim_start_matches('-').trim().to_string())
+                .filter(|l| l.len() > 10)
+                .take(3)
+                .collect();
+            if !facts.is_empty() {
+                self.memory.record_event(crate::memory::MemoryEvent::KnowledgeExtracted { facts });
+            }
+        }
+    }
+
+    /// Manually consolidate memory: read recent session log and all existing knowledge,
+    /// ask LLM to distill into improved knowledge entries and compress the log.
+    ///
+    /// Called by the `/consolidate` CLI command.
+    pub async fn consolidate_memory(&self) -> anyhow::Result<usize> {
+        let existing_knowledge = self.memory.knowledge();
+        let session_log = self.memory.session_log();
+
+        if session_log.is_empty() && existing_knowledge.is_empty() {
+            return Ok(0);
+        }
+
+        let mut prompt = String::from(
+            "You are distilling an AI agent's memory. \
+            Given the session log and existing knowledge below, \
+            produce an improved, deduplicated list of up to 10 project knowledge facts.\n\
+            Rules: each fact must be a single sentence, durable across sessions, \
+            no timestamps, no trivial observations.\n\
+            Return ONLY the bullet list starting each line with `-`.\n\n"
+        );
+
+        if !existing_knowledge.is_empty() {
+            prompt.push_str("## Existing Knowledge\n");
+            for k in &existing_knowledge {
+                prompt.push_str(&format!("- {}\n", k));
+            }
+        }
+        if !session_log.is_empty() {
+            prompt.push_str("\n## Session Log (most recent activity)\n");
+            for entry in session_log.iter().rev().take(30) {
+                prompt.push_str(&format!("- {}\n", entry));
+            }
+        }
+
+        let mut conv = Conversation::new(&self.project_dir);
+        conv.system_prompt = "You are a memory consolidation assistant.".to_string();
+        conv.add_message(Message::user(&prompt));
+
+        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
+        let cfg = self.role_configs.get("summarizer").unwrap_or(&self.config);
+        let response = match cfg.provider {
+            Provider::Anthropic =>
+                streaming::stream_anthropic_response(cfg, &conv, &[], &*silent).await?,
+            Provider::OpenAI | Provider::Compatible =>
+                streaming::stream_openai_response(cfg, &conv, &[], &*silent).await?,
+        };
+
+        let text: String = response.content.iter()
+            .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+            .collect();
+
+        let facts: Vec<String> = text.lines()
+            .map(|l| l.trim().trim_start_matches('-').trim().to_string())
+            .filter(|l| l.len() > 10)
+            .take(10)
+            .collect();
+
+        let count = facts.len();
+        if count > 0 {
+            self.memory.record_event(crate::memory::MemoryEvent::KnowledgeExtracted { facts });
+        }
+        Ok(count)
     }
 
     /// Execute a tool with diff preview for file modifications
@@ -1165,7 +1449,7 @@ impl Agent {
             Some(plan) => plan,
             None => {
                 // Not enough messages to truncate meaningfully
-                context::truncate_conversation(&mut self.conversation, &self.config.model, &self.project_dir);
+                context::truncate_conversation(&mut self.conversation, &self.config.model, self.memory.as_ref());
                 return;
             }
         };
@@ -1186,7 +1470,7 @@ impl Agent {
             }
         };
 
-        context::apply_truncation(&mut self.conversation, &plan, &summary, &self.project_dir);
+        context::apply_truncation(&mut self.conversation, &plan, &summary, self.memory.as_ref());
     }
 
     /// Use the LLM to generate a narrative summary of truncated messages.
@@ -1267,7 +1551,7 @@ Summary:"#,
 
     /// Record a tool action to persistent memory.
     fn record_tool_to_memory(
-        &mut self,
+        &self,
         tool_name: &str,
         tool_input: &serde_json::Value,
         result: &crate::tools::ToolResult,
@@ -1277,8 +1561,7 @@ Summary:"#,
         match tool_name {
             "read_file" => {
                 if !path.is_empty() {
-                    self.memory.touch_file(path, "read");
-                    self.memory.log_action(&format!("read {}", path));
+                    self.memory.record_event(MemoryEvent::FileRead { path: path.to_string() });
                 }
             }
             "write_file" => {
@@ -1288,14 +1571,15 @@ Summary:"#,
                         .and_then(|v| v.as_str())
                         .map(|c| c.lines().count())
                         .unwrap_or(0);
-                    self.memory.touch_file(path, &format!("written ({} lines)", lines));
-                    self.memory.log_action(&format!("wrote {}", path));
+                    self.memory.record_event(MemoryEvent::FileWritten {
+                        path: path.to_string(),
+                        lines,
+                    });
                 }
             }
             "edit_file" => {
                 if !path.is_empty() && !result.is_error {
-                    self.memory.touch_file(path, "edited");
-                    self.memory.log_action(&format!("edited {}", path));
+                    self.memory.record_event(MemoryEvent::FileEdited { path: path.to_string() });
                 }
             }
             "run_command" => {
@@ -1304,8 +1588,8 @@ Summary:"#,
                         .get("command")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let short_cmd = crate::ui::truncate_str(cmd, 60);
-                    self.memory.log_action(&format!("ran `{}`", short_cmd));
+                    let short_cmd = crate::ui::truncate_str(cmd, 60).to_string();
+                    self.memory.record_event(MemoryEvent::CommandRun { command: short_cmd });
                 }
             }
             "grep_search" => {
@@ -1314,11 +1598,10 @@ Summary:"#,
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !pattern.is_empty() {
-                    self.memory.log_action(&format!("searched for `{}`", pattern));
-                }
-                // If a specific path/directory was targeted, record it
-                if !path.is_empty() {
-                    self.memory.touch_file(path, "searched");
+                    self.memory.record_event(MemoryEvent::GrepSearch {
+                        pattern: pattern.to_string(),
+                        path: if path.is_empty() { None } else { Some(path.to_string()) },
+                    });
                 }
             }
             "file_search" => {
@@ -1327,38 +1610,40 @@ Summary:"#,
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !pattern.is_empty() {
-                    self.memory.log_action(&format!("found files matching `{}`", pattern));
+                    self.memory.record_event(MemoryEvent::FileFind { pattern: pattern.to_string() });
                 }
             }
             "list_directory" => {
                 let dir = if path.is_empty() { "." } else { path };
-                self.memory.log_action(&format!("listed {}", dir));
+                self.memory.record_event(MemoryEvent::DirectoryListed { path: dir.to_string() });
             }
             "multi_edit_file" => {
                 if !path.is_empty() && !result.is_error {
-                    let edit_count = tool_input
+                    let edits = tool_input
                         .get("edits")
                         .and_then(|v| v.as_array())
                         .map(|a| a.len())
                         .unwrap_or(0);
-                    self.memory.touch_file(path, &format!("multi-edited ({} edits)", edit_count));
-                    self.memory.log_action(&format!("multi-edited {} ({} edits)", path, edit_count));
+                    self.memory.record_event(MemoryEvent::FileMultiEdited {
+                        path: path.to_string(),
+                        edits,
+                    });
                 }
             }
             "batch_read_files" => {
                 if let Some(paths) = tool_input.get("paths").and_then(|v| v.as_array()) {
-                    for p in paths {
-                        if let Some(s) = p.as_str() {
-                            self.memory.touch_file(s, "read");
-                        }
+                    let collected: Vec<String> = paths
+                        .iter()
+                        .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                        .collect();
+                    if !collected.is_empty() {
+                        self.memory.record_event(MemoryEvent::BatchFilesRead { paths: collected });
                     }
-                    self.memory.log_action(&format!("batch-read {} files", paths.len()));
                 }
             }
             "read_pdf" => {
                 if !path.is_empty() {
-                    self.memory.touch_file(path, "read (PDF)");
-                    self.memory.log_action(&format!("read PDF {}", path));
+                    self.memory.record_event(MemoryEvent::PdfRead { path: path.to_string() });
                 }
             }
             "think" => {
@@ -1366,17 +1651,13 @@ Summary:"#,
             }
             _ => {}
         }
-
-        // Auto-save memory (silent)
-        if let Err(e) = self.memory.save() {
-            tracing::warn!("Failed to save memory: {}", e);
-        }
+        // Auto-save is handled inside LocalFileMemory::record_event — no explicit flush needed.
     }
 
     /// Save memory to disk (public, for use from CLI)
     #[allow(dead_code)]
     pub fn save_memory(&self) {
-        if let Err(e) = self.memory.save() {
+        if let Err(e) = self.memory.flush() {
             tracing::warn!("Failed to save memory: {}", e);
         }
     }
@@ -1404,8 +1685,9 @@ Summary:"#,
             }
             if !memory.file_map.is_empty() {
                 memory_section.push_str("\n\n## Known Important Files");
-                for (path, desc) in &memory.file_map {
-                    memory_section.push_str(&format!("\n- {}: {}", path, desc));
+                for entry in &memory.file_map {
+                    memory_section.push_str(&format!("\n- {} [{}] {}: {}",
+                        entry.path, entry.importance_label(), entry.last_accessed, entry.description));
                 }
             }
         }
@@ -1728,25 +2010,34 @@ Begin execution now."#,
                 }
 
                 if !readonly_only && needs_confirmation(&tool_name, &tool_input) {
-                    let action = build_confirm_action(&tool_name, &tool_input);
-                    let mut approved = false;
-                    loop {
-                        let result = self.output.confirm(&action);
-                        match result {
-                            crate::confirm::ConfirmResult::Yes
-                            | crate::confirm::ConfirmResult::AlwaysYes => {
-                                approved = true;
-                                break;
+                    // 1. Ask hook system first — a plugin can auto-approve or deny.
+                    let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
+                    let approved = match hook_decision {
+                        Some(decision) => decision,
+                        None => {
+                            // 2. No hook verdict — fall through to normal UI.
+                            let action = build_confirm_action(&tool_name, &tool_input);
+                            let mut ui_approved = false;
+                            loop {
+                                let result = self.output.confirm(&action);
+                                match result {
+                                    crate::confirm::ConfirmResult::Yes
+                                    | crate::confirm::ConfirmResult::AlwaysYes => {
+                                        ui_approved = true;
+                                        break;
+                                    }
+                                    crate::confirm::ConfirmResult::No => break,
+                                    crate::confirm::ConfirmResult::Clarify(question) => {
+                                        let explanation = self
+                                            .explain_tool_action(&tool_name, &tool_input, &question)
+                                            .await;
+                                        self.output.on_assistant_text(&explanation);
+                                    }
+                                }
                             }
-                            crate::confirm::ConfirmResult::No => break,
-                            crate::confirm::ConfirmResult::Clarify(question) => {
-                                let explanation = self
-                                    .explain_tool_action(&tool_name, &tool_input, &question)
-                                    .await;
-                                self.output.on_assistant_text(&explanation);
-                            }
+                            ui_approved
                         }
-                    }
+                    };
                     if !approved {
                         stage_conv.add_message(Message::tool_result(
                             &tool_id,
@@ -1780,7 +2071,7 @@ Begin execution now."#,
             // the window limit and cause premature loop termination.
             let status = context::check_context(&stage_conv, &self.config.model);
             if status.needs_truncation {
-                context::truncate_conversation(&mut stage_conv, &self.config.model, &self.project_dir);
+                context::truncate_conversation(&mut stage_conv, &self.config.model, self.memory.as_ref());
             }
         }
 

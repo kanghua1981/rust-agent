@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 interface HeaderProps {
   onOpenConnect: () => void;
@@ -14,7 +15,8 @@ const statusConfig = {
 };
 
 export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) => {
-  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges, config } = useAgentStore();
+  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges, config, messages, toolCalls, pendingConfirmations } = useAgentStore();
+  const { newSession } = useWebSocket();
   const cfg = statusConfig[connectionStatus];
   const isolation = config.isolation ?? 'container';
 
@@ -44,15 +46,22 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
         </span>
       </div>
 
-      {/* Status pill */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: '6px',
-        padding: '4px 10px',
-        background: 'var(--bg3)',
-        border: '1px solid var(--border)',
-        borderRadius: '20px',
-        flexShrink: 0,
-      }}>
+      {/* Status pill - clickable to open connection modal */}
+      <button
+        onClick={onOpenConnect}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '4px 10px',
+          background: 'var(--bg3)',
+          border: '1px solid var(--border)',
+          borderRadius: '20px',
+          flexShrink: 0,
+          cursor: 'pointer',
+          transition: 'all 0.15s',
+        }}
+        onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg4)'}
+        onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg3)'}
+      >
         <span style={{
           width: '7px', height: '7px', borderRadius: '50%',
           background: cfg.dot,
@@ -62,7 +71,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
         }} />
         <span style={{ fontSize: '12px', color: cfg.color, fontWeight: '500' }}>{cfg.label}</span>
         {isProcessing && <span className="spin" style={{ fontSize: '11px', color: 'var(--accent)' }}>⟳</span>}
-      </div>
+      </button>
 
       {/* Center: server info */}
       {connectionStatus === 'connected' && (
@@ -90,7 +99,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
               color: pendingChanges > 0 ? '#f59e0b' : '#10b981',
               flexShrink: 0,
             }}>
-              🔒 沙筱{pendingChanges > 0 ? ` · ${pendingChanges} 待提交` : ''}
+              🔒 沙盒{pendingChanges > 0 ? ` · ${pendingChanges} 待提交` : ''}
             </span>
           ) : isolation === 'container' ? (
             <span style={{
@@ -122,42 +131,194 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
         </div>
       )}
 
-      {/* Actions */}
-      <div style={{ display: 'flex', gap: '8px', flexShrink: 0, marginLeft: 'auto' }}>
-        {connectionStatus !== 'connected' ? (
-          <button
-            onClick={onOpenConnect}
-            style={{
-              padding: '5px 14px',
-              background: 'var(--accent)',
-              color: '#fff',
-              borderRadius: '7px',
+      {/* Stats badges - 只在连接状态下显示 */}
+      {connectionStatus === 'connected' && (
+        <div style={{ display: 'flex', gap: '6px', flexShrink: 0, marginLeft: 'auto' }}>
+          {/* 消息数量徽章 */}
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '2px 8px',
+            background: 'var(--bg3)',
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            fontSize: '11px',
+            fontWeight: '500',
+            color: 'var(--text2)',
+            flexShrink: 0,
+          }}>
+            <span>💬</span>
+            <span>{messages.length}</span>
+          </div>
+          
+          {/* 工具调用徽章 */}
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '2px 8px',
+            background: 'var(--bg3)',
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            fontSize: '11px',
+            fontWeight: '500',
+            color: 'var(--text2)',
+            flexShrink: 0,
+          }}>
+            <span>🔨</span>
+            <span>{toolCalls.length}</span>
+          </div>
+          
+          {/* 待确认徽章（只在有确认时显示） */}
+          {pendingConfirmations.length > 0 && (
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '2px 8px',
+              background: 'rgba(245,158,11,0.15)',
+              border: '1px solid rgba(245,158,11,0.4)',
+              borderRadius: '10px',
+              fontSize: '11px',
               fontWeight: '500',
-              fontSize: '13px',
-              transition: 'opacity 0.15s',
-            }}
-            onMouseOver={(e) => (e.currentTarget.style.opacity = '0.85')}
-            onMouseOut={(e) => (e.currentTarget.style.opacity = '1')}
-          >
-            连接服务器
-          </button>
-        ) : (
+              color: '#f59e0b',
+              flexShrink: 0,
+            }}>
+              <span>⏳</span>
+              <span>{pendingConfirmations.length}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 快捷操作工具栏 - 只在连接状态下显示 */}
+      {connectionStatus === 'connected' && (
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '6px', 
+          marginLeft: '12px',
+          flexShrink: 0,
+        }}>
+          
+          {/* 运行模式快捷切换 */}
+          <div style={{ position: 'relative' }}>
+            <select
+              value={config.agentMode || 'auto'}
+              onChange={(e) => {
+                const newMode = e.target.value as 'auto' | 'simple' | 'plan' | 'pipeline';
+                useAgentStore.getState().setConfig({ agentMode: newMode });
+              }}
+              style={{
+                padding: '4px 8px 4px 28px',
+                background: 'var(--bg3)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                fontSize: '11px',
+                color: 'var(--text)',
+                cursor: 'pointer',
+                appearance: 'none',
+                minWidth: '100px',
+              }}
+              title="切换运行模式"
+            >
+              <option value="auto">🤖 自动</option>
+              <option value="simple">⚡ 单层</option>
+              <option value="plan">📋 计划</option>
+              <option value="pipeline">🔀 流水线</option>
+            </select>
+            <span style={{
+              position: 'absolute',
+              left: '8px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              fontSize: '12px',
+              pointerEvents: 'none',
+            }}>
+              {config.agentMode === 'auto' ? '🤖' : 
+               config.agentMode === 'simple' ? '⚡' : 
+               config.agentMode === 'plan' ? '📋' : '🔀'}
+            </span>
+          </div>
+
+          {/* 清空会话按钮 */}
           <button
-            onClick={onDisconnect}
-            style={{
-              padding: '5px 14px',
-              background: 'var(--red-dim)',
-              color: 'var(--red)',
-              borderRadius: '7px',
-              fontWeight: '500',
-              fontSize: '13px',
-              border: '1px solid rgba(239,68,68,0.3)',
+            onClick={() => {
+              if (window.confirm('确定要清空当前会话的所有消息吗？此操作不可撤销。')) {
+                useAgentStore.getState().clearSession();
+              }
             }}
+            style={{
+              padding: '4px 10px',
+              background: 'var(--bg3)',
+              border: '1px solid var(--border)',
+              borderRadius: '6px',
+              fontSize: '11px',
+              color: 'var(--text2)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              transition: 'all 0.15s',
+            }}
+            onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg4)'}
+            onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg3)'}
+            title="清空会话 (Ctrl+Shift+C)"
           >
-            断开
+            <span>🗑️</span>
+            <span>清空</span>
           </button>
-        )}
-      </div>
+
+          {/* 新建会话按钮 */}
+          <button
+            onClick={() => {
+              newSession();
+            }}
+            style={{
+              padding: '4px 10px',
+              background: 'var(--bg3)',
+              border: '1px solid var(--border)',
+              borderRadius: '6px',
+              fontSize: '11px',
+              color: 'var(--text2)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              transition: 'all 0.15s',
+            }}
+            onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg4)'}
+            onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg3)'}
+            title="新建会话 (Ctrl+Shift+N)"
+          >
+            <span>➕</span>
+            <span>新建</span>
+          </button>
+
+        </div>
+      )}
+
+      {/* Disconnect button - only shown when connected */}
+      {connectionStatus === 'connected' && (
+        <button
+          onClick={onDisconnect}
+          style={{
+            padding: '5px 14px',
+            background: 'var(--red-dim)',
+            color: 'var(--red)',
+            borderRadius: '7px',
+            fontWeight: '500',
+            fontSize: '13px',
+            border: '1px solid rgba(239,68,68,0.3)',
+            transition: 'opacity 0.15s',
+          }}
+          onMouseOver={(e) => (e.currentTarget.style.opacity = '0.85')}
+          onMouseOut={(e) => (e.currentTarget.style.opacity = '1')}
+        >
+          断开
+        </button>
+      )}
     </header>
   );
 };
