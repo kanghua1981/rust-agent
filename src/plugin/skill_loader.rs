@@ -60,12 +60,29 @@ impl SkillLoader {
         let entries = std::fs::read_dir(&skills_dir)
             .map_err(|e| PluginError::Io(e))?;
         
-        for entry in entries {
-            let entry = entry.map_err(|e| PluginError::Io(e))?;
-            let path = entry.path();
-            
-            // 只处理Markdown文件
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
+        let mut all_paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        all_paths.sort();
+
+        for path in all_paths {
+            if path.is_dir() {
+                // 目录型技能：目录内含 SKILL.md / README.md
+                match self.load_skill_from_dir(&path, plugin_id) {
+                    Ok(Some(skill)) => {
+                        skills.push(skill.clone());
+                        self.register_skill(skill, plugin_id)?;
+                    }
+                    Ok(None) => {
+                        tracing::debug!("Skipping directory (no entry file): {:?}", path);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load directory skill from {:?}: {}", path, e);
+                    }
+                }
+            } else if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
+                // 单文件型技能
                 match self.load_skill_from_markdown(&path, plugin_id) {
                     Ok(skill) => {
                         skills.push(skill.clone());
@@ -82,6 +99,107 @@ impl SkillLoader {
         Ok(skills)
     }
     
+    /// 查找目录型技能的入口文件（SKILL.md 优先，其次 README.md，大小写不敏感）
+    fn find_readme(skill_dir: &Path) -> Option<PathBuf> {
+        for candidate in &["SKILL.md", "skill.md", "README.md", "readme.md", "Readme.md"] {
+            let p = skill_dir.join(candidate);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// 从目录型技能加载技能定义
+    ///
+    /// 读取目录内的入口文件，并将同目录下的其他关联文件附加到内容末尾，
+    /// 以便 LLM 知道可以通过 `read_file` / `run_command` 使用这些文件。
+    fn load_skill_from_dir(&self, skill_dir: &Path, plugin_id: &str) -> Result<Option<SkillDefinition>, PluginError> {
+        let readme = match Self::find_readme(skill_dir) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        let raw = std::fs::read_to_string(&readme).map_err(PluginError::Io)?;
+        let raw_trimmed = raw.trim();
+        if raw_trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        let dir_stem = skill_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let (name, description, tags) = self.parse_frontmatter(raw_trimmed, &dir_stem);
+
+        // 剥离 frontmatter，只保留正文
+        let body = self.strip_frontmatter(raw_trimmed);
+
+        // 收集关联文件（排除入口文件自身）
+        let assets = Self::collect_dir_assets(skill_dir);
+        let mut content = body.to_string();
+        if !assets.is_empty() {
+            content.push_str(
+                "\n\n### Associated files\n\
+                 Use `read_file` to inspect or `run_command` to execute these assets:\n",
+            );
+            for asset in &assets {
+                content.push_str(&format!("- `{}`\n", asset.display()));
+            }
+        }
+
+        Ok(Some(SkillDefinition {
+            name,
+            description,
+            content,
+            file_path: readme,
+            plugin_id: plugin_id.to_string(),
+            tags,
+        }))
+    }
+
+    /// 剥离 YAML frontmatter，返回正文部分
+    fn strip_frontmatter<'a>(&self, raw: &'a str) -> &'a str {
+        let trimmed = raw.trim_start();
+        if !trimmed.starts_with("---") {
+            return raw;
+        }
+        let after_open = &trimmed[3..];
+        match after_open.find("\n---") {
+            Some(p) => {
+                let after_close = &after_open[p + 4..];
+                after_close.strip_prefix('\n').unwrap_or(after_close)
+            }
+            None => raw,
+        }
+    }
+
+    /// 收集目录内所有非入口文件（递归），返回绝对路径列表
+    fn collect_dir_assets(skill_dir: &Path) -> Vec<PathBuf> {
+        let mut assets = Vec::new();
+        Self::collect_assets_recursive(skill_dir, &mut assets);
+        assets.sort();
+        assets
+    }
+
+    fn collect_assets_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                Self::collect_assets_recursive(&path, out);
+            } else {
+                let fname = path.file_name().map(|s| s.to_string_lossy().to_lowercase());
+                if matches!(fname.as_deref(), Some("readme.md") | Some("skill.md")) {
+                    continue;
+                }
+                out.push(path);
+            }
+        }
+    }
+
     /// 从Markdown文件加载技能
     fn load_skill_from_markdown(&self, markdown_path: &Path, plugin_id: &str) -> Result<SkillDefinition, PluginError> {
         // 读取Markdown文件
