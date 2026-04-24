@@ -8,14 +8,18 @@ use crate::conversation::{ContentBlock, Conversation, ImageSource, Message};
 
 /// Estimated max context tokens for different models
 pub fn max_context_tokens(model: &str) -> usize {
-    if model.contains("claude") {
+    let model_lower = model.to_lowercase();
+    if model_lower.contains("claude") {
         200_000
-    } else if model.contains("gpt-4o") {
+    } else if model_lower.contains("gpt-4o") {
         128_000
-    } else if model.contains("gpt-4") {
+    } else if model_lower.contains("gpt-4") {
         128_000
-    } else if model.contains("gpt-3.5") {
+    } else if model_lower.contains("gpt-3.5") {
         16_000
+    } else if model_lower.contains("deepseek") {
+        // DeepSeek models support up to 1M tokens
+        1_000_000
     } else {
         // Conservative default
         100_000

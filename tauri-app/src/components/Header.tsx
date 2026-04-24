@@ -1,10 +1,10 @@
 import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
-import { useWebSocket } from '../hooks/useWebSocket';
 
 interface HeaderProps {
   onOpenConnect: () => void;
   onDisconnect: () => void;
+  onNewSession?: () => void;
 }
 
 const statusConfig = {
@@ -14,9 +14,8 @@ const statusConfig = {
   error:        { color: '#ef4444', label: '连接错误', dot: '#ef4444' },
 };
 
-export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onNewSession }) => {
   const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges, config, messages, toolCalls, pendingConfirmations } = useAgentStore();
-  const { newSession } = useWebSocket();
   const cfg = statusConfig[connectionStatus];
   const isolation = config.isolation ?? 'container';
 
@@ -273,7 +272,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect }) =
           {/* 新建会话按钮 */}
           <button
             onClick={() => {
-              newSession();
+              onNewSession?.();
             }}
             style={{
               padding: '4px 10px',

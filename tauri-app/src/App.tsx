@@ -105,6 +105,7 @@ function App() {
       <Header
         onOpenConnect={() => setShowConnect(true)}
         onDisconnect={handleDisconnect}
+        onNewSession={newSession}
       />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
