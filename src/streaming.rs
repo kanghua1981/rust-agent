@@ -174,7 +174,7 @@ pub async fn stream_anthropic_response(
         })
         .collect();
 
-    let thinking_on = config.thinking_enabled == Some(true) || conversation.has_thinking_blocks();
+    let thinking_on = config.use_extended_thinking(conversation);
     let messages = if thinking_on {
         conversation.api_messages_with_thinking()
     } else {
@@ -562,6 +562,9 @@ pub async fn stream_openai_response(
         }
     }
 
+    // Detect if extended thinking should be active — mirrors the Anthropic path logic.
+    let thinking_on = config.use_extended_thinking(conversation);
+
     let mut request_body = serde_json::json!({
         "model": config.model,
         "max_tokens": config.max_tokens,
@@ -584,6 +587,14 @@ pub async fn stream_openai_response(
                 })
             })
             .collect::<Vec<serde_json::Value>>());
+    }
+
+    // Extended thinking / reasoning effort for DeepSeek reasoner & OpenAI reasoner modes.
+    if thinking_on {
+        request_body["thinking"] = serde_json::json!({ "type": "enabled" });
+    }
+    if let Some(ref effort) = config.reasoning_effort {
+        request_body["reasoning_effort"] = serde_json::json!(effort);
     }
 
     let response = client
@@ -610,6 +621,7 @@ pub async fn stream_openai_response(
     let mut input_tokens: u32 = 0;
     let mut output_tokens: u32 = 0;
     let mut is_printing_text = false;
+    let mut is_printing_thinking = false;
 
     while let Some(chunk) = {
         match tokio::time::timeout(STREAM_CHUNK_TIMEOUT, stream.next()).await {
@@ -655,11 +667,21 @@ pub async fn stream_openai_response(
 
             for choice in chunk_response.choices {
                 if let Some(reason) = choice.finish_reason {
+                    // End thinking block if still open when finish_reason arrives.
+                    if is_printing_thinking {
+                        output.on_thinking_end();
+                        is_printing_thinking = false;
+                    }
                     stop_reason = Some(reason);
                 }
 
                 if let Some(reasoning) = choice.delta.reasoning_content {
                     if !reasoning.is_empty() {
+                        if !is_printing_thinking {
+                            output.on_thinking_start();
+                            is_printing_thinking = true;
+                        }
+                        output.on_thinking_token(&reasoning);
                         accumulated_reasoning.push_str(&reasoning);
                     }
                 }
@@ -706,6 +728,10 @@ pub async fn stream_openai_response(
         }
     }
 
+    // End thinking block if stream loop ended without finish_reason closing it.
+    if is_printing_thinking {
+        output.on_thinking_end();
+    }
     if is_printing_text {
         output.on_stream_end();
     }

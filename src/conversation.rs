@@ -40,12 +40,14 @@ pub enum ContentBlock {
         is_error: Option<bool>,
     },
 
-    /// DeepSeek reasoner thinking / extended thinking content.
+    /// Extended thinking content (Anthropic native + DeepSeek reasoner).
     /// Stored in conversation history so it can be echoed back in the next
-    /// request as `reasoning_content` (OpenAI-compatible path) or skipped
-    /// when building Anthropic-format messages.
+    /// request.
     /// `signature` is an opaque token returned by Anthropic that MUST be
-    /// echoed back verbatim — omitting it causes a 400 error.
+    /// echoed back verbatim — omitting it causes a 400 error:
+    ///   "The `content[].thinking` in the thinking mode must be passed back to the API."
+    /// For the DeepSeek OpenAI-compatible path this field is serialized as
+    /// `reasoning_content` instead.
     #[serde(rename = "thinking")]
     Thinking {
         thinking: String,
@@ -309,29 +311,30 @@ Skills management:
         self.api_messages_inner(false)
     }
 
-    /// Returns true if the conversation contains any assistant message where
-    /// thinking blocks with a valid signature co-exist with tool_use blocks.
-    /// Per DeepSeek / Anthropic docs: reasoning_content ONLY needs to be
-    /// echoed back when the assistant turn also made tool calls.  Pure-text
-    /// thinking turns can be omitted to save context tokens.
+    /// Returns true if the conversation contains any assistant message with
+    /// thinking blocks that have a valid signature.
+    ///
+    /// Anthropic REQUIRES `content[].thinking` blocks to be echoed back
+    /// verbatim in ALL subsequent requests when extended thinking is enabled —
+    /// regardless of whether the same message also contains tool_use blocks.
+    /// Failing to do so results in a 400 error:
+    ///   "The `content[].thinking` in the thinking mode must be passed back to the API."
+    ///
     /// Additionally, thinking blocks without a signature cannot be echoed back
     /// (they were stored by an older version of the agent) and are skipped.
     pub fn has_thinking_blocks(&self) -> bool {
         self.messages.iter().any(|m| {
-            let has_signed_thinking = m.content.iter().any(|b| matches!(
+            m.content.iter().any(|b| matches!(
                 b,
                 ContentBlock::Thinking { signature: Some(_), .. }
-            ));
-            let has_tool_use = m.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-            has_signed_thinking && has_tool_use
+            ))
         })
     }
 
-    /// Like `api_messages()` but preserves `thinking` blocks only in assistant
-    /// messages that also contain tool_use blocks.
-    /// Per DeepSeek/Anthropic docs: reasoning_content MUST be echoed back only
-    /// when the assistant turn made tool calls.  Pure-text thinking turns are
-    /// dropped to save context tokens.
+    /// Like `api_messages()` but preserves ALL `thinking` blocks that carry a
+    /// valid signature, regardless of whether the message also contains tool_use
+    /// blocks.  This is required by the Anthropic API: omitting any signed
+    /// thinking block from a subsequent request results in a 400 error.
     pub fn api_messages_with_thinking(&self) -> Vec<serde_json::Value> {
         self.api_messages_inner(true)
     }
@@ -350,13 +353,15 @@ Skills management:
                 Role::System => "system",
             };
 
-            // When selective_thinking is true, include thinking blocks only in
-            // assistant messages that also have tool_use blocks AND only those
-            // thinking blocks that carry a valid signature (DeepSeek/Anthropic
-            // require the signature to be echoed back verbatim; blocks without
-            // a signature — e.g. from older sessions — must be dropped).
+            // When selective_thinking is true, include ALL thinking blocks
+            // that carry a valid signature, regardless of whether the message
+            // also contains tool_use blocks.
+            //
+            // Anthropic REQUIRES thinking blocks to be echoed back in ALL
+            // subsequent requests when extended thinking is enabled. Blocks
+            // without a signature (e.g. from older sessions) must be dropped
+            // because the API has no way to verify them.
             let include_thinking_for_msg = selective_thinking
-                && msg.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
                 && msg.content.iter().any(|b| matches!(
                     b,
                     ContentBlock::Thinking { signature: Some(_), .. }

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::conversation::Conversation;
 use crate::memory::MemoryConfig;
 use crate::model_manager;
 use crate::Args;
@@ -218,5 +219,12 @@ impl Config {
             return self.clone();
         };
         self.with_resolved_model(&resolved)
+    }
+
+    /// Determine if extended thinking should be active for this conversation turn.
+    /// Returns true when explicitly enabled in config OR when the conversation
+    /// already contains thinking blocks (auto-detection for continuity across turns).
+    pub fn use_extended_thinking(&self, conversation: &Conversation) -> bool {
+        self.thinking_enabled == Some(true) || conversation.has_thinking_blocks()
     }
 }
