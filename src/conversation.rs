@@ -44,8 +44,15 @@ pub enum ContentBlock {
     /// Stored in conversation history so it can be echoed back in the next
     /// request as `reasoning_content` (OpenAI-compatible path) or skipped
     /// when building Anthropic-format messages.
+    /// `signature` is an opaque token returned by Anthropic that MUST be
+    /// echoed back verbatim — omitting it causes a 400 error.
     #[serde(rename = "thinking")]
-    Thinking { thinking: String },
+    Thinking {
+        thinking: String,
+        /// Anthropic-specific verification token; absent for DeepSeek/OpenAI paths.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
 }
 
 /// Source of an image content block
@@ -299,6 +306,37 @@ Skills management:
     /// these constraints and trigger 400 errors such as:
     ///   "tool_use ids were found without tool_result blocks immediately after"
     pub fn api_messages(&self) -> Vec<serde_json::Value> {
+        self.api_messages_inner(false)
+    }
+
+    /// Returns true if the conversation contains any assistant message where
+    /// thinking blocks with a valid signature co-exist with tool_use blocks.
+    /// Per DeepSeek / Anthropic docs: reasoning_content ONLY needs to be
+    /// echoed back when the assistant turn also made tool calls.  Pure-text
+    /// thinking turns can be omitted to save context tokens.
+    /// Additionally, thinking blocks without a signature cannot be echoed back
+    /// (they were stored by an older version of the agent) and are skipped.
+    pub fn has_thinking_blocks(&self) -> bool {
+        self.messages.iter().any(|m| {
+            let has_signed_thinking = m.content.iter().any(|b| matches!(
+                b,
+                ContentBlock::Thinking { signature: Some(_), .. }
+            ));
+            let has_tool_use = m.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+            has_signed_thinking && has_tool_use
+        })
+    }
+
+    /// Like `api_messages()` but preserves `thinking` blocks only in assistant
+    /// messages that also contain tool_use blocks.
+    /// Per DeepSeek/Anthropic docs: reasoning_content MUST be echoed back only
+    /// when the assistant turn made tool calls.  Pure-text thinking turns are
+    /// dropped to save context tokens.
+    pub fn api_messages_with_thinking(&self) -> Vec<serde_json::Value> {
+        self.api_messages_inner(true)
+    }
+
+    fn api_messages_inner(&self, selective_thinking: bool) -> Vec<serde_json::Value> {
         if self.messages.is_empty() {
             return Vec::new();
         }
@@ -312,17 +350,32 @@ Skills management:
                 Role::System => "system",
             };
 
-            // Serialize content blocks for this message.
-            // Filter out Thinking blocks: they are stored in history for the
-            // OpenAI-compatible path (which turns them into `reasoning_content`
-            // in its own message builder), but Anthropic / dashscope Anthropic-
-            // compatible APIs do NOT accept `{"type":"thinking",...}` blocks in
-            // requests and will return 400 "Request body format invalid".
-            // Filter out any None / failed-serialization results too.
+            // When selective_thinking is true, include thinking blocks only in
+            // assistant messages that also have tool_use blocks AND only those
+            // thinking blocks that carry a valid signature (DeepSeek/Anthropic
+            // require the signature to be echoed back verbatim; blocks without
+            // a signature — e.g. from older sessions — must be dropped).
+            let include_thinking_for_msg = selective_thinking
+                && msg.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                && msg.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::Thinking { signature: Some(_), .. }
+                ));
+
             let blocks: Vec<serde_json::Value> = msg
                 .content
                 .iter()
-                .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
+                .filter(|b| {
+                    match b {
+                        ContentBlock::Thinking { signature, .. } => {
+                            // Only include thinking blocks if:
+                            // 1. this message qualifies for thinking echo-back, AND
+                            // 2. the block actually has a signature to send
+                            include_thinking_for_msg && signature.is_some()
+                        }
+                        _ => true,
+                    }
+                })
                 .filter_map(|b| serde_json::to_value(b).ok())
                 .collect();
 

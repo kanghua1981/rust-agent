@@ -24,6 +24,7 @@ function ensureAgentPath(url: string): string {
 export const useWebSocket = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const streamingMsgIdRef = useRef<string | null>(null);
+  const thinkingMsgIdRef = useRef<string | null>(null);
   const lastAssistantMsgIdRef = useRef<string | null>(null);
 
   const {
@@ -38,6 +39,8 @@ export const useWebSocket = () => {
     appendToMessage,
     setIsProcessing,
     setStreamingMessageId,
+    setThinkingMessageId,
+    appendToThinking,
     addToolCall,
     updateToolCall,
     addPendingConfirmation,
@@ -201,6 +204,22 @@ export const useWebSocket = () => {
         break;
 
       case 'thinking':
+        break;
+
+      case 'thinking_start':
+        thinkingMsgIdRef.current = lastAssistantMsgIdRef.current;
+        if (thinkingMsgIdRef.current) setThinkingMessageId(thinkingMsgIdRef.current);
+        break;
+
+      case 'thinking_token':
+        if (event.data?.token && thinkingMsgIdRef.current) {
+          appendToThinking(thinkingMsgIdRef.current, event.data.token);
+        }
+        break;
+
+      case 'thinking_end':
+        thinkingMsgIdRef.current = null;
+        setThinkingMessageId(null);
         break;
 
       case 'stream_start':
@@ -404,9 +423,9 @@ export const useWebSocket = () => {
       }
     }
   }, [
-    config.autoApprove, sendRaw, appendToMessage, updateMessage, addMessage,
+    config.autoApprove, sendRaw, appendToMessage, appendToThinking, updateMessage, addMessage,
     addToolCall, updateToolCall, addPendingConfirmation, addDiff,
-    setIsProcessing, setStreamingMessageId, setSessionInfo, setSessionList,
+    setIsProcessing, setStreamingMessageId, setThinkingMessageId, setSessionInfo, setSessionList,
     removeSessionFromList, clearSession, setSandboxBackend, setPendingChanges,
   ]);
 

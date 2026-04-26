@@ -36,6 +36,7 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
   // actually change, NOT on every streaming token.
   const toolCalls = useAgentStore(state => state.toolCalls);
   const diffs = useAgentStore(state => state.diffs);
+  const thinkingMessageId = useAgentStore(state => state.thinkingMessageId);
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   
@@ -115,6 +116,12 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
     d => Math.abs(d.timestamp - message.timestamp) < 60000
   );
 
+  // Thinking display: collapsible, defaults to expanded when streaming, collapsed otherwise
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
+  const isCurrentlyThinking = thinkingMessageId === message.id;
+  const hasThinking = !!message.thinking;
+  const showThinking = hasThinking || isCurrentlyThinking;
+
   return (
     <div
       className="fade-in"
@@ -146,6 +153,41 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
           </span>
           <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{formatTime(message.timestamp)}</span>
         </div>
+
+        {/* Thinking block (collapsible) */}
+        {showThinking && !isUser && (
+          <div style={{ marginBottom: '6px' }}>
+            <div
+              onClick={() => setThinkingExpanded(!thinkingExpanded)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '5px', cursor: 'pointer',
+                fontSize: '12px', color: 'var(--text3)', userSelect: 'none',
+                padding: '3px 8px', borderRadius: '6px',
+                border: '1px solid var(--border)',
+                background: isCurrentlyThinking ? 'rgba(99,102,241,0.06)' : 'transparent',
+                transition: 'background 0.2s',
+              }}
+            >
+              <span>{thinkingExpanded || isCurrentlyThinking ? '▼' : '▶'}</span>
+              <span>💭 {isCurrentlyThinking ? 'Thinking…' : 'Thinking'}</span>
+            </div>
+            {(thinkingExpanded || isCurrentlyThinking) && message.thinking && (
+              <div style={{
+                marginTop: '4px', padding: '8px 12px',
+                borderRadius: '8px',
+                background: 'var(--bg3)',
+                border: '1px solid var(--border)',
+                fontSize: '12px', color: 'var(--text3)',
+                fontStyle: 'italic', whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word', maxHeight: '300px',
+                overflowY: 'auto',
+              }}>
+                {message.thinking}
+                {isCurrentlyThinking && <span className="cursor" />}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Message bubble */}
         {(message.content || isStreaming) && (

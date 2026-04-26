@@ -54,6 +54,9 @@ export interface LoadSessionByIdMessage extends BaseMessage {
 // 服务器发送给客户端的事件
 export type ServerEvent =
   | ThinkingEvent
+  | ThinkingStartEvent
+  | ThinkingTokenEvent
+  | ThinkingEndEvent
   | StreamStartEvent
   | StreamingTokenEvent
   | StreamEndEvent
@@ -271,6 +274,23 @@ export interface ThinkingEvent extends BaseMessage {
   data: {};
 }
 
+export interface ThinkingStartEvent extends BaseMessage {
+  type: 'thinking_start';
+  data: {};
+}
+
+export interface ThinkingTokenEvent extends BaseMessage {
+  type: 'thinking_token';
+  data: {
+    token: string;
+  };
+}
+
+export interface ThinkingEndEvent extends BaseMessage {
+  type: 'thinking_end';
+  data: {};
+}
+
 export interface RoleHeaderEvent extends BaseMessage {
   type: 'role_header';
   data: { label: string; model: string };
@@ -443,6 +463,8 @@ export interface Message {
   content: string;
   timestamp: number;
   toolCalls?: ToolCall[];
+  // Optional thinking content (streamed from thinking_start/thinking_token/thinking_end)
+  thinking?: string;
   // Optional metadata for special system messages (e.g. pipeline stage headers)
   meta?: { stageLabel?: string; stageModel?: string; stageEnd?: boolean };
 }

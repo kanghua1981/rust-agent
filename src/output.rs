@@ -67,6 +67,15 @@ pub trait AgentOutput: Send + Sync {
     /// The LLM is processing (spinner / "thinking …").
     fn on_thinking(&self);
 
+    /// Called when the model begins a thinking / reasoning block.
+    fn on_thinking_start(&self) {}
+
+    /// A single streaming token from a thinking / reasoning block.
+    fn on_thinking_token(&self, _token: &str) {}
+
+    /// Called when the thinking / reasoning block ends.
+    fn on_thinking_end(&self) {}
+
     /// Show which role/model is about to respond.
     /// `label`  — e.g. "🤖 Agent", "🧠 Planner", "⚙️  Executor", "🔍 Checker".
     /// `model`  — display name of the model being called.
@@ -197,6 +206,26 @@ impl CliOutput {
 impl AgentOutput for CliOutput {
     fn on_thinking(&self) {
         crate::ui::print_thinking();
+    }
+
+    fn on_thinking_start(&self) {
+        use colored::Colorize;
+        print!("\r{}", " ".repeat(20)); // clear the spinner line
+        print!("\r{}  ", "💭".dimmed());
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+    }
+
+    fn on_thinking_token(&self, token: &str) {
+        use colored::Colorize;
+        use std::io::Write;
+        print!("{}", token.dimmed());
+        std::io::stdout().flush().ok();
+    }
+
+    fn on_thinking_end(&self) {
+        use colored::Colorize;
+        println!("\n{}", "─ ─ ─".dimmed());
     }
 
     fn on_role_header(&self, label: &str, model: &str) {
@@ -456,6 +485,18 @@ impl StdioOutput {
 impl AgentOutput for StdioOutput {
     fn on_thinking(&self) {
         self.emit("thinking", serde_json::json!({}));
+    }
+
+    fn on_thinking_start(&self) {
+        self.emit("thinking_start", serde_json::json!({}));
+    }
+
+    fn on_thinking_token(&self, token: &str) {
+        self.emit("thinking_token", serde_json::json!({ "token": token }));
+    }
+
+    fn on_thinking_end(&self) {
+        self.emit("thinking_end", serde_json::json!({}));
     }
 
     fn on_role_header(&self, label: &str, model: &str) {
@@ -805,6 +846,18 @@ impl WsOutput {
 impl AgentOutput for WsOutput {
     fn on_thinking(&self) {
         self.emit("thinking", serde_json::json!({}));
+    }
+
+    fn on_thinking_start(&self) {
+        self.emit("thinking_start", serde_json::json!({}));
+    }
+
+    fn on_thinking_token(&self, token: &str) {
+        self.emit("thinking_token", serde_json::json!({ "token": token }));
+    }
+
+    fn on_thinking_end(&self) {
+        self.emit("thinking_end", serde_json::json!({}));
     }
 
     fn on_role_header(&self, label: &str, model: &str) {

@@ -16,6 +16,8 @@ pub struct OpenAIClient {
     model: String,
     max_tokens: u32,
     temperature: f32,
+    thinking_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,6 +28,10 @@ struct OpenAIRequest {
     messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +94,8 @@ impl OpenAIClient {
             model: config.model.clone(),
             max_tokens: config.max_tokens,
             temperature: config.temperature,
+            thinking_enabled: config.thinking_enabled,
+            reasoning_effort: config.reasoning_effort.clone(),
         }
     }
 
@@ -175,7 +183,7 @@ impl OpenAIClient {
                 crate::conversation::Role::Assistant => {
                     let text = msg.text_content();
                     let reasoning = msg.content.iter().find_map(|b| {
-                        if let ContentBlock::Thinking { thinking } = b {
+                        if let ContentBlock::Thinking { thinking, .. } = b {
                             Some(thinking.clone())
                         } else {
                             None
@@ -253,6 +261,10 @@ impl LlmClient for OpenAIClient {
             temperature: self.temperature,
             messages: self.format_messages(conversation),
             tools: self.format_tools(tools),
+            thinking: self.thinking_enabled.map(|enabled| {
+                serde_json::json!({ "type": if enabled { "enabled" } else { "disabled" } })
+            }),
+            reasoning_effort: self.reasoning_effort.clone(),
         };
 
         tracing::debug!("Sending request to OpenAI-compatible API");
@@ -292,7 +304,7 @@ impl LlmClient for OpenAIClient {
         // Store them first so they're echoed back in the next request.
         if let Some(reasoning) = choice.message.reasoning_content {
             if !reasoning.is_empty() {
-                content.push(ContentBlock::Thinking { thinking: reasoning });
+                content.push(ContentBlock::Thinking { thinking: reasoning, signature: None });
             }
         }
 

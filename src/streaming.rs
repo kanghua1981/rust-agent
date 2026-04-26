@@ -140,6 +140,7 @@ struct BlockAccumulator {
     tool_id: String,           // tool use id
     tool_name: String,         // tool name
     tool_input_json: String,   // accumulated JSON string for tool input
+    signature: String,         // Anthropic thinking signature (must be echoed back)
 }
 
 /// Maximum time to wait for the next SSE chunk before declaring the stream dead.
@@ -173,17 +174,32 @@ pub async fn stream_anthropic_response(
         })
         .collect();
 
+    let thinking_on = config.thinking_enabled == Some(true) || conversation.has_thinking_blocks();
+    let messages = if thinking_on {
+        conversation.api_messages_with_thinking()
+    } else {
+        conversation.api_messages()
+    };
+
     let mut request_body = serde_json::json!({
         "model": config.model,
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
         "system": conversation.system_prompt,
-        "messages": conversation.api_messages(),
+        "messages": messages,
         "stream": true,
     });
 
     if !formatted_tools.is_empty() {
         request_body["tools"] = serde_json::json!(formatted_tools);
+    }
+
+    // Extended thinking / reasoning effort (DeepSeek V4 / Claude 3.7+)
+    if thinking_on {
+        request_body["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": 8000 });
+    }
+    if let Some(ref effort) = config.reasoning_effort {
+        request_body["output_config"] = serde_json::json!({ "effort": effort });
     }
 
     tracing::debug!(
@@ -298,6 +314,7 @@ pub async fn stream_anthropic_response(
                             tool_id: String::new(),
                             tool_name: String::new(),
                             tool_input_json: String::new(),
+                            signature: String::new(),
                         });
                     }
 
@@ -318,8 +335,9 @@ pub async fn stream_anthropic_response(
                             content_block.id.unwrap_or_default();
                         blocks[index].tool_name =
                             content_block.name.unwrap_or_default();
+                    } else if content_block.block_type == "thinking" {
+                        output.on_thinking_start();
                     }
-                    // "thinking" blocks: accumulate via ThinkingDelta below
                 }
                 StreamEvent::ContentBlockDelta { index, delta } => {
                     if index < blocks.len() {
@@ -339,18 +357,22 @@ pub async fn stream_anthropic_response(
                                     .push_str(&partial_json);
                             }
                             DeltaData::ThinkingDelta { thinking } => {
-                                // Accumulate reasoning tokens so they can be echoed back
-                                // in the next request (required by DeepSeek/Anthropic thinking API).
+                                // Stream thinking tokens to output and accumulate for echo-back.
+                                output.on_thinking_token(&thinking);
                                 blocks[index].text.push_str(&thinking);
                             }
-                            DeltaData::SignatureDelta { .. } => {
-                                // Signature delta for extended thinking — not needed.
+                            DeltaData::SignatureDelta { signature } => {
+                                // Accumulate the Anthropic thinking signature — it MUST
+                                // be echoed back verbatim in the next request turn.
+                                blocks[index].signature.push_str(&signature);
                             }
                         }
                     }
                 }
-                StreamEvent::ContentBlockStop { index: _ } => {
-                    // Block finished
+                StreamEvent::ContentBlockStop { index } => {
+                    if index < blocks.len() && blocks[index].block_type == "thinking" {
+                        output.on_thinking_end();
+                    }
                 }
                 StreamEvent::MessageDelta { delta, usage } => {
                     if let Some(reason) = delta.stop_reason {
@@ -404,7 +426,10 @@ pub async fn stream_anthropic_response(
                 if block.text.is_empty() {
                     None
                 } else {
-                    Some(ContentBlock::Thinking { thinking: block.text })
+                    Some(ContentBlock::Thinking {
+                        thinking: block.text,
+                        signature: if block.signature.is_empty() { None } else { Some(block.signature) },
+                    })
                 }
             }
             "tool_use" => {
@@ -492,7 +517,7 @@ pub async fn stream_openai_response(
             crate::conversation::Role::Assistant => {
                 let text = msg.text_content();
                 let reasoning = msg.content.iter().find_map(|b| {
-                    if let ContentBlock::Thinking { thinking } = b {
+                    if let ContentBlock::Thinking { thinking, .. } = b {
                         Some(thinking.clone())
                     } else {
                         None
@@ -660,6 +685,7 @@ pub async fn stream_openai_response(
                                 tool_id: String::new(),
                                 tool_name: String::new(),
                                 tool_input_json: String::new(),
+                                signature: String::new(),
                             });
                         }
 
@@ -688,7 +714,7 @@ pub async fn stream_openai_response(
     // Store reasoning tokens first so they appear before the answer in history.
     // The next request will echo them back as `reasoning_content`.
     if !accumulated_reasoning.is_empty() {
-        final_content.push(ContentBlock::Thinking { thinking: accumulated_reasoning });
+        final_content.push(ContentBlock::Thinking { thinking: accumulated_reasoning, signature: None });
     }
     if !accumulated_text.is_empty() {
         final_content.push(ContentBlock::Text { text: accumulated_text });

@@ -36,6 +36,7 @@ interface AgentState {
   currentMessage: string;
   isProcessing: boolean;
   streamingMessageId: string | null;
+  thinkingMessageId: string | null;
   
   // 工具调用
   toolCalls: ToolCall[];
@@ -86,6 +87,8 @@ interface AgentState {
   setCurrentMessage: (message: string) => void;
   setIsProcessing: (processing: boolean) => void;
   setStreamingMessageId: (id: string | null) => void;
+  setThinkingMessageId: (id: string | null) => void;
+  appendToThinking: (id: string, token: string) => void;
   addToolCall: (toolCall: ToolCall) => void;
   updateToolCall: (id: string, updates: Partial<ToolCall>) => void;
   addPendingConfirmation: (confirmation: PendingConfirmation) => void;
@@ -151,6 +154,7 @@ const initialState = {
   currentMessage: '',
   isProcessing: false,
   streamingMessageId: null,
+  thinkingMessageId: null,
   toolCalls: [],
   pendingConfirmations: [],
   diffs: [],
@@ -205,6 +209,14 @@ export const useAgentStore = create<AgentState>()(
   setCurrentMessage: (message) => set({ currentMessage: message }),
   setIsProcessing: (processing) => set({ isProcessing: processing }),
   setStreamingMessageId: (id) => set({ streamingMessageId: id }),
+  setThinkingMessageId: (id) => set({ thinkingMessageId: id }),
+  
+  appendToThinking: (id, token) =>
+    set((state) => ({
+      messages: state.messages.map((msg) =>
+        msg.id === id ? { ...msg, thinking: (msg.thinking || '') + token } : msg
+      ),
+    })),
   
   addToolCall: (toolCall) =>
     set((state) => ({ toolCalls: [...state.toolCalls, toolCall] })),
@@ -331,6 +343,7 @@ export const useAgentStore = create<AgentState>()(
     diffs: [],
     isProcessing: false,
     streamingMessageId: null,
+    thinkingMessageId: null,
     currentMessage: '',
   }),
     
@@ -344,6 +357,7 @@ export const useAgentStore = create<AgentState>()(
     diffs: [],
     isProcessing: false,
     streamingMessageId: null,
+    thinkingMessageId: null,
     currentMessage: '',
     sessionInfo: null,
     // preserve: serverUrl, workdir, config, presets

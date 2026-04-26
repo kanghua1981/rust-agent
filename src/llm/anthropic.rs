@@ -16,6 +16,8 @@ pub struct AnthropicClient {
     model: String,
     max_tokens: u32,
     temperature: f32,
+    thinking_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -27,6 +29,12 @@ struct AnthropicRequest {
     messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
+    /// Extended thinking block (Claude 3.7+).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<serde_json::Value>,
+    /// DeepSeek Anthropic-compatible endpoint reasoning effort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +55,15 @@ enum AnthropicContentBlock {
         name: String,
         input: serde_json::Value,
     },
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
+    /// Catch-all for any future block types (e.g. "redacted_thinking").
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +96,8 @@ impl AnthropicClient {
             model: config.model.clone(),
             max_tokens: config.max_tokens,
             temperature: config.temperature,
+            thinking_enabled: config.thinking_enabled,
+            reasoning_effort: config.reasoning_effort.clone(),
         }
     }
 
@@ -108,8 +127,29 @@ impl LlmClient for AnthropicClient {
             max_tokens: self.max_tokens,
             temperature: self.temperature,
             system: conversation.system_prompt.clone(),
-            messages: conversation.api_messages(),
+            // When thinking mode is on, thinking blocks from previous turns MUST
+            // be echoed back to the API, otherwise it returns 400:
+            // "The `content[].thinking` in the thinking mode must be passed back"
+            // Also auto-detect: if conversation already has thinking blocks, echo them.
+            messages: if self.thinking_enabled == Some(true) || conversation.has_thinking_blocks() {
+                conversation.api_messages_with_thinking()
+            } else {
+                conversation.api_messages()
+            },
             tools: self.format_tools(tools),
+            // Extended thinking: enabled via `thinking_enabled = true` in models.toml.
+            // budget_tokens defaults to 8000; tune via Anthropic docs if needed.
+            thinking: self.thinking_enabled.and_then(|enabled| {
+                if enabled {
+                    Some(serde_json::json!({ "type": "enabled", "budget_tokens": 8000 }))
+                } else {
+                    None
+                }
+            }),
+            // DeepSeek Anthropic-compatible endpoint: reasoning effort via output_config.
+            output_config: self.reasoning_effort.as_ref().map(|effort| {
+                serde_json::json!({ "effort": effort })
+            }),
         };
 
         tracing::debug!("Sending request to Anthropic API");
@@ -146,11 +186,18 @@ impl LlmClient for AnthropicClient {
         let content = api_response
             .content
             .into_iter()
-            .map(|block| match block {
-                AnthropicContentBlock::Text { text } => ContentBlock::Text { text },
+            .filter_map(|block| match block {
+                AnthropicContentBlock::Text { text } => Some(ContentBlock::Text { text }),
                 AnthropicContentBlock::ToolUse { id, name, input } => {
-                    ContentBlock::ToolUse { id, name, input }
+                    Some(ContentBlock::ToolUse { id, name, input })
                 }
+                AnthropicContentBlock::Thinking { thinking, signature } => {
+                    Some(ContentBlock::Thinking {
+                        thinking,
+                        signature: if signature.is_empty() { None } else { Some(signature) },
+                    })
+                }
+                AnthropicContentBlock::Unknown => None,
             })
             .collect();
 

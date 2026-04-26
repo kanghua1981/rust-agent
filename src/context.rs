@@ -85,7 +85,7 @@ fn estimate_message_tokens(msg: &Message) -> usize {
                 estimate_tokens(name) + estimate_tokens(&input.to_string())
             }
             ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
-            ContentBlock::Thinking { thinking } => estimate_tokens(thinking),
+            ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking),
         })
         .sum();
 

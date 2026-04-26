@@ -25,6 +25,12 @@ pub struct Config {
     /// Memory backend configuration.
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// Enable extended thinking / reasoning mode for the active model.
+    #[serde(default)]
+    pub thinking_enabled: Option<bool>,
+    /// Reasoning effort level passed to the model (e.g. "high", "max").
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +80,7 @@ impl Config {
             None
         };
 
-        let (provider, model, model_alias, toml_base_url, toml_api_key, toml_max_tokens) =
+        let (provider, model, model_alias, toml_base_url, toml_api_key, toml_max_tokens, toml_thinking_enabled, toml_reasoning_effort) =
             if let Some(ref r) = resolved {
                 (
                     r.provider.clone(),
@@ -83,6 +89,8 @@ impl Config {
                     r.base_url.clone(),
                     r.api_key.clone(),
                     r.max_tokens,
+                    r.thinking_enabled,
+                    r.reasoning_effort.clone(),
                 )
             } else {
                 let provider = match args.provider.to_lowercase().as_str() {
@@ -91,7 +99,7 @@ impl Config {
                     "compatible" => Provider::Compatible,
                     _ => Provider::Anthropic,
                 };
-                (provider, args.model.clone(), None, None, None, None)
+                (provider, args.model.clone(), None, None, None, None, None, None)
             };
 
         let api_key_env = match provider {
@@ -136,6 +144,8 @@ impl Config {
             model_alias,
             sub_agents,
             extra_binds: models_cfg.extra_binds.clone(),
+            thinking_enabled: toml_thinking_enabled,
+            reasoning_effort: toml_reasoning_effort,
             memory: {
                 // Determine the project directory (same logic as main.rs)
                 let project_dir = args.workdir.as_ref().map(|w| {
@@ -182,6 +192,8 @@ impl Config {
             sub_agents: self.sub_agents.clone(),
             extra_binds: self.extra_binds.clone(),
             memory: self.memory.clone(),
+            thinking_enabled: resolved.thinking_enabled,
+            reasoning_effort: resolved.reasoning_effort.clone(),
         }
     }
 

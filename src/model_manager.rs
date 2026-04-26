@@ -138,6 +138,16 @@ pub struct ModelEntry {
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Enable extended thinking / reasoning mode (DeepSeek V4 / Claude 3.7+).
+    /// OpenAI format: injects `{"thinking": {"type": "enabled"}}` into the request.
+    /// Anthropic format: injects `{"thinking": {"type": "enabled", "budget_tokens": 8000}}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_enabled: Option<bool>,
+    /// Reasoning effort level: "low" | "medium" | "high" | "max".
+    /// OpenAI format: injects `{"reasoning_effort": "<value>"}` into the request.
+    /// Anthropic format (DeepSeek endpoint): injects `{"output_config": {"effort": "<value>"}}` into the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// Resolved information returned after looking up a model alias.
@@ -149,6 +159,8 @@ pub struct ResolvedModel {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub max_tokens: Option<u32>,
+    pub thinking_enabled: Option<bool>,
+    pub reasoning_effort: Option<String>,
 }
 
 // ── File path helper ─────────────────────────────────────────────────
@@ -206,6 +218,8 @@ impl ModelsConfig {
             base_url: entry.base_url.clone(),
             api_key: entry.api_key.clone(),
             max_tokens: entry.max_tokens,
+            thinking_enabled: entry.thinking_enabled,
+            reasoning_effort: entry.reasoning_effort.clone(),
         })
     }
 
