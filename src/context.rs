@@ -174,6 +174,13 @@ pub fn plan_truncation(conversation: &Conversation, model: &str) -> Option<Trunc
         let last = &conversation.messages[first_keep - 1];
         if message_has_tool_use(last) || message_has_tool_result(last) {
             first_keep += 1;
+        } else if message_has_large_thinking(last) {
+            // Thinking blocks are model scratchpad — they're verbose (up to
+            // 8000 tokens each) and don't provide lasting value for future
+            // turns.  Prefer removing them over actual conversation content.
+            // Signed thinking blocks from more recent messages (in kept_end)
+            // are still preserved for API echo-back requirements.
+            first_keep += 1;
         } else {
             break;
         }
@@ -480,6 +487,19 @@ fn message_has_tool_result(msg: &Message) -> bool {
     msg.content
         .iter()
         .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+}
+
+/// Check if a message contains thinking blocks that are large enough
+/// to justify removal during truncation (≥ 500 estimated tokens).
+/// Small thinking blocks are kept — they don't bloat context significantly.
+fn message_has_large_thinking(msg: &Message) -> bool {
+    msg.content.iter().any(|b| {
+        if let ContentBlock::Thinking { thinking, .. } = b {
+            estimate_tokens(thinking) >= 500
+        } else {
+            false
+        }
+    })
 }
 
 /// Safety net: ensure every tool_use has a matching tool_result and vice versa.

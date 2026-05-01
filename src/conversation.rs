@@ -312,7 +312,7 @@ Skills management:
     }
 
     /// Returns true if the conversation contains any assistant message with
-    /// thinking blocks that have a valid signature.
+    /// thinking blocks (with or without a valid signature).
     ///
     /// Anthropic REQUIRES `content[].thinking` blocks to be echoed back
     /// verbatim in ALL subsequent requests when extended thinking is enabled —
@@ -320,13 +320,19 @@ Skills management:
     /// Failing to do so results in a 400 error:
     ///   "The `content[].thinking` in the thinking mode must be passed back to the API."
     ///
-    /// Additionally, thinking blocks without a signature cannot be echoed back
-    /// (they were stored by an older version of the agent) and are skipped.
+    /// We detect ANY thinking block (even without a signature) to avoid
+    /// the situation where unsigned blocks exist but are not recognized,
+    /// causing `api_messages()` to filter them out while the API still
+    /// expects them — producing a 400 error.
+    ///
+    /// Note: only blocks with a valid signature are actually echoed back
+    /// in `api_messages_with_thinking()`. Unsigned blocks trigger
+    /// auto-detection but are skipped during serialization.
     pub fn has_thinking_blocks(&self) -> bool {
         self.messages.iter().any(|m| {
             m.content.iter().any(|b| matches!(
                 b,
-                ContentBlock::Thinking { signature: Some(_), .. }
+                ContentBlock::Thinking { .. }
             ))
         })
     }
@@ -353,30 +359,35 @@ Skills management:
                 Role::System => "system",
             };
 
-            // When selective_thinking is true, include ALL thinking blocks
-            // that carry a valid signature, regardless of whether the message
-            // also contains tool_use blocks.
+            // Include thinking blocks that carry a valid signature:
+            // 1. When selective_thinking is true (api_messages_with_thinking) — always
+            // 2. When selective_thinking is false but the message HAS signed
+            //    thinking blocks — as a safety net to prevent 400 errors if
+            //    api_messages() is ever called on a conversation that still
+            //    contains thinking blocks (e.g. after context truncation
+            //    removed the signed blocks from other messages).
             //
             // Anthropic REQUIRES thinking blocks to be echoed back in ALL
-            // subsequent requests when extended thinking is enabled. Blocks
-            // without a signature (e.g. from older sessions) must be dropped
-            // because the API has no way to verify them.
-            let include_thinking_for_msg = selective_thinking
-                && msg.content.iter().any(|b| matches!(
-                    b,
-                    ContentBlock::Thinking { signature: Some(_), .. }
-                ));
+            // subsequent requests when extended thinking is enabled.
+            //
+            // DeepSeek's Anthropic-compatible endpoint (reasoning_effort)
+            // does NOT return signatures — its thinking blocks must also be
+            // echoed back verbatim.  We therefore include ALL thinking blocks
+            // when the message qualifies for echo-back, with or without
+            // a signature.
+            let msg_has_any_thinking = msg.content.iter().any(|b| matches!(
+                b,
+                ContentBlock::Thinking { .. }
+            ));
+            let include_thinking_for_msg = selective_thinking || msg_has_any_thinking;
 
             let blocks: Vec<serde_json::Value> = msg
                 .content
                 .iter()
                 .filter(|b| {
                     match b {
-                        ContentBlock::Thinking { signature, .. } => {
-                            // Only include thinking blocks if:
-                            // 1. this message qualifies for thinking echo-back, AND
-                            // 2. the block actually has a signature to send
-                            include_thinking_for_msg && signature.is_some()
+                        ContentBlock::Thinking { .. } => {
+                            include_thinking_for_msg
                         }
                         _ => true,
                     }

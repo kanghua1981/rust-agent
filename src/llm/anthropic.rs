@@ -137,15 +137,17 @@ impl LlmClient for AnthropicClient {
                 conversation.api_messages()
             },
             tools: self.format_tools(tools),
-            // Extended thinking: enabled via `thinking_enabled = true` in models.toml.
+            // Extended thinking: enabled via `thinking_enabled = true` in models.toml,
+            // or auto-detected when the conversation already contains thinking blocks.
+            // Must be consistent with the message-selection logic above so the API
+            // never receives thinking blocks in messages without the thinking
+            // parameter being enabled on the request (and vice versa).
             // budget_tokens defaults to 8000; tune via Anthropic docs if needed.
-            thinking: self.thinking_enabled.and_then(|enabled| {
-                if enabled {
-                    Some(serde_json::json!({ "type": "enabled", "budget_tokens": 8000 }))
-                } else {
-                    None
-                }
-            }),
+            thinking: if self.thinking_enabled == Some(true) || conversation.has_thinking_blocks() {
+                Some(serde_json::json!({ "type": "enabled", "budget_tokens": 8000 }))
+            } else {
+                None
+            },
             // DeepSeek Anthropic-compatible endpoint: reasoning effort via output_config.
             output_config: self.reasoning_effort.as_ref().map(|effort| {
                 serde_json::json!({ "effort": effort })

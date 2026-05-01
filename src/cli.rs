@@ -929,21 +929,79 @@ pub async fn run(
 
 /// Handle `/summary` command — generate or load project summary.
 async fn handle_summary_command(input: &str, agent: &mut Agent) {
-    let sub = input.strip_prefix("/summary").unwrap_or("").trim();
-    if sub.is_empty() {
-        // Generate summary
-        ui::print_summary_generating();
-        // Summary generation not implemented in this branch
-        println!("{}  Summary generation is not available in this branch.", "⚠️");
-    } else {
-        // Load specific summary file
-        let path = std::path::Path::new(sub);
-        if !path.exists() {
-            ui::print_error(&format!("File not found: {}", sub));
-            return;
+    let subcommand = input.strip_prefix("/summary").unwrap_or("").trim();
+    let cwd = &agent.project_dir;
+
+    match subcommand {
+        "generate" => {
+            // Force (re-)generate
+            if crate::summary::exists(cwd) {
+                println!(
+                    "\n{}  {}",
+                    "⚠️",
+                    "A project summary already exists. Regenerating...".yellow()
+                );
+            }
+            ui::print_summary_generating();
+            match agent.generate_project_summary().await {
+                Ok(_) => {
+                    ui::print_summary_done();
+                }
+                Err(e) => {
+                    ui::print_error(&format!("Failed to generate summary: {}", e));
+                }
+            }
         }
-        // Summary loading not implemented in this branch
-        println!("{}  Summary loading is not available in this branch.", "⚠️");
+        "" => {
+            // Show existing summary, or prompt to generate
+            if let Some(summary) = crate::summary::load(cwd) {
+                println!(
+                    "\n{}  {}:\n",
+                    "📋",
+                    "Project Summary".bright_cyan().bold()
+                );
+                let skin = termimad::MadSkin::default();
+                skin.print_text(&summary);
+                println!();
+                println!(
+                    "  {} Run {} to regenerate.",
+                    "💡".dimmed(),
+                    "/summary generate".bright_white()
+                );
+            } else {
+                println!("\n{}  No project summary found.", "📋");
+                print!("  Generate one now? {} ", "[y/N]".bright_white());
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+
+                let mut answer = String::new();
+                if std::io::stdin().read_line(&mut answer).is_ok() {
+                    let answer = answer.trim().to_lowercase();
+                    if answer == "y" || answer == "yes" {
+                        ui::print_summary_generating();
+                        match agent.generate_project_summary().await {
+                            Ok(_) => {
+                                ui::print_summary_done();
+                            }
+                            Err(e) => {
+                                ui::print_error(&format!("Failed to generate summary: {}", e));
+                            }
+                        }
+                    } else {
+                        println!("  {}", "Skipped.".dimmed());
+                    }
+                }
+            }
+        }
+        other => {
+            println!(
+                "\n{}  Unknown subcommand: {}. Usage: {} or {}",
+                "⚠️",
+                other,
+                "/summary".bright_white(),
+                "/summary generate".bright_white()
+            );
+        }
     }
 }
 

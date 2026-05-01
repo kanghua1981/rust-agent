@@ -224,9 +224,14 @@ impl Config {
     }
 
     /// Determine if extended thinking should be active for this conversation turn.
-    /// Returns true when explicitly enabled in config OR when the conversation
-    /// already contains thinking blocks (auto-detection for continuity across turns).
+    /// Returns true when:
+    /// - explicitly enabled in config (`thinking_enabled = true`), OR
+    /// - `reasoning_effort` is set (DeepSeek reasoner always uses thinking), OR
+    /// - the conversation already contains thinking blocks (auto-detection for
+    ///   continuity across turns).
     pub fn use_extended_thinking(&self, conversation: &Conversation) -> bool {
-        self.thinking_enabled == Some(true) || conversation.has_thinking_blocks()
+        self.thinking_enabled == Some(true)
+            || self.reasoning_effort.is_some()
+            || conversation.has_thinking_blocks()
     }
 }
