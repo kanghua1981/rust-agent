@@ -166,6 +166,11 @@ struct Args {
     /// 插件作用域（逗号分隔：global,project,temporary）
     #[arg(long, default_value = "project,global")]
     plugin_scopes: String,
+
+    /// Sampling temperature (0.0–2.0). 0.0 = deterministic, higher = more creative.
+    /// Overrides the model-level setting from models.toml. Also settable via LLM_TEMPERATURE env.
+    #[arg(long, env = "LLM_TEMPERATURE")]
+    temperature: Option<f32>,
 }
 
 #[tokio::main]

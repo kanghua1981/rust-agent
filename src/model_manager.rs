@@ -148,6 +148,10 @@ pub struct ModelEntry {
     /// Anthropic format (DeepSeek endpoint): injects `{"output_config": {"effort": "<value>"}}` into the request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Sampling temperature (0.0–2.0). Controls output randomness.
+    /// 0.0 = deterministic, higher = more creative. Defaults to 0.0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
 }
 
 /// Resolved information returned after looking up a model alias.
@@ -161,6 +165,7 @@ pub struct ResolvedModel {
     pub max_tokens: Option<u32>,
     pub thinking_enabled: Option<bool>,
     pub reasoning_effort: Option<String>,
+    pub temperature: Option<f32>,
 }
 
 // ── File path helper ─────────────────────────────────────────────────
@@ -220,6 +225,7 @@ impl ModelsConfig {
             max_tokens: entry.max_tokens,
             thinking_enabled: entry.thinking_enabled,
             reasoning_effort: entry.reasoning_effort.clone(),
+            temperature: entry.temperature,
         })
     }
 

@@ -81,7 +81,7 @@ impl Config {
             None
         };
 
-        let (provider, model, model_alias, toml_base_url, toml_api_key, toml_max_tokens, toml_thinking_enabled, toml_reasoning_effort) =
+        let (provider, model, model_alias, toml_base_url, toml_api_key, toml_max_tokens, toml_thinking_enabled, toml_reasoning_effort, toml_temperature) =
             if let Some(ref r) = resolved {
                 (
                     r.provider.clone(),
@@ -92,6 +92,7 @@ impl Config {
                     r.max_tokens,
                     r.thinking_enabled,
                     r.reasoning_effort.clone(),
+                    r.temperature,
                 )
             } else {
                 let provider = match args.provider.to_lowercase().as_str() {
@@ -100,7 +101,7 @@ impl Config {
                     "compatible" => Provider::Compatible,
                     _ => Provider::Anthropic,
                 };
-                (provider, args.model.clone(), None, None, None, None, None, None)
+                (provider, args.model.clone(), None, None, None, None, None, None, None)
             };
 
         let api_key_env = match provider {
@@ -139,7 +140,8 @@ impl Config {
             provider,
             base_url,
             max_tokens,
-            temperature: 0.0,
+            // temperature priority: CLI / LLM_TEMPERATURE env > models.toml > default 0.0
+            temperature: args.temperature.or(toml_temperature).unwrap_or(0.0),
             max_conversation_turns: 100,
             max_tool_iterations: args.max_iterations,
             model_alias,
@@ -186,7 +188,7 @@ impl Config {
             provider: resolved.provider.clone(),
             base_url,
             max_tokens: resolved.max_tokens.unwrap_or(self.max_tokens),
-            temperature: self.temperature,
+            temperature: resolved.temperature.unwrap_or(self.temperature),
             max_conversation_turns: self.max_conversation_turns,
             max_tool_iterations: self.max_tool_iterations,
             model_alias: Some(resolved.alias.clone()),
