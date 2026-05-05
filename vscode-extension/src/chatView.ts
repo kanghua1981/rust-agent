@@ -236,6 +236,8 @@ body {
 
     // Current streaming bubble (reused until stream_end)
     let streamBubble = null;
+    // Current thinking bubble (reused until thinking_end)
+    let thinkingBubble = null;
 
     // ── Send user message ────────────────────────────────
     function send() {
@@ -291,9 +293,29 @@ body {
                 appendMsg('system', '🤖 Agent ready (v' + (msg.version || '?') + ')');
                 break;
 
-            // Thinking indicator
+            // Thinking indicators (streaming with content)
             case 'thinking':
                 appendMsg('thinking', '💭 Thinking…');
+                break;
+
+            case 'thinking_start':
+                thinkingBubble = appendMsg('thinking', '💭 Thinking…');
+                break;
+
+            case 'thinking_token':
+                if (thinkingBubble) {
+                    thinkingBubble.textContent += msg.token;
+                    chat.scrollTop = chat.scrollHeight;
+                }
+                break;
+
+            case 'thinking_end':
+                if (thinkingBubble) {
+                    // Make the thinking bubble collapsible: wrap content in a details element
+                    const content = thinkingBubble.textContent || '';
+                    thinkingBubble.innerHTML = '<details><summary>💭 Thinking (' + content.length + ' chars)</summary><pre style="white-space:pre-wrap;font-style:italic;opacity:0.8;max-height:200px;overflow-y:auto;">' + escapeHtml(content) + '</pre></details>';
+                }
+                thinkingBubble = null;
                 break;
 
             // Streaming tokens

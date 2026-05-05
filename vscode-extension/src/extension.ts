@@ -238,6 +238,18 @@ async function handleAgentEvent(event: any) {
             chatProvider.postMessage({ type: 'thinking' });
             break;
 
+        case 'thinking_start':
+            chatProvider.postMessage({ type: 'thinking_start' });
+            break;
+
+        case 'thinking_token':
+            chatProvider.postMessage({ type: 'thinking_token', token: data.token });
+            break;
+
+        case 'thinking_end':
+            chatProvider.postMessage({ type: 'thinking_end' });
+            break;
+
         case 'stream_start':
             chatProvider.postMessage({ type: 'stream_start' });
             break;

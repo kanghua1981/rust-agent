@@ -189,8 +189,23 @@ export const useAgentStore = create<AgentState>()(
       // Normalize empty string to undefined so "no workdir" is stored cleanly
       setWorkdir: (workdir) => set({ workdir: workdir || undefined }),
   
+  // ── Sliding window limits: prevent unbounded memory growth ──────────
+  // Messages, toolCalls, and diffs are capped to keep the UI responsive
+  // even during very long sessions. The backend's context.rs handles
+  // LLM context window trimming; these caps are purely for frontend perf.
+  MAX_MESSAGES: 300,
+  MAX_TOOL_CALLS: 500,
+  MAX_DIFFS: 300,
+
   addMessage: (message) => 
-    set((state) => ({ messages: [...state.messages, message] })),
+    set((state) => {
+      const messages = [...state.messages, message];
+      // Sliding window: keep only the last MAX_MESSAGES
+      if (messages.length > 300) {
+        return { messages: messages.slice(messages.length - 300) };
+      }
+      return { messages };
+    }),
     
   updateMessage: (id, content) =>
     set((state) => ({
@@ -219,7 +234,13 @@ export const useAgentStore = create<AgentState>()(
     })),
   
   addToolCall: (toolCall) =>
-    set((state) => ({ toolCalls: [...state.toolCalls, toolCall] })),
+    set((state) => {
+      const toolCalls = [...state.toolCalls, toolCall];
+      if (toolCalls.length > 500) {
+        return { toolCalls: toolCalls.slice(toolCalls.length - 500) };
+      }
+      return { toolCalls };
+    }),
     
   updateToolCall: (id, updates) =>
     set((state) => ({
@@ -239,7 +260,13 @@ export const useAgentStore = create<AgentState>()(
     })),
 
   addDiff: (diff) =>
-    set((state) => ({ diffs: [...state.diffs, diff] })),
+    set((state) => {
+      const diffs = [...state.diffs, diff];
+      if (diffs.length > 300) {
+        return { diffs: diffs.slice(diffs.length - 300) };
+      }
+      return { diffs };
+    }),
 
   setSandboxBackend: (backend) => set({ sandboxBackend: backend }),
   setPendingChanges: (count) => set({ pendingChanges: count }),

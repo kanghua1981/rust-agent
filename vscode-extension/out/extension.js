@@ -103,6 +103,7 @@ async function startServer() {
     const port = cfg.get('port', 9527);
     const model = cfg.get('model', 'claude-sonnet-4-20250514');
     const provider = cfg.get('provider', 'anthropic');
+    const maxIterations = cfg.get('maxIterations', 25);
     const workdir = getWorkspaceDir();
     if (!workdir) {
         vscode.window.showErrorMessage('No workspace folder open. The agent needs a project directory.');
@@ -114,6 +115,7 @@ async function startServer() {
         '--port', port.toString(),
         '--model', model,
         '--provider', provider,
+        '--max-iterations', maxIterations.toString(),
         '--workdir', workdir,
         '--yes', // auto-approve in VS Code mode (we handle confirms via UI)
     ];
@@ -220,6 +222,15 @@ async function handleAgentEvent(event) {
         // ── Streaming text ────────────────────────────────────
         case 'thinking':
             chatProvider.postMessage({ type: 'thinking' });
+            break;
+        case 'thinking_start':
+            chatProvider.postMessage({ type: 'thinking_start' });
+            break;
+        case 'thinking_token':
+            chatProvider.postMessage({ type: 'thinking_token', token: data.token });
+            break;
+        case 'thinking_end':
+            chatProvider.postMessage({ type: 'thinking_end' });
             break;
         case 'stream_start':
             chatProvider.postMessage({ type: 'stream_start' });

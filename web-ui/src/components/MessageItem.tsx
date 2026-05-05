@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Message } from '../types/agent';
-import { useAgentStore } from '../stores/agentStore';
+import { Message, ToolCall } from '../types/agent';
 import { ToolCallCard } from './ToolCallCard';
 import { DiffViewer } from './DiffViewer';
+import type { DiffEntry } from '../stores/agentStore';
 
 interface Props {
   message: Message;
   isStreaming: boolean;
+  isThinking: boolean;
+  toolCalls: ToolCall[];
+  diffs: DiffEntry[];
 }
 
 const UserAvatar = () => (
@@ -31,12 +34,7 @@ const AgentAvatar = () => (
 const formatTime = (ts: number) =>
   new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
-export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
-  // Use precise selectors so this component only re-renders when toolCalls/diffs
-  // actually change, NOT on every streaming token.
-  const toolCalls = useAgentStore(state => state.toolCalls);
-  const diffs = useAgentStore(state => state.diffs);
-  const thinkingMessageId = useAgentStore(state => state.thinkingMessageId);
+export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking, toolCalls, diffs }) => {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   
@@ -107,18 +105,13 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming }) => {
     );
   }
 
-  // For assistant messages, find related tool calls owned by this message
-  const relatedToolCalls = isUser ? [] : toolCalls.filter(
-    tc => tc.messageId ? tc.messageId === message.id : Math.abs(tc.timestamp - message.timestamp) < 5000
-  );
-  // Find diffs in same time window
-  const relatedDiffs = isUser ? [] : diffs.filter(
-    d => Math.abs(d.timestamp - message.timestamp) < 60000
-  );
+  // For assistant messages, use pre-filtered tool calls from parent
+  const relatedToolCalls = isUser ? [] : toolCalls;
+  const relatedDiffs = isUser ? [] : diffs;
 
   // Thinking display: collapsible, defaults to expanded when streaming, collapsed otherwise
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
-  const isCurrentlyThinking = thinkingMessageId === message.id;
+  const isCurrentlyThinking = isThinking;
   const hasThinking = !!message.thinking;
   const showThinking = hasThinking || isCurrentlyThinking;
 

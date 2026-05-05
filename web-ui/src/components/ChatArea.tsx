@@ -1,7 +1,9 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { MessageItem } from './MessageItem';
 import { ConfirmCard } from './ConfirmCard';
+import type { ToolCall } from '../types/agent';
+import type { DiffEntry as StoreDiffEntry } from '../stores/agentStore';
 
 interface Props {
   onConfirm: (id: string, approved: boolean) => void;
@@ -10,7 +12,31 @@ interface Props {
 }
 
 export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan }) => {
-  const { messages, pendingConfirmations, streamingMessageId, connectionStatus, isProcessing } = useAgentStore();
+  const messages = useAgentStore(s => s.messages);
+  const pendingConfirmations = useAgentStore(s => s.pendingConfirmations);
+  const streamingMessageId = useAgentStore(s => s.streamingMessageId);
+  const connectionStatus = useAgentStore(s => s.connectionStatus);
+  const isProcessing = useAgentStore(s => s.isProcessing);
+  const toolCalls = useAgentStore(s => s.toolCalls);
+  const diffs = useAgentStore(s => s.diffs);
+  const thinkingMessageId = useAgentStore(s => s.thinkingMessageId);
+
+  // Pre-compute toolCalls and diffs per message so MessageItem doesn't need to
+  // subscribe to the full arrays (avoids O(n²) re-renders on every tool call).
+  const messageDataMap = useMemo(() => {
+    const map = new Map<string, { toolCalls: ToolCall[]; diffs: StoreDiffEntry[] }>();
+    for (const msg of messages) {
+      if (msg.role === 'user') continue;
+      const relatedTCs = toolCalls.filter(
+        tc => tc.messageId ? tc.messageId === msg.id : Math.abs(tc.timestamp - msg.timestamp) < 5000
+      );
+      const relatedDiffs = diffs.filter(
+        d => Math.abs(d.timestamp - msg.timestamp) < 60000
+      );
+      map.set(msg.id, { toolCalls: relatedTCs, diffs: relatedDiffs });
+    }
+    return map;
+  }, [messages, toolCalls, diffs]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Track whether the user is near the bottom. Start true so initial messages auto-scroll.
@@ -94,13 +120,19 @@ export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan })
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxWidth: '800px', width: '100%', margin: '0 auto' }}>
-          {messages.map(msg => (
-            <MessageItem
-              key={msg.id}
-              message={msg}
-              isStreaming={streamingMessageId === msg.id}
-            />
-          ))}
+          {messages.map(msg => {
+            const data = messageDataMap.get(msg.id);
+            return (
+              <MessageItem
+                key={msg.id}
+                message={msg}
+                isStreaming={streamingMessageId === msg.id}
+                isThinking={thinkingMessageId === msg.id}
+                toolCalls={data?.toolCalls ?? []}
+                diffs={data?.diffs ?? []}
+              />
+            );
+          })}
 
           {/* Inline confirmations */}
           {pendingConfirmations.length > 0 && (
