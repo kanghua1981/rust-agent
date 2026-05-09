@@ -95,6 +95,9 @@ pub struct PluginMeta {
     /// 组件清单
     #[serde(default)]
     pub components: Components,
+    /// 通道声明（如 WeChat Bridge、Telegram Bot 等外部适配器）
+    #[serde(default)]
+    pub channels: Vec<crate::plugin::channel::ChannelConfig>,
 }
 
 impl PluginMeta {
@@ -215,6 +218,7 @@ scan_directories = ["mcp", "tools", "skills", "hooks"]
             system_requirements: SystemRequirements::default(),
             config: std::collections::HashMap::new(),
             components: Components::default(),
+            channels: Vec::new(),
         };
         
         // 验证成功

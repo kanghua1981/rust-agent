@@ -15,6 +15,8 @@ pub mod cache;
 pub mod hook_loader;
 /// Hook 事件总线：注册/注销插件 hook，按执行模式分发事件。
 pub mod hook_bus;
+/// 通道（Channel）扩展点：外部适配器进程的生命周期管理。
+pub mod channel;
 
 // 重新导出常用类型
 #[allow(unused_imports)]
@@ -23,6 +25,7 @@ pub use scope::PluginScope;
 pub use manager::PluginManager;
 #[allow(unused_imports)]
 pub use hook_bus::HookBus;
+pub use channel::{ChannelConfig, ChannelManager};
 
 /// 插件系统错误类型
 #[derive(Debug, thiserror::Error)]

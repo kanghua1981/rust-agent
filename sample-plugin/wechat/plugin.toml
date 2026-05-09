@@ -1,0 +1,43 @@
+# WeChat Bridge 插件
+# 
+# 将本目录复制到项目的 .agent/plugins/wechat/ 即可使用。
+# Agent Server 启动时会自动拉起 WeChat Bridge 进程。
+
+name        = "wechat-bridge"
+version     = "1.0.0"
+description = "微信接入通道 — 通过 wechatbot.dev 连接微信与 Rust Agent"
+author      = "Rust Agent Team"
+license     = "MIT"
+
+[permissions]
+level             = "Dangerous"    # 网络访问 + 自动批准工具调用
+requires_approval = true           # 部署时需要用户手动确认
+max_instances     = 1
+
+[system_requirements]
+node = ">=22"
+commands = ["node"]
+
+[components]
+scan_directories = []
+
+# ── 通道声明 ────────────────────────────────────────────────────
+# Server 启动时自动拉起 wechat-gateway 进程
+
+[[channels]]
+name             = "wechat-gateway"
+type             = "process"
+command          = "npx"
+args             = ["tsx", "src/main.ts"]
+working_dir      = "bridges/wechat"
+auto_start       = true
+restart_on_exit  = true
+restart_delay_secs = 5
+
+[channels.env]
+# 以下环境变量可在项目 .agent/plugins/wechat/.env 中覆盖
+AGENT_URL    = "ws://localhost:${AGENT_PORT}/agent"
+LOG_LEVEL    = "info"
+CHUNK_SIZE   = "0"
+SESSION_TTL_MS = "1800000"
+STORAGE_DIR  = "~/.wechatbot"

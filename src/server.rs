@@ -33,6 +33,7 @@ pub async fn run(
     port: u16,
     isolation: IsolationMode,
     ws_cfg: crate::workspaces::WorkspacesFile,
+    channel_configs: Vec<crate::plugin::ChannelConfig>,
 ) -> Result<()> {
     // Reap zombie worker processes asynchronously via a real SIGCHLD handler.
     //
@@ -99,6 +100,19 @@ pub async fn run(
         println!("   Auth: cluster token required");
     }
     println!("   Press Ctrl+C to stop.\n");
+
+    // ── Channels ──────────────────────────────────────────────────────────
+    // 启动所有插件声明的通道进程（如 WeChat Bridge）。
+    let _channel_manager = {
+        let mut mgr = crate::plugin::ChannelManager::new(port);
+        if !channel_configs.is_empty() {
+            println!("📡 Starting {} channel(s)...", channel_configs.len());
+            mgr.spawn_all(channel_configs);
+        }
+        let mgr = Arc::new(tokio::sync::Mutex::new(mgr));
+        crate::plugin::ChannelManager::spawn_watchdog(mgr.clone());
+        mgr
+    };
 
     // Get the path to the current executable so we can re-exec ourselves.
     let exe = std::env::current_exe().context("could not determine executable path")?;

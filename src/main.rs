@@ -256,12 +256,13 @@ async fn main() -> Result<()> {
     if args.mode == RunMode::Server {
         // 插件系统收集 workspaces 配置（nodes / peers / cluster token）。
         // 旧的 .agent/workspaces.toml 仍可作为兼容插件放在插件目录下。
-        let ws_cfg = {
+        let (ws_cfg, channel_configs) = {
             let mut pm = plugin::PluginManager::new(project_dir.clone());
             let _ = pm.load_all_plugins();
             let from_plugins = pm.collect_workspace();
+            let channels = pm.collect_channels();
             // 兼容兜底：若插件中没有任何 nodes/peers，尝试读旧配置文件
-            if from_plugins.nodes.is_empty() && from_plugins.peers.is_empty() {
+            let ws = if from_plugins.nodes.is_empty() && from_plugins.peers.is_empty() {
                 let legacy = crate::workspaces::load(&project_dir);
                 if !legacy.nodes.is_empty() || !legacy.peers.is_empty() {
                     tracing::warn!(".agent/workspaces.toml 已废弃，请将 workspaces.toml 放入插件目录");
@@ -271,9 +272,10 @@ async fn main() -> Result<()> {
                 }
             } else {
                 from_plugins
-            }
+            };
+            (ws, channels)
         };
-        return server::run(config, project_dir, &args.host, args.port, args.isolation, ws_cfg).await;
+        return server::run(config, project_dir, &args.host, args.port, args.isolation, ws_cfg, channel_configs).await;
     }
 
     // MCP server mode: expose tools as a JSON-RPC 2.0 MCP tool server over stdio.
