@@ -19,11 +19,26 @@ export type ClientMessage =
   | ListSessionsMessage
   | DeleteSessionMessage
   | LoadSessionByIdMessage
-  | CancelMessage;
+  | CancelMessage
+  | UploadFileMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
   data: {};
+}
+
+export interface UploadFileMessage extends BaseMessage {
+  type: 'upload_file';
+  data: {
+    /** File name (basename only, no path separators) */
+    name: string;
+    /** Base64-encoded file content */
+    content: string;
+    /** Optional MIME type hint */
+    mime_type?: string;
+    /** Optional target subdirectory under uploads/ */
+    target_dir?: string;
+  };
 }
 
 export interface LoadSessionMessage extends BaseMessage {
@@ -85,7 +100,8 @@ export type ServerEvent =
   | SandboxCommitResultEvent
   | SandboxCommitFileResultEvent
   | SandboxRollbackResultEvent
-  | CancelledEvent;
+  | CancelledEvent
+  | UploadFileResultEvent;
 
 export interface SessionMeta {
   id: string;
@@ -443,6 +459,22 @@ export interface PongEvent extends BaseMessage {
 export interface CancelledEvent extends BaseMessage {
   type: 'cancelled';
   data: { message: string };
+}
+
+export interface UploadFileResultEvent extends BaseMessage {
+  type: 'upload_file_result';
+  data: {
+    /** Whether the upload succeeded */
+    success: boolean;
+    /** Original file name */
+    name?: string;
+    /** Resulting path relative to project directory (on success) */
+    path?: string;
+    /** File size in bytes (on success) */
+    size?: number;
+    /** Error message (on failure) */
+    error?: string;
+  };
 }
 
 // 工具类型定义

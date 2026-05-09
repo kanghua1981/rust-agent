@@ -1045,6 +1045,7 @@ impl Agent {
             }
 
             for (tool_id, tool_name, tool_input) in tool_uses {
+                self.output.on_tool_use(&tool_name, &tool_input);
 
                 // ── Virtual tool: ask_user ────────────────────────────────
                 if tool_name == "ask_user" {

@@ -15,6 +15,96 @@ use crate::output::AgentOutput;
 use crate::persistence;
 use crate::ui;
 
+/// Handle `/upload <source_path> [target_name]` command.
+/// Reads a local file and copies it to the project's uploads/ directory.
+async fn handle_upload_command(args: &str, agent: &Agent) {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    if parts.is_empty() || parts[0].is_empty() {
+        println!("\n📎  Usage: /upload <source_path> [target_name]");
+        println!("   Copies a local file into the agent's uploads/ directory.");
+        println!("   The agent can then access it via read_file and other tools.");
+        return;
+    }
+
+    let source = std::path::PathBuf::from(parts[0]);
+    let target_name = if parts.len() > 1 {
+        parts[1].to_string()
+    } else {
+        source.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("uploaded_file")
+            .to_string()
+    };
+
+    // ── Security checks ──────────────────────────────────────────────
+    // Reject path traversal in target name
+    if target_name.contains('/') || target_name.contains('\\') || target_name.contains("..") {
+        println!("\n❌  Invalid target name '{}': must be a plain file name (no path separators).", target_name);
+        return;
+    }
+
+    // Read source file
+    let data = match std::fs::read(&source) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("\n❌  Failed to read '{}': {}", source.display(), e);
+            return;
+        }
+    };
+
+    // Size check (50 MB)
+    if data.len() > 50 * 1024 * 1024 {
+        println!(
+            "\n❌  File too large: {} bytes (max 50 MB)",
+            data.len()
+        );
+        return;
+    }
+
+    // Write to uploads/ directory
+    let uploads_dir = agent.project_dir.join("uploads");
+    if let Err(e) = std::fs::create_dir_all(&uploads_dir) {
+        println!("\n❌  Failed to create uploads directory: {}", e);
+        return;
+    }
+
+    let dest_path = if uploads_dir.join(&target_name).exists() {
+        // Add timestamp suffix for dedup
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let (stem, ext) = target_name
+            .rfind('.')
+            .map(|i| (&target_name[..i], &target_name[i..]))
+            .unwrap_or((target_name.as_str(), ""));
+        uploads_dir.join(format!("{}_{}{}", stem, ts, ext))
+    } else {
+        uploads_dir.join(&target_name)
+    };
+
+    match std::fs::write(&dest_path, &data) {
+        Ok(()) => {
+            let rel_path = dest_path
+                .strip_prefix(&agent.project_dir)
+                .unwrap_or(&dest_path)
+                .to_string_lossy();
+            let size_str = if data.len() < 1024 {
+                format!("{} B", data.len())
+            } else if data.len() < 1024 * 1024 {
+                format!("{:.1} KB", data.len() as f64 / 1024.0)
+            } else {
+                format!("{:.1} MB", data.len() as f64 / (1024.0 * 1024.0))
+            };
+            println!("\n✅  Uploaded: {} → {} ({})", source.display(), rel_path, size_str);
+            println!("   The agent can now access this file with read_file and other tools.");
+        }
+        Err(e) => {
+            println!("\n❌  Failed to write '{}': {}", dest_path.display(), e);
+        }
+    }
+}
+
 /// Handle `/plugin` command — list, enable, disable, info, tools.
 ///
 /// - `/plugin`                — list all plugins
@@ -822,6 +912,12 @@ pub async fn run(
                     // Memory consolidation
                     if input == "/consolidate" {
                         handle_consolidate_command(&mut agent).await;
+                        continue;
+                    }
+                    // File upload: /upload <source_path> [target_name]
+                    if input.starts_with("/upload") {
+                        let args = input.strip_prefix("/upload").map(|s| s.trim()).unwrap_or("");
+                        handle_upload_command(args, &agent).await;
                         continue;
                     }
                     

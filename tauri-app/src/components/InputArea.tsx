@@ -1,21 +1,25 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useCallback } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 
 interface Props {
   onSend: (text: string) => void;
   onCancel?: () => void;
   onDispatch?: (text: string) => void;
+  onUpload?: (file: File) => void;
 }
 
-export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch }) => {
+export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpload }) => {
   const { connectionStatus, isProcessing, currentMessage, setCurrentMessage } = useAgentStore();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // sendDisabled: blocks regular ↑ send when agent is busy
   const sendDisabled = connectionStatus !== 'connected' || isProcessing;
   // dispatchDisabled: ⚡ only needs a live connection, not idle agent
   const dispatchDisabled = connectionStatus !== 'connected';
   // textarea is always writable when connected so user can prepare next message
   const disabled = connectionStatus !== 'connected';
+  // upload is allowed whenever connected
+  const uploadDisabled = connectionStatus !== 'connected';
 
   // Auto-resize textarea
   useEffect(() => {
@@ -39,6 +43,20 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch }) => 
     onDispatch?.(text);
     setCurrentMessage('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+  };
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    for (let i = 0; i < files.length; i++) {
+      onUpload?.(files[i]);
+    }
+    // Reset so the same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [onUpload]);
+
+  const handleAttachClick = () => {
+    fileInputRef.current?.click();
   };
 
   const placeholder = !['connected'].includes(connectionStatus)
@@ -122,6 +140,37 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch }) => 
           </button>
         ) : (
           <>
+            {onUpload && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleFileSelect}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  onClick={handleAttachClick}
+                  disabled={uploadDisabled}
+                  title="上传文件到 Agent"
+                  style={{
+                    width: '44px', height: '44px',
+                    background: uploadDisabled ? 'var(--bg3)' : 'var(--bg3)',
+                    color: uploadDisabled ? 'var(--text3)' : 'var(--text2)',
+                    border: `1px solid ${uploadDisabled ? 'var(--border)' : 'var(--border2)'}`,
+                    borderRadius: '11px',
+                    fontSize: '18px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0,
+                    cursor: uploadDisabled ? 'not-allowed' : 'pointer',
+                    transition: 'background 0.15s, color 0.15s',
+                    lineHeight: 1,
+                  }}
+                >
+                  📎
+                </button>
+              </>
+            )}
             {onDispatch && (
               <button
                 onClick={handleDispatch}

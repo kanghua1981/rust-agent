@@ -3,6 +3,12 @@ import { useAgentStore } from '../stores/agentStore';
 import { ClientMessage, ServerEvent, ToolCall } from '../types/agent';
 import { v4 as uuidv4 } from 'uuid';
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 // Ensure the WebSocket URL targets /agent. Mirrors the Rust with_path() helper.
 function ensureAgentPath(url: string): string {
   try {
@@ -189,6 +195,21 @@ export const useWebSocket = () => {
     sendRaw({ type: 'load_session_by_id', data: { id } });
   }, [sendRaw, clearSession]);
 
+  const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
+    // Emit a system message showing upload intent
+    const uploadMsgId = uuidv4();
+    addMessage({
+      id: uploadMsgId,
+      role: 'system',
+      content: `📎 正在上传: ${name}...`,
+      timestamp: Date.now(),
+    });
+    return sendRaw({
+      type: 'upload_file',
+      data: { name, content, mime_type: mimeType },
+    });
+  }, [sendRaw, addMessage]);
+
   const handleServerEvent = useCallback((event: ServerEvent) => {
     switch (event.type) {
       case 'ready':
@@ -238,6 +259,22 @@ export const useWebSocket = () => {
           }`,
           timestamp: Date.now(),
         });
+        break;
+
+      case 'upload_file_result':
+        if (event.data.success) {
+          addMessage({
+            id: uuidv4(), role: 'system',
+            content: `✅ 文件已上传: ${event.data.name} → ${event.data.path} (${formatFileSize(event.data.size ?? 0)})`,
+            timestamp: Date.now(),
+          });
+        } else {
+          addMessage({
+            id: uuidv4(), role: 'system',
+            content: `❌ 上传失败: ${event.data.name ?? 'unknown'} — ${event.data.error ?? '未知错误'}`,
+            timestamp: Date.now(),
+          });
+        }
         break;
 
       case 'thinking':
@@ -566,6 +603,7 @@ export const useWebSocket = () => {
     listSessions,
     deleteSession,
     loadSessionById,
+    uploadFile,
     isConnected: connectionStatus === 'connected',
   };
 };

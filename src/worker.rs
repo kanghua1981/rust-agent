@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
+use base64::Engine;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -453,6 +454,9 @@ enum ControlCmd {
     EnablePlugin(String),
     /// 为本会话禁用指定插件（仅内存，不回写磁盘）。
     DisablePlugin(String),
+    /// 上传文件到 workspace 的 uploads/ 目录。
+    /// (文件名, base64内容, 可选MIME类型)
+    UploadFile(String, Vec<u8>, Option<String>),
 }
 
 async fn handle_control_cmd(
@@ -679,6 +683,26 @@ async fn handle_control_cmd(
                 }
             } else {
                 ws_output.emit_public("error", serde_json::json!({ "message": "Plugin system not available" }));
+            }
+        }
+
+        ControlCmd::UploadFile(name, data, mime_type) => {
+            match save_uploaded_file(&agent.project_dir, &name, &data, mime_type.as_deref()) {
+                Ok((rel_path, size)) => {
+                    ws_output.emit_public("upload_file_result", serde_json::json!({
+                        "success": true,
+                        "name": name,
+                        "path": rel_path,
+                        "size": size,
+                    }));
+                }
+                Err(e) => {
+                    ws_output.emit_public("upload_file_result", serde_json::json!({
+                        "success": false,
+                        "name": name,
+                        "error": e,
+                    }));
+                }
             }
         }
     }
@@ -909,6 +933,43 @@ fn dispatch_ws_message(
             output.emit_public("cancelled", serde_json::json!({ "message": "中断请求已发送" }));
         }
 
+        // ── File upload ───────────────────────────────────────────────────
+        // Message format:
+        //   { "type": "upload_file",
+        //     "data": { "name": "photo.png", "content": "<base64>",
+        //               "mime_type": "image/png", "target_dir": "images" } }
+        "upload_file" => {
+            let name = msg.get("data").and_then(|d| d.get("name"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let content_b64 = msg.get("data").and_then(|d| d.get("content"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mime_type = msg.get("data").and_then(|d| d.get("mime_type"))
+                .and_then(|v| v.as_str()).map(|s| s.to_string());
+
+            if name.is_empty() || content_b64.is_empty() {
+                output.emit_public("upload_file_result", serde_json::json!({
+                    "success": false,
+                    "error": "Missing 'name' or 'content' in upload_file data"
+                }));
+                return;
+            }
+
+            // Decode base64
+            let data = match base64_decode(&content_b64) {
+                Some(d) => d,
+                None => {
+                    output.emit_public("upload_file_result", serde_json::json!({
+                        "success": false,
+                        "name": name,
+                        "error": "Invalid base64 content"
+                    }));
+                    return;
+                }
+            };
+
+            let _ = ctrl_tx.send(ControlCmd::UploadFile(name, data, mime_type));
+        }
+
         other => {
             tracing::debug!("Ignoring unknown WS message type: '{}'", other);
         }
@@ -943,6 +1004,102 @@ fn messages_to_json(messages: &[crate::conversation::Message]) -> Vec<serde_json
         };
         Some(serde_json::json!({ "id": m.id, "role": role, "content": text }))
     }).collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  File upload helpers
+// ═══════════════════════════════════════════════════════════════════
+
+/// Decode a base64 string to raw bytes. Returns None on invalid input.
+fn base64_decode(b64: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+}
+
+/// Maximum file size for uploads (50 MB).
+const MAX_UPLOAD_SIZE: usize = 50 * 1024 * 1024;
+
+/// Save uploaded file data to `{project_dir}/uploads/{safe_name}`.
+/// Returns the relative path (from project_dir) and file size on success.
+fn save_uploaded_file(
+    project_dir: &Path,
+    name: &str,
+    data: &[u8],
+    mime_type: Option<&str>,
+) -> Result<(String, u64), String> {
+    // ── Security: path traversal protection ──────────────────────────
+    // Only allow the file basename — strip any directory components.
+    let safe_name = std::path::Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            // Fallback: sanitize manually
+            name.replace('/', "_").replace('\\', "_").replace("..", "_")
+        });
+
+    // Reject if the sanitized name is empty or still contains path separators.
+    if safe_name.is_empty()
+        || safe_name.contains('/') || safe_name.contains('\\')
+        || safe_name.contains("..")
+    {
+        return Err(format!("Invalid file name: '{}'", name));
+    }
+
+    // ── Size limit ───────────────────────────────────────────────────
+    if data.len() > MAX_UPLOAD_SIZE {
+        return Err(format!(
+            "File too large: {} bytes (max {})",
+            data.len(),
+            MAX_UPLOAD_SIZE
+        ));
+    }
+
+    // ── Optional MIME type check ─────────────────────────────────────
+    // If mime_type is provided, only reject obviously executable types.
+    if let Some(mt) = mime_type {
+        let blocked = [
+            "application/x-msdownload",
+            "application/x-executable",
+            "application/x-sharedlib",
+        ];
+        if blocked.contains(&mt) {
+            return Err(format!("Blocked file type: {}", mt));
+        }
+    }
+
+    // ── Create uploads directory ─────────────────────────────────────
+    let uploads_dir = project_dir.join("uploads");
+    std::fs::create_dir_all(&uploads_dir)
+        .map_err(|e| format!("Failed to create uploads directory: {}", e))?;
+
+    // ── Handle name conflicts: add timestamp suffix ──────────────────
+    let dest_path = uploads_dir.join(&safe_name);
+    let final_path = if dest_path.exists() {
+        let stem = safe_name
+            .rfind('.')
+            .map(|i| (&safe_name[..i], &safe_name[i..]))
+            .unwrap_or((safe_name.as_str(), ""));
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        uploads_dir.join(format!("{}_{}{}", stem.0, ts, stem.1))
+    } else {
+        dest_path
+    };
+
+    // ── Write file ───────────────────────────────────────────────────
+    std::fs::write(&final_path, data)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+
+    let size = data.len() as u64;
+    let rel_path = final_path
+        .strip_prefix(project_dir)
+        .unwrap_or(&final_path)
+        .to_string_lossy()
+        .to_string();
+
+    Ok((rel_path, size))
 }
 
 // Required for TcpStream::from_raw_fd

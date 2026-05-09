@@ -20,7 +20,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [showConnect, setShowConnect] = useState(false);
 
-  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, loadSession, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback } = useWebSocket();
+  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, loadSession, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile } = useWebSocket();
   const { reset, config } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -31,6 +31,26 @@ function App() {
   const handleDisconnect = () => {
     disconnect();
     reset();
+  };
+
+  // File upload handler: read file as base64 and send via WebSocket
+  const handleUpload = (file: File) => {
+    // Size check on client side (50 MB limit, same as server)
+    if (file.size > 50 * 1024 * 1024) {
+      alert(`文件 ${file.name} 太大 (${(file.size / 1024 / 1024).toFixed(1)} MB)，最大 50 MB`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(',')[1]; // strip data:... prefix
+      if (base64) {
+        uploadFile(file.name, base64, file.type || undefined);
+      }
+    };
+    reader.onerror = () => {
+      console.error('File read error:', reader.error);
+    };
+    reader.readAsDataURL(file);
   };
 
   // 键盘快捷键处理
@@ -127,7 +147,7 @@ function App() {
                 onAnswer={(id, answer) => { answerQuestion(answer); useAgentStore.getState().removePendingConfirmation(id); }}
                 onReviewPlan={(id, approved, feedback) => { reviewPlan(approved, feedback); useAgentStore.getState().removePendingConfirmation(id); }}
               />
-              <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} />
+              <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} onUpload={handleUpload} />
             </>
           )}
           {activeTab === 'tools' && <ToolsPanel />}
