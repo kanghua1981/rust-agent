@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Message, ToolCall } from '../types/agent';
 import { ToolCallCard } from './ToolCallCard';
 import { DiffViewer } from './DiffViewer';
@@ -199,13 +200,9 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
               <span style={{ whiteSpace: 'pre-wrap', fontSize: '14px' }}>{message.content}</span>
             ) : (
               <div className="md-content" style={{ fontSize: '14px' }}>
-                {isStreaming ? (
-                  // Plain text during streaming — avoids re-parsing full Markdown
-                  // on every token which would saturate the JS thread.
-                  <span style={{ whiteSpace: 'pre-wrap' }}>{message.content}</span>
-                ) : (
-                  message.content ? <ReactMarkdown>{message.content}</ReactMarkdown> : null
-                )}
+                {message.content ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                ) : null}
                 {isStreaming && <span className="cursor" />}
               </div>
             )}
