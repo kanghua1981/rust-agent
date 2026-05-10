@@ -1116,6 +1116,22 @@ impl Agent {
 
                 self.output.on_tool_result(&tool_name, &result);
 
+                // Notify output backends (e.g. WeChat Bridge) when a file was created/modified
+                if !result.is_error
+                    && matches!(
+                        tool_name.as_str(),
+                        "write_file" | "edit_file" | "multi_edit_file"
+                    )
+                {
+                    if let Some(path_str) =
+                        tool_input.get("path").and_then(|v| v.as_str())
+                    {
+                        let abs_path = self.project_dir.join(path_str);
+                        self.output
+                            .on_file_created(&abs_path.to_string_lossy());
+                    }
+                }
+
                 // Track tool name and error status for this turn's episode record
                 turn_tools_used.push(tool_name.clone());
                 if result.is_error { turn_had_errors = true; }

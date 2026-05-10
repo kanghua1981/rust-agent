@@ -2,6 +2,8 @@
 //
 // 胶水代码：微信消息 ↔ Agent Server 事件
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { WeChatBot } from '@wechatbot/wechatbot';
 import type { AgentClient } from './agent-client.js';
 import type { BridgeConfig } from './config.js';
@@ -67,6 +69,7 @@ function setupTurnHandlers(ctx: TurnContext): void {
   client.removeAllListeners('turn_start');
   client.removeAllListeners('turn_end');
   client.removeAllListeners('confirm_required');
+  client.removeAllListeners('file');
 
   // ── 聚合模式状态 ──
   let buffer = '';
@@ -131,5 +134,34 @@ function setupTurnHandlers(ctx: TurnContext): void {
     // 自动批准所有工具调用（微信场景下用户无法实时确认）
     // 如需更安全的策略，可改为拒绝或向用户发送询问消息
     client.sendConfirm(true, event.data?.tool_id);
+  });
+
+  // 文件创建/修改事件 — 将 Agent 创建的文件发送给微信用户
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+  client.on('file', (event: any) => {
+    const filePath: string | undefined = event.data?.path;
+    if (!filePath) return;
+
+    // 发送文件（异步，不阻塞主流程）
+    (async () => {
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.size > MAX_FILE_SIZE) {
+          log('warn', `[wx] file too large (${(stat.size / 1024 / 1024).toFixed(1)}MB > 50MB), sending text notice instead: ${filePath}`);
+          await bot.send(msg.userId, `📄 文件已生成: ${path.basename(filePath)} (${(stat.size / 1024 / 1024).toFixed(1)}MB，超过 50MB 限制，无法直接发送)`).catch(() => {});
+          return;
+        }
+
+        const data = fs.readFileSync(filePath);
+        const fileName = path.basename(filePath);
+        log('info', `[wx] sending file: ${fileName} (${(stat.size / 1024).toFixed(1)}KB)`);
+        await bot.send(msg.userId, { file: data, fileName }).catch(() => {});
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        log('error', `[wx] failed to send file ${filePath}: ${errMsg}`);
+        // 降级：发送文本通知
+        await bot.send(msg.userId, `📄 文件已生成: ${path.basename(filePath)}（发送失败: ${errMsg}）`).catch(() => {});
+      }
+    })();
   });
 }

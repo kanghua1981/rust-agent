@@ -167,6 +167,13 @@ export interface DoneEvent {
   };
 }
 
+export interface FileEvent {
+  type: 'file';
+  data: {
+    path: string;
+  };
+}
+
 export interface PongEvent {
   type: 'pong';
   data: {};
@@ -213,6 +220,7 @@ export type ServerEvent =
   | WarningEvent
   | ErrorEvent
   | DoneEvent
+  | FileEvent
   | PongEvent
   | CancelledEvent
   | RoleHeaderEvent

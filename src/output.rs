@@ -105,6 +105,10 @@ pub trait AgentOutput: Send + Sync {
     /// Tool execution finished.
     fn on_tool_result(&self, name: &str, result: &ToolResult);
 
+    /// A file was created or modified by a tool (write_file / edit_file / multi_edit_file).
+    /// This notifies output backends (e.g. WeChat Bridge) that a file is available.
+    fn on_file_created(&self, _path: &str) {}
+
     // ── Diff preview ────────────────────────────────────────────
     /// Show a diff for a file modification.
     fn on_diff(&self, path: &str, old: &str, new: &str);
@@ -897,6 +901,10 @@ impl AgentOutput for WsOutput {
             "output": result.output,
             "is_error": result.is_error,
         }));
+    }
+
+    fn on_file_created(&self, path: &str) {
+        self.emit("file", serde_json::json!({ "path": path }));
     }
 
     fn on_diff(&self, path: &str, old: &str, new: &str) {

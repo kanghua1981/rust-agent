@@ -30,6 +30,7 @@ export declare interface AgentClient {
   on(event: 'turn_start', listener: () => void): this;
   on(event: 'turn_end', listener: (text: string) => void): this;
   on(event: 'confirm_required', listener: (event: ServerEvent & { type: 'confirm_request' }) => void): this;
+  on(event: 'file', listener: (event: ServerEvent & { type: 'file' }) => void): this;
   on(event: 'error', listener: (err: Error) => void): this;
   on(event: 'close', listener: (code: number, reason: string) => void): this;
 }
@@ -109,6 +110,10 @@ export class AgentClient extends EventEmitter {
 
           case 'confirm_request':
             this.emit('confirm_required', event);
+            break;
+
+          case 'file':
+            this.emit('file', event);
             break;
 
           case 'error':
