@@ -295,7 +295,7 @@ async fn ws_run_node(
                             }
                             NodeEvent::ToolUse { name, input: tool_input } => {
                                 if !silent {
-                                    output.on_tool_use(&format!("↳ {}", name), &tool_input);
+                                    output.on_tool_use(&format!("↳ {}", name), &tool_input, "");
                                 }
                             }
                             NodeEvent::ToolResult { name, output: tool_out } => {

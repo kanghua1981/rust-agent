@@ -384,9 +384,13 @@ async fn run_async(
                 match process_result {
                     Ok(final_text) => {
                         let pending = agent.sandbox.ops_count().await;
-                        let mut done = serde_json::json!({ "text": final_text, "pending_changes": pending });
-                        if let Some(id) = req_id { done["id"] = id; }
-                        ws_output.emit_public("done", done);
+                        let done = serde_json::json!({ "text": final_text, "pending_changes": pending });
+                        if let Some(ref req_id) = req_id {
+                            let id_str = req_id.as_str().unwrap_or("");
+                            ws_output.emit_public_with_id("done", done, id_str);
+                        } else {
+                            ws_output.emit_public("done", done);
+                        }
 
                         // Notify frontend of updated sandbox state after every turn.
                         if !agent.sandbox.is_disabled {
@@ -926,6 +930,22 @@ fn dispatch_ws_message(
                     "message": "disable_plugin: missing 'data.id'"
                 }));
             }
+        }
+
+        // ── Reconnection recovery ─────────────────────────────────────────
+        "resume" => {
+            let from_seq = msg.get("data").and_then(|d| d.get("from_seq"))
+                .and_then(|v| v.as_u64()).unwrap_or(0);
+            let last_seq = output.last_seq();
+            output.emit_public("resume_ack", serde_json::json!({
+                "from_seq": from_seq,
+                "last_seq": last_seq,
+                "accepted": true,
+            }));
+            tracing::info!(
+                "Resume request: client asked from_seq={}, server last_seq={}",
+                from_seq, last_seq
+            );
         }
 
         "cancel" => {

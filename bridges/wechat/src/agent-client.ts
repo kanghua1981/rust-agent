@@ -33,6 +33,8 @@ export declare interface AgentClient {
   on(event: 'file', listener: (event: ServerEvent & { type: 'file' }) => void): this;
   on(event: 'error', listener: (err: Error) => void): this;
   on(event: 'close', listener: (code: number, reason: string) => void): this;
+  on(event: 'seq_gap', listener: (info: { from_seq: number; received_seq: number; gap: number }) => void): this;
+  on(event: 'sub_event', listener: (info: { agent_id: string; event: { type: string; data: Record<string, unknown> } }) => void): this;
 }
 
 export class AgentClient extends EventEmitter {
@@ -45,6 +47,8 @@ export class AgentClient extends EventEmitter {
   private closed = false;
   private buffer = '';
   private turnActive = false;
+  /** Last received event sequence number (for gap detection). */
+  private lastSeq = -1;
 
   constructor(opts: AgentClientOptions) {
     super();
@@ -76,6 +80,19 @@ export class AgentClient extends EventEmitter {
         const event = parseServerEvent(raw.toString());
         if (!event) return;
 
+        // Seq gap detection (skip for ready event which starts fresh)
+        if (event.type !== 'ready' && (event as any).seq !== undefined) {
+          const seq = (event as any).seq as number;
+          if (this.lastSeq >= 0 && seq !== this.lastSeq + 1) {
+            this.emit('seq_gap', {
+              from_seq: this.lastSeq + 1,
+              received_seq: seq,
+              gap: seq - this.lastSeq - 1,
+            });
+          }
+          this.lastSeq = seq;
+        }
+
         // 首次 ready
         if (event.type === 'ready') {
           this.emit('ready', event);
@@ -96,6 +113,27 @@ export class AgentClient extends EventEmitter {
               this.emit('turn_start');
             }
             break;
+
+          case 'agent_event': {
+            // Unwrap nested sub-agent event and emit both raw + inner
+            const inner = event.data.event;
+            this.emit('event', event);
+            this.emit('sub_event', {
+              agent_id: event.data.agent_id,
+              event: inner,
+            });
+            // If the inner event is a streaming_token, accumulate into buffer
+            if (inner.type === 'streaming_token' && inner.data?.token) {
+              const token = String(inner.data.token);
+              this.buffer += token;
+              this.emit('token', token);
+              if (!this.turnActive) {
+                this.turnActive = true;
+                this.emit('turn_start');
+              }
+            }
+            break;
+          }
 
           case 'stream_end':
           case 'assistant_text':
@@ -158,6 +196,11 @@ export class AgentClient extends EventEmitter {
     this.ws = null;
   }
 
+  /** 请求服务器重传从指定 seq 开始的事件（预留接口）。 */
+  resume(fromSeq: number): void {
+    this.send({ type: 'resume' as any, data: { from_seq: fromSeq } });
+  }
+
   /** 是否已连接 */
   isAlive(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
@@ -167,7 +210,7 @@ export class AgentClient extends EventEmitter {
   // 内部
   // ═════════════════════════════════════════════════════════════════
 
-  private send(msg: ClientMessage): void {
+  private send(msg: ClientMessage | { type: string; data: any }): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }

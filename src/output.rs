@@ -99,8 +99,9 @@ pub trait AgentOutput: Send + Sync {
     fn on_stream_end(&self);
 
     // ── Tools ───────────────────────────────────────────────────
-    /// About to execute a tool.
-    fn on_tool_use(&self, name: &str, input: &serde_json::Value);
+    /// About to execute a tool. `tool_id` will be placed in the envelope `id` field
+    /// (not in `data`) so clients can correlate tool_use ↔ tool_result without drilling.
+    fn on_tool_use(&self, name: &str, input: &serde_json::Value, tool_id: &str);
 
     /// Tool execution finished.
     fn on_tool_result(&self, name: &str, result: &ToolResult);
@@ -258,7 +259,7 @@ impl AgentOutput for CliOutput {
         println!("\n{}", "─".repeat(60));
     }
 
-    fn on_tool_use(&self, name: &str, input: &serde_json::Value) {
+    fn on_tool_use(&self, name: &str, input: &serde_json::Value, _tool_id: &str) {
         crate::ui::print_tool_use(name, input);
     }
 
@@ -424,6 +425,8 @@ pub struct StdioOutput {
     buffer: std::sync::Mutex<String>,
     /// Whether buffering is enabled (default: true)
     buffering_enabled: bool,
+    /// Monotonically increasing event sequence number for reconnection recovery.
+    seq: std::sync::Mutex<u64>,
 }
 
 impl StdioOutput {
@@ -436,15 +439,29 @@ impl StdioOutput {
         StdioOutput {
             buffer: std::sync::Mutex::new(String::new()),
             buffering_enabled,
+            seq: std::sync::Mutex::new(0),
         }
     }
 
     /// Write a JSON event line to stdout.
     fn emit(&self, event_type: &str, data: serde_json::Value) {
-        let msg = serde_json::json!({
+        self.emit_with_id(event_type, data, None);
+    }
+
+    /// Write a JSON event line to stdout, including an optional `id` in the envelope.
+    fn emit_with_id(&self, event_type: &str, data: serde_json::Value, id: Option<&str>) {
+        let mut seq = self.seq.lock().unwrap();
+        let current = *seq;
+        *seq += 1;
+        drop(seq);
+        let mut msg = serde_json::json!({
             "type": event_type,
+            "seq": current,
             "data": data,
         });
+        if let Some(ref_id) = id {
+            msg["id"] = serde_json::Value::String(ref_id.to_string());
+        }
         let line = serde_json::to_string(&msg).unwrap_or_default();
         println!("{}", line);
         use std::io::Write;
@@ -563,11 +580,11 @@ impl AgentOutput for StdioOutput {
         self.emit("stream_end", serde_json::json!({}));
     }
 
-    fn on_tool_use(&self, name: &str, input: &serde_json::Value) {
-        self.emit("tool_use", serde_json::json!({
+    fn on_tool_use(&self, name: &str, input: &serde_json::Value, tool_id: &str) {
+        self.emit_with_id("tool_use", serde_json::json!({
             "tool": name,
             "input": input,
-        }));
+        }), Some(tool_id));
     }
 
     fn on_tool_result(&self, name: &str, result: &ToolResult) {
@@ -721,26 +738,32 @@ impl AgentOutput for StdioOutput {
     }
 
     fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
-        let (kind, data) = match event {
-            SubAgentOutputEvent::StreamStart => ("sub_stream_start", serde_json::json!({})),
-            SubAgentOutputEvent::StreamEnd   => ("sub_stream_end",   serde_json::json!({})),
+        let (inner_type, inner_data) = match event {
+            SubAgentOutputEvent::StreamStart => ("stream_start", serde_json::json!({})),
+            SubAgentOutputEvent::StreamEnd   => ("stream_end",   serde_json::json!({})),
             SubAgentOutputEvent::Token(t) => (
-                "sub_token", serde_json::json!({ "token": t })
+                "streaming_token", serde_json::json!({ "token": t })
             ),
             SubAgentOutputEvent::ToolUse { name } => (
-                "sub_tool_use", serde_json::json!({ "tool": name })
+                "tool_use", serde_json::json!({ "tool": name })
             ),
             SubAgentOutputEvent::ToolDone { name, is_error } => (
-                "sub_tool_done", serde_json::json!({ "tool": name, "is_error": is_error })
+                "tool_result", serde_json::json!({ "tool": name, "is_error": is_error })
             ),
             SubAgentOutputEvent::Done(text) => (
-                "sub_done", serde_json::json!({ "text": text })
+                "done", serde_json::json!({ "text": text })
             ),
             SubAgentOutputEvent::Error(msg) => (
-                "sub_error", serde_json::json!({ "message": msg })
+                "error", serde_json::json!({ "message": msg })
             ),
         };
-        self.emit(kind, serde_json::json!({ "task_id": task_id, "data": data }));
+        self.emit("agent_event", serde_json::json!({
+            "agent_id": task_id,
+            "event": {
+                "type": inner_type,
+                "data": inner_data,
+            }
+        }));
     }
 
     fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
@@ -766,7 +789,7 @@ impl AgentOutput for SilentOutput {
     fn on_streaming_text(&self, _token: &str) {}
     fn on_stream_start(&self) {}
     fn on_stream_end(&self) {}
-    fn on_tool_use(&self, _name: &str, _input: &serde_json::Value) {}
+    fn on_tool_use(&self, _name: &str, _input: &serde_json::Value, _tool_id: &str) {}
     fn on_tool_result(&self, _name: &str, _result: &ToolResult) {}
     fn on_diff(&self, _path: &str, _old: &str, _new: &str) {}
     fn confirm(&self, _action: &ConfirmAction) -> crate::confirm::ConfirmResult {
@@ -783,6 +806,7 @@ impl AgentOutput for SilentOutput {
 //  WebSocket output — JSON frames over a WebSocket connection
 // ═══════════════════════════════════════════════════════════════════
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
@@ -809,6 +833,8 @@ pub struct WsOutput {
     ask_user_rx: Mutex<std::sync::mpsc::Receiver<String>>,
     /// Sends ask_user responses (held by the reader task).
     pub ask_user_tx: std::sync::mpsc::Sender<String>,
+    /// Monotonically increasing event sequence number for reconnection recovery.
+    seq: AtomicU64,
 }
 
 impl WsOutput {
@@ -826,15 +852,26 @@ impl WsOutput {
             confirm_tx,
             ask_user_rx: Mutex::new(ask_user_rx),
             ask_user_tx,
+            seq: AtomicU64::new(0),
         }
     }
 
     /// Serialize and send a JSON event to the WebSocket.
     fn emit(&self, event_type: &str, data: serde_json::Value) {
-        let msg = serde_json::json!({
+        self.emit_with_id(event_type, data, None);
+    }
+
+    /// Serialize and send a JSON event to the WebSocket, including an optional `id` in the envelope.
+    fn emit_with_id(&self, event_type: &str, data: serde_json::Value, id: Option<&str>) {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        let mut msg = serde_json::json!({
             "type": event_type,
+            "seq": seq,
             "data": data,
         });
+        if let Some(ref_id) = id {
+            msg["id"] = serde_json::Value::String(ref_id.to_string());
+        }
         let text = serde_json::to_string(&msg).unwrap_or_default();
         // Ignore send errors (connection may have closed)
         let _ = self.tx.send(WsCommand::Send(text));
@@ -843,6 +880,16 @@ impl WsOutput {
     /// Public variant of emit for use from the server module.
     pub fn emit_public(&self, event_type: &str, data: serde_json::Value) {
         self.emit(event_type, data);
+    }
+
+    /// Public variant that includes an `id` in the envelope (e.g. request correlation).
+    pub fn emit_public_with_id(&self, event_type: &str, data: serde_json::Value, id: &str) {
+        self.emit_with_id(event_type, data, Some(id));
+    }
+
+    /// Return the last emitted sequence number.
+    pub fn last_seq(&self) -> u64 {
+        self.seq.load(Ordering::Relaxed).saturating_sub(1)
     }
 }
 
@@ -888,11 +935,11 @@ impl AgentOutput for WsOutput {
         self.emit("stream_end", serde_json::json!({}));
     }
 
-    fn on_tool_use(&self, name: &str, input: &serde_json::Value) {
-        self.emit("tool_use", serde_json::json!({
+    fn on_tool_use(&self, name: &str, input: &serde_json::Value, tool_id: &str) {
+        self.emit_with_id("tool_use", serde_json::json!({
             "tool": name,
             "input": input,
-        }));
+        }), Some(tool_id));
     }
 
     fn on_tool_result(&self, name: &str, result: &ToolResult) {
@@ -1017,26 +1064,32 @@ impl AgentOutput for WsOutput {
     }
 
     fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
-        let (kind, data) = match event {
-            SubAgentOutputEvent::StreamStart => ("sub_stream_start", serde_json::json!({})),
-            SubAgentOutputEvent::StreamEnd   => ("sub_stream_end",   serde_json::json!({})),
+        let (inner_type, inner_data) = match event {
+            SubAgentOutputEvent::StreamStart => ("stream_start", serde_json::json!({})),
+            SubAgentOutputEvent::StreamEnd   => ("stream_end",   serde_json::json!({})),
             SubAgentOutputEvent::Token(t) => (
-                "sub_token", serde_json::json!({ "token": t })
+                "streaming_token", serde_json::json!({ "token": t })
             ),
             SubAgentOutputEvent::ToolUse { name } => (
-                "sub_tool_use", serde_json::json!({ "tool": name })
+                "tool_use", serde_json::json!({ "tool": name })
             ),
             SubAgentOutputEvent::ToolDone { name, is_error } => (
-                "sub_tool_done", serde_json::json!({ "tool": name, "is_error": is_error })
+                "tool_result", serde_json::json!({ "tool": name, "is_error": is_error })
             ),
             SubAgentOutputEvent::Done(text) => (
-                "sub_done", serde_json::json!({ "text": text })
+                "done", serde_json::json!({ "text": text })
             ),
             SubAgentOutputEvent::Error(msg) => (
-                "sub_error", serde_json::json!({ "message": msg })
+                "error", serde_json::json!({ "message": msg })
             ),
         };
-        self.emit(kind, serde_json::json!({ "task_id": task_id, "data": data }));
+        self.emit("agent_event", serde_json::json!({
+            "agent_id": task_id,
+            "event": {
+                "type": inner_type,
+                "data": inner_data,
+            }
+        }));
     }
 
     fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {

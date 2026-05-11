@@ -101,7 +101,8 @@ export type ServerEvent =
   | SandboxCommitFileResultEvent
   | SandboxRollbackResultEvent
   | CancelledEvent
-  | UploadFileResultEvent;
+  | UploadFileResultEvent
+  | AgentEvent;
 
 export interface SessionMeta {
   id: string;
@@ -221,6 +222,8 @@ interface BaseMessage {
   type: string;
   data?: any;
   id?: string;
+  /** Monotonically increasing event sequence number (for reconnection recovery). */
+  seq?: number;
 }
 
 // 客户端消息类型
@@ -346,7 +349,6 @@ export interface ToolUseEvent extends BaseMessage {
   data: {
     tool: string;
     input: any;
-    id?: string;
   };
 }
 
@@ -415,7 +417,6 @@ export interface DoneEvent extends BaseMessage {
   type: 'done';
   data: {
     text: string;
-    id?: string;
     pending_changes?: number;
   };
 }
@@ -459,6 +460,20 @@ export interface PongEvent extends BaseMessage {
 export interface CancelledEvent extends BaseMessage {
   type: 'cancelled';
   data: { message: string };
+}
+
+// ── Sub-agent / nested agent events ──
+/** Replaces the 7 sub_* event types with a single agent_event type that wraps standard events. */
+export interface AgentEvent extends BaseMessage {
+  type: 'agent_event';
+  data: {
+    agent_id: string;
+    parent_id?: string;  // reserved for nested sub-sub-agents
+    event: {
+      type: string;
+      data: Record<string, unknown>;
+    };
+  };
 }
 
 export interface UploadFileResultEvent extends BaseMessage {

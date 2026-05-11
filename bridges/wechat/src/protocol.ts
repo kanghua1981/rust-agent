@@ -11,6 +11,8 @@ export interface BaseMessage {
   type: string;
   data?: any;
   id?: string;
+  /** Monotonically increasing event sequence number (for reconnection recovery). */
+  seq?: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -107,7 +109,6 @@ export interface ToolUseEvent {
   data: {
     tool: string;
     input: any;
-    id?: string;
   };
 }
 
@@ -162,7 +163,6 @@ export interface DoneEvent {
   type: 'done';
   data: {
     text: string;
-    id?: string;
     pending_changes?: number;
   };
 }
@@ -203,6 +203,22 @@ export interface StageEndEvent {
   };
 }
 
+// ── Sub-agent / nested agent events ──
+// Replaces the 7 sub_* event types with a single agent_event type
+// that wraps standard events with agent routing metadata.
+
+export interface AgentEvent {
+  type: 'agent_event';
+  data: {
+    agent_id: string;
+    parent_id?: string;  // reserved for future nested sub-sub-agents
+    event: {
+      type: string;
+      data: Record<string, unknown>;
+    };
+  };
+}
+
 export type ServerEvent =
   | ReadyEvent
   | ThinkingStartEvent
@@ -224,7 +240,8 @@ export type ServerEvent =
   | PongEvent
   | CancelledEvent
   | RoleHeaderEvent
-  | StageEndEvent;
+  | StageEndEvent
+  | AgentEvent;
 
 // ═══════════════════════════════════════════════════════════════════
 // 工具函数

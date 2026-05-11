@@ -323,7 +323,7 @@ export const useWebSocket = () => {
         break;
 
       case 'tool_use': {
-        const toolId = event.data.id || uuidv4();
+        const toolId = event.id || uuidv4();
         const toolCall: ToolCall = {
           id: toolId,
           tool: event.data.tool,

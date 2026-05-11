@@ -48,7 +48,7 @@ impl crate::output::AgentOutput for NullOutput {
     fn on_streaming_text(&self, _token: &str) {}
     fn on_stream_start(&self) {}
     fn on_stream_end(&self) {}
-    fn on_tool_use(&self, _name: &str, _input: &Value) {}
+    fn on_tool_use(&self, _name: &str, _input: &Value, _tool_id: &str) {}
     fn on_tool_result(&self, _name: &str, _result: &ToolResult) {}
     fn on_diff(&self, _path: &str, _old: &str, _new: &str) {}
     fn confirm(&self, _action: &crate::confirm::ConfirmAction) -> crate::confirm::ConfirmResult {
