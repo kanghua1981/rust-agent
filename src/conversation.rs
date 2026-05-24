@@ -161,6 +161,14 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// Create a minimal conversation with just a system prompt (no project loading).
+    pub fn with_system_prompt(system_prompt: String) -> Self {
+        Conversation {
+            messages: Vec::new(),
+            system_prompt,
+        }
+    }
+
     pub fn new(project_dir: &Path) -> Self {
         let mut system_prompt = Self::build_system_prompt(project_dir);
 

@@ -112,6 +112,17 @@ pub trait MemoryProvider: Send + Sync {
     /// Used by the knowledge extraction pipeline.
     fn add_knowledge(&self, fact: &str);
 
+    /// Take a frozen snapshot of current knowledge for system prompt injection.
+    ///
+    /// Once taken, `recall()` returns the snapshot until `refresh_snapshot()` is
+    /// called. This protects LLM prefix cache by keeping the system prompt stable
+    /// across a session (the "frozen snapshot" pattern).
+    fn take_knowledge_snapshot(&self);
+
+    /// Refresh the frozen snapshot to include latest live knowledge.
+    /// Call at session boundaries (resume, branch, compress).
+    fn refresh_knowledge_snapshot(&self);
+
     // ── Introspection (for CLI display) ────────────────────────────────────
 
     /// True if no entries have been recorded yet.
@@ -120,7 +131,7 @@ pub trait MemoryProvider: Send + Sync {
     /// Total number of entries across all sections.
     fn entry_count(&self) -> usize;
 
-    /// Returns all knowledge entries.
+    /// Returns all knowledge entries (live, not snapshot).
     fn knowledge(&self) -> Vec<String>;
 
     /// Returns `(path, description)` pairs for the file map.
@@ -128,6 +139,9 @@ pub trait MemoryProvider: Send + Sync {
 
     /// Returns session log entries.
     fn session_log(&self) -> Vec<String>;
+
+    /// Returns the frozen knowledge snapshot (if any), otherwise live knowledge.
+    fn knowledge_snapshot(&self) -> Vec<String> { self.knowledge() }
 
     // ── Lifecycle hooks (default no-ops, override to opt in) ──────────────
 
@@ -285,6 +299,21 @@ impl MemoryProvider for LocalFileMemory {
         }
     }
 
+    fn take_knowledge_snapshot(&self) {
+        self.inner.lock().unwrap().take_knowledge_snapshot();
+    }
+
+    fn refresh_knowledge_snapshot(&self) {
+        self.inner.lock().unwrap().refresh_knowledge_snapshot();
+    }
+
+    fn knowledge_snapshot(&self) -> Vec<String> {
+        self.inner.lock().unwrap()
+            .knowledge_snapshot
+            .clone()
+            .unwrap_or_else(|| self.inner.lock().unwrap().knowledge.clone())
+    }
+
     fn is_empty(&self) -> bool {
         self.inner.lock().unwrap().is_empty()
     }
@@ -326,6 +355,9 @@ impl MemoryProvider for NullMemory {
     fn recall_relevant(&self, _query: &str) -> String { String::new() }
     fn flush(&self) -> anyhow::Result<()> { Ok(()) }
     fn add_knowledge(&self, _fact: &str) {}
+    fn take_knowledge_snapshot(&self) {}
+    fn refresh_knowledge_snapshot(&self) {}
+    fn knowledge_snapshot(&self) -> Vec<String> { vec![] }
     fn is_empty(&self) -> bool { true }
     fn entry_count(&self) -> usize { 0 }
     fn knowledge(&self) -> Vec<String> { vec![] }

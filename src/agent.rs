@@ -249,6 +249,11 @@ impl Agent {
         // Register memory tool so the LLM can manage its own memory
         agent.tool_executor.register_memory_tool(memory);
         
+        // Take the initial frozen snapshot of knowledge for the system prompt.
+        // This locks the knowledge in place for the session, protecting LLM prefix
+        // cache (subsequent tool writes don't change the system prompt).
+        agent.memory.take_knowledge_snapshot();
+        
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {
             let sandbox_note = "\n\n## Sandbox Mode\n\
@@ -308,6 +313,9 @@ impl Agent {
         
         // Register memory tool so the LLM can manage its own memory
         agent.tool_executor.register_memory_tool(memory);
+        
+        // Take the initial frozen snapshot (for restored conversation).
+        agent.memory.take_knowledge_snapshot();
         
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {

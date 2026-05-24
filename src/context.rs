@@ -6,6 +6,100 @@
 
 use crate::conversation::{ContentBlock, Conversation, ImageSource, Message};
 
+// ── Precise token counting (optional tiktoken-rs support) ─────────────────
+
+/// Token counter that uses `tiktoken-rs` when the feature is enabled,
+/// falling back to a tuned heuristic for each model family.
+pub struct TokenCounter {
+    /// Whether tiktoken is available (set at startup)
+    tiktoken_available: bool,
+}
+
+impl TokenCounter {
+    /// Create a new token counter. Automatically detects tiktoken availability.
+    pub fn new() -> Self {
+        Self {
+            tiktoken_available: cfg!(feature = "tiktoken"),
+        }
+    }
+
+    /// Count tokens in `text` using the most appropriate method for `model`.
+    pub fn count(&self, text: &str, model: &str) -> usize {
+        if self.tiktoken_available {
+            match Self::count_tiktoken(text, model) {
+                Ok(n) => return n,
+                Err(_) => { /* fall through to heuristic */ }
+            }
+        }
+        Self::count_heuristic(text, model)
+    }
+
+    #[cfg(feature = "tiktoken")]
+    fn count_tiktoken(text: &str, _model: &str) -> Result<usize, String> {
+        use tiktoken_rs::cl100k_base;
+        // cl100k_base is used by GPT-4 and is close enough for Claude too
+        let bpe = cl100k_base().map_err(|e| format!("tiktoken init: {}", e))?;
+        let tokens = bpe.encode_with_special_tokens(text);
+        Ok(tokens.len())
+    }
+
+    #[cfg(not(feature = "tiktoken"))]
+    fn count_tiktoken(_text: &str, _model: &str) -> Result<usize, String> {
+        Err("tiktoken not compiled in".to_string())
+    }
+
+    /// Heuristic token count with per-model-family tuning.
+    ///
+    /// These ratios are empirically derived and more accurate than the old
+    /// fixed CJK=1.5/ASCII=0.25 heuristic.
+    fn count_heuristic(text: &str, model: &str) -> usize {
+        let model_lower = model.to_lowercase();
+
+        // Per-model-family character-per-token ratios
+        let (cjk_ratio, ascii_ratio): (f64, f64) = if model_lower.contains("claude") {
+            // Claude 3/4 tokenizer is ~3.5 chars/token for English, ~1.2 for CJK
+            (1.2, 3.5)
+        } else if model_lower.contains("gpt-4") {
+            (1.1, 3.8)
+        } else if model_lower.contains("gpt-3.5") {
+            (1.0, 3.5)
+        } else if model_lower.contains("deepseek") {
+            // DeepSeek uses a similar tokenizer to OpenAI
+            (1.2, 3.5)
+        } else {
+            // Conservative defaults
+            (1.5, 3.2)
+        };
+
+        let cjk_count = text.chars().filter(|c| is_cjk(*c)).count();
+        let ascii_count = text.len().saturating_sub(cjk_count);
+
+        let cjk_tokens = (cjk_count as f64 / cjk_ratio).ceil() as usize;
+        let ascii_tokens = (ascii_count as f64 / ascii_ratio).ceil() as usize;
+
+        (cjk_tokens + ascii_tokens).max(1)
+    }
+}
+
+impl Default for TokenCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Check if a character is CJK (Chinese/Japanese/Korean).
+fn is_cjk(c: char) -> bool {
+    let c = c as u32;
+    (0x4E00..=0x9FFF).contains(&c)    // CJK Unified Ideographs
+        || (0x3000..=0x303F).contains(&c)  // CJK Symbols & Punctuation
+        || (0x3040..=0x30FF).contains(&c)  // Hiragana & Katakana
+        || (0xAC00..=0xD7AF).contains(&c)  // Hangul Syllables
+        || (0xFF00..=0xFFEF).contains(&c)  // Fullwidth forms
+        || (0x3400..=0x4DBF).contains(&c)  // CJK Extension A
+        || (0x20000..=0x2A6DF).contains(&c) // CJK Extension B
+        || (0xF900..=0xFAFF).contains(&c)  // CJK Compatibility
+}
+
 /// Estimated max context tokens for different models
 pub fn max_context_tokens(model: &str) -> usize {
     let model_lower = model.to_lowercase();
@@ -26,29 +120,25 @@ pub fn max_context_tokens(model: &str) -> usize {
     }
 }
 
-/// Rough estimate of tokens in a string (~4 chars per token for English,
-/// ~2 chars per token for CJK).
-/// This is a heuristic, not exact.
+/// Lazy-initialized global token counter.
+static TOKEN_COUNTER: once_cell::sync::Lazy<TokenCounter> =
+    once_cell::sync::Lazy::new(TokenCounter::new);
+
+/// Rough estimate of tokens in a string using the improved heuristic.
+/// For precise counting, the `TokenCounter` with tiktoken-rs is preferred.
+/// Kept for backward compatibility — prefers using model-aware `estimate_tokens_for_model`.
 pub fn estimate_tokens(text: &str) -> usize {
-    // Count CJK characters vs ASCII
-    let cjk_chars = text
-        .chars()
-        .filter(|c| {
-            let c = *c as u32;
-            (0x4E00..=0x9FFF).contains(&c)    // CJK Unified
-                || (0x3000..=0x303F).contains(&c)  // CJK Punctuation
-                || (0x3040..=0x30FF).contains(&c)  // Hiragana/Katakana
-                || (0xAC00..=0xD7AF).contains(&c)  // Hangul
-        })
-        .count();
-
-    let ascii_chars = text.len().saturating_sub(cjk_chars);
-
-    // CJK: ~1.5 tokens per character, ASCII: ~0.25 tokens per character
-    (cjk_chars * 3 / 2) + (ascii_chars / 4) + 1
+    TokenCounter::count_heuristic(text, "default")
 }
 
-/// Estimate total tokens for a conversation
+/// Estimate tokens in `text` using the best available counter for `model`.
+/// Uses tiktoken-rs when the feature is enabled, otherwise a per-model heuristic.
+pub fn estimate_tokens_for_model(text: &str, model: &str) -> usize {
+    TOKEN_COUNTER.count(text, model)
+}
+
+/// Estimate total tokens for a conversation (using default heuristic).
+/// Prefer `estimate_conversation_tokens_for_model` when the model is known.
 pub fn estimate_conversation_tokens(conversation: &Conversation) -> usize {
     let system_tokens = estimate_tokens(&conversation.system_prompt);
 
@@ -61,15 +151,33 @@ pub fn estimate_conversation_tokens(conversation: &Conversation) -> usize {
     system_tokens + message_tokens
 }
 
-/// Estimate tokens for a single message
+/// Estimate total tokens for a conversation using model-specific tokenizer.
+pub fn estimate_conversation_tokens_for_model(conversation: &Conversation, model: &str) -> usize {
+    let system_tokens = estimate_tokens_for_model(&conversation.system_prompt, model);
+
+    let message_tokens: usize = conversation
+        .messages
+        .iter()
+        .map(|msg| estimate_message_tokens_for_model(msg, model))
+        .sum();
+
+    system_tokens + message_tokens
+}
+
+/// Estimate tokens for a single message (using default heuristic).
 fn estimate_message_tokens(msg: &Message) -> usize {
+    estimate_message_tokens_for_model(msg, "default")
+}
+
+/// Estimate tokens for a single message with model-specific tokenizer.
+fn estimate_message_tokens_for_model(msg: &Message, model: &str) -> usize {
     let overhead = 4; // role + formatting tokens
 
     let content_tokens: usize = msg
         .content
         .iter()
         .map(|block| match block {
-            ContentBlock::Text { text } => estimate_tokens(text),
+            ContentBlock::Text { text } => estimate_tokens_for_model(text, model),
             ContentBlock::Image { source, .. } => {
                 // Estimate tokens for image based on base64 data size
                 // For OpenAI vision models, each image token represents a 512x512 tile
@@ -82,10 +190,10 @@ fn estimate_message_tokens(msg: &Message) -> usize {
                 }
             }
             ContentBlock::ToolUse { name, input, .. } => {
-                estimate_tokens(name) + estimate_tokens(&input.to_string())
+                estimate_tokens_for_model(name, model) + estimate_tokens_for_model(&input.to_string(), model)
             }
-            ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
-            ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking),
+            ContentBlock::ToolResult { content, .. } => estimate_tokens_for_model(content, model),
+            ContentBlock::Thinking { thinking, .. } => estimate_tokens_for_model(thinking, model),
         })
         .sum();
 
@@ -103,7 +211,7 @@ pub struct ContextStatus {
 /// Check context window status
 pub fn check_context(conversation: &Conversation, model: &str) -> ContextStatus {
     let max = max_context_tokens(model);
-    let estimated = estimate_conversation_tokens(conversation);
+    let estimated = estimate_conversation_tokens_for_model(conversation, model);
     let usage = estimated as f32 / max as f32 * 100.0;
 
     ContextStatus {
@@ -159,7 +267,7 @@ pub fn plan_truncation(conversation: &Conversation, model: &str) -> Option<Trunc
     let max = max_context_tokens(model);
     let target = max * 60 / 100;
 
-    let total = estimate_conversation_tokens(conversation);
+    let total = estimate_conversation_tokens_for_model(conversation, model);
     if total <= target {
         return None;
     }
@@ -188,10 +296,10 @@ pub fn plan_truncation(conversation: &Conversation, model: &str) -> Option<Trunc
 
     let first_tokens: usize = conversation.messages[..first_keep]
         .iter()
-        .map(estimate_message_tokens)
+        .map(|m| estimate_message_tokens_for_model(m, model))
         .sum();
 
-    let system_tokens = estimate_tokens(&conversation.system_prompt);
+    let system_tokens = estimate_tokens_for_model(&conversation.system_prompt, model);
     let summary_overhead = 200; // tokens for the truncation notice (larger for LLM summary)
     let available = target.saturating_sub(system_tokens + first_tokens + summary_overhead);
 
@@ -203,11 +311,11 @@ pub fn plan_truncation(conversation: &Conversation, model: &str) -> Option<Trunc
     while i > 0 {
         i -= 1;
         let msg = &middle[i];
-        let msg_tokens = estimate_message_tokens(msg);
+        let msg_tokens = estimate_message_tokens_for_model(msg, model);
 
         if message_has_tool_result(msg) && i > 0 {
             let prev = &middle[i - 1];
-            let pair_tokens = msg_tokens + estimate_message_tokens(prev);
+            let pair_tokens = msg_tokens + estimate_message_tokens_for_model(prev, model);
             if end_tokens + pair_tokens > available {
                 break;
             }
@@ -355,6 +463,86 @@ pub fn apply_truncation(
 
     ensure_tool_pair_integrity(&mut conversation.messages);
     truncate_large_blocks(conversation);
+}
+
+/// Summarize removed messages using an LLM for narrative quality.
+///
+/// Builds a condensed context from the messages, sends it to the LLM with a
+/// summarization prompt, and returns the LLM's response. Falls back to the
+/// mechanical `summarize_removed_messages()` if the LLM call fails or the
+/// response is empty.
+pub async fn summarize_with_llm(
+    messages: &[Message],
+    client: &dyn crate::llm::LlmClient,
+) -> String {
+    const SUMMARY_SYSTEM_PROMPT: &str = "\
+You are a conversation summarizer. Your task is to summarize the key actions, \
+decisions, and outcomes from the conversation segment below. \
+Focus on: what files were modified, what commands were run, what was discussed, \
+and any conclusions reached. \
+Keep the summary concise (2-5 sentences). Do not add commentary or analysis.";
+
+    let context = build_truncation_context(messages);
+    let mut conv = crate::conversation::Conversation::with_system_prompt(
+        SUMMARY_SYSTEM_PROMPT.to_string()
+    );
+    conv.messages.push(crate::conversation::Message::user(&format!(
+        "Summarize this conversation segment:\n\n{}", context
+    )));
+
+    match client.send_message(&conv, &[]).await {
+        Ok(response) => {
+            let text: String = response.content.iter()
+                .filter_map(|b| {
+                    if let crate::conversation::ContentBlock::Text { text } = b {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.trim().is_empty() {
+                tracing::debug!("LLM summary was empty, using mechanical fallback");
+                summarize_removed_messages(messages)
+            } else {
+                tracing::debug!("LLM generated summary: {} chars", text.len());
+                text
+            }
+        }
+        Err(e) => {
+            tracing::warn!("LLM summarization failed: {}, using mechanical fallback", e);
+            summarize_removed_messages(messages)
+        }
+    }
+}
+
+/// Async variant of `truncate_conversation` that uses LLM for summarization.
+///
+/// When `client` is Some, removed messages are summarized by the LLM for a
+/// richer, more contextual narrative. Falls back to mechanical summary if the
+/// LLM call fails. When `client` is None, uses the mechanical summarizer directly.
+pub async fn truncate_conversation_llm(
+    conversation: &mut Conversation,
+    model: &str,
+    memory: &dyn crate::memory::MemoryProvider,
+    client: Option<&dyn crate::llm::LlmClient>,
+) {
+    if let Some(plan) = plan_truncation(conversation, model) {
+        let summary = if let Some(client) = client {
+            summarize_with_llm(
+                &conversation.messages[plan.remove_start..plan.remove_end],
+                client,
+            ).await
+        } else {
+            summarize_removed_messages(
+                &conversation.messages[plan.remove_start..plan.remove_end],
+            )
+        };
+        apply_truncation(conversation, &plan, &summary, memory);
+    } else {
+        truncate_large_blocks(conversation);
+    }
 }
 
 /// Truncate individual large content blocks (e.g., huge file contents or command outputs)

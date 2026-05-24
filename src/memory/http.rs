@@ -51,6 +51,9 @@ impl MemoryProvider for HttpMemory {
         // TODO: push fact to remote service
     }
 
+    fn take_knowledge_snapshot(&self) {}
+    fn refresh_knowledge_snapshot(&self) {}
+
     fn is_empty(&self) -> bool {
         true
     }

@@ -455,6 +455,21 @@ impl MemoryProvider for IntelligentMemory {
         self.save_intel();
     }
 
+    fn take_knowledge_snapshot(&self) {
+        self.base.lock().unwrap().take_knowledge_snapshot();
+    }
+
+    fn refresh_knowledge_snapshot(&self) {
+        self.base.lock().unwrap().refresh_knowledge_snapshot();
+    }
+
+    fn knowledge_snapshot(&self) -> Vec<String> {
+        self.base.lock().unwrap()
+            .knowledge_snapshot
+            .clone()
+            .unwrap_or_else(|| self.base.lock().unwrap().knowledge.clone())
+    }
+
     fn is_empty(&self) -> bool {
         self.base.lock().unwrap().is_empty()
             && self.intel.lock().unwrap().intents.is_empty()

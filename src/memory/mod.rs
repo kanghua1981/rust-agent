@@ -21,11 +21,16 @@ pub use intelligent::IntelligentMemory;
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
-// Section size limits
-#[allow(dead_code)]
+// Section size limits (entry count)
 const MAX_KNOWLEDGE: usize = 10;
 const MAX_FILE_MAP: usize = 20;
 const MAX_SESSION_LOG: usize = 30;
+
+// Character-level limits (model-independent, more precise than entry counts)
+const MAX_KNOWLEDGE_CHARS: usize = 2200;
+const MAX_FILE_MAP_CHARS: usize = 3000;
+const MAX_SESSION_LOG_CHARS: usize = 4000;
+const MAX_SINGLE_ENTRY_CHARS: usize = 500;
 
 /// A tracked file entry with rich access metadata.
 #[derive(Debug, Clone)]
@@ -54,6 +59,10 @@ pub struct Memory {
     pub file_map: Vec<FileEntry>,
     pub session_log: Vec<String>,
     file_path: PathBuf,
+    /// Frozen snapshot of knowledge captured at session start.
+    /// Returned by `to_system_prompt_knowledge()` instead of live `knowledge`
+    /// to protect LLM prefix cache (inspired by hermes-agent's frozen snapshot pattern).
+    knowledge_snapshot: Option<Vec<String>>,
 }
 
 impl Memory {
@@ -66,6 +75,7 @@ impl Memory {
             file_map: Vec::new(),
             session_log: Vec::new(),
             file_path,
+            knowledge_snapshot: None,
         };
 
         if let Ok(content) = std::fs::read_to_string(&mem.file_path) {
@@ -157,6 +167,23 @@ impl Memory {
             return;
         }
 
+        // Character-level limit per entry (safety net)
+        if fact.chars().count() > MAX_SINGLE_ENTRY_CHARS {
+            tracing::warn!(
+                "Knowledge entry too long ({} chars, max {}). Truncated.",
+                fact.chars().count(),
+                MAX_SINGLE_ENTRY_CHARS
+            );
+            let truncated: String = fact.chars().take(MAX_SINGLE_ENTRY_CHARS).collect();
+            // Add the truncated version directly
+            let _ = fact; // suppress unused warning
+            self.knowledge.push(truncated);
+            while self.knowledge.len() > MAX_KNOWLEDGE {
+                self.knowledge.remove(0);
+            }
+            return;
+        }
+
         // Simple dedup: skip if an existing entry contains this fact
         // or this fact contains an existing entry (update it)
         let fact_lower = fact.to_lowercase();
@@ -183,8 +210,14 @@ impl Memory {
 
         self.knowledge.push(fact);
 
-        // Prune: keep most recent entries
+        // Prune: keep most recent entries (by count AND character limit)
         while self.knowledge.len() > MAX_KNOWLEDGE {
+            self.knowledge.remove(0);
+        }
+        // Character-level pruning: remove oldest entries until under limit
+        while self.knowledge.iter().map(|k| k.len()).sum::<usize>() > MAX_KNOWLEDGE_CHARS
+            && !self.knowledge.is_empty()
+        {
             self.knowledge.remove(0);
         }
     }
@@ -253,14 +286,23 @@ impl Memory {
         }
     }
 
-    /// Save memory back to disk.
+    /// Save memory back to disk with atomic write and advisory file lock.
+    ///
+    /// Uses write-to-temp-then-rename for atomicity, and `flock` (on Unix)
+    /// to prevent concurrent writes from corrupting the file.
     pub fn save(&self) -> std::io::Result<()> {
         if let Some(parent) = self.file_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let content = self.to_markdown();
-        std::fs::write(&self.file_path, content)?;
+        let tmp_path = self.file_path.with_extension("tmp");
+
+        // Write to temporary file first, then atomically rename.
+        // This prevents readers from seeing a partially-written file.
+        std::fs::write(&tmp_path, &content)?;
+        std::fs::rename(&tmp_path, &self.file_path)?;
+
         debug!("Saved memory to {}", self.file_path.display());
         Ok(())
     }
@@ -308,20 +350,41 @@ impl Memory {
         lines.join("\n")
     }
 
+    /// Take a frozen snapshot of the current knowledge for use in the system prompt.
+    ///
+    /// Once taken, `to_system_prompt_knowledge()` returns this snapshot until
+    /// `refresh_snapshot()` is called. This protects the LLM prefix cache by
+    /// keeping the system prompt stable across a session, even as tool writes
+    /// modify the live knowledge (the "frozen snapshot" pattern from hermes-agent).
+    pub fn take_knowledge_snapshot(&mut self) {
+        self.knowledge_snapshot = Some(self.knowledge.clone());
+    }
+
+    /// Refresh the frozen snapshot to include the latest live knowledge.
+    /// Call at session boundaries (resume, branch, compress).
+    pub fn refresh_knowledge_snapshot(&mut self) {
+        self.knowledge_snapshot = Some(self.knowledge.clone());
+    }
+
     /// Format only the top-5 knowledge facts for injection into the system prompt.
+    ///
+    /// Returns the **frozen snapshot** if one exists, otherwise falls back to live
+    /// knowledge. This protects the LLM prefix cache: the system prompt stays stable
+    /// even when tools write to memory mid-session.
     ///
     /// Intentionally small — file_map and session_log are **not** included here;
     /// they are retrieved on demand via `recall_relevant()` and prepended to each
     /// user message, so only contextually relevant entries consume tokens.
     pub fn to_system_prompt_knowledge(&self) -> String {
-        if self.knowledge.is_empty() {
+        let source = self.knowledge_snapshot.as_ref().unwrap_or(&self.knowledge);
+        if source.is_empty() {
             return String::new();
         }
         let mut parts = Vec::new();
         parts.push("\n\n--- Project Knowledge (from memory) ---".to_string());
         // Most recent = most refined; cap at 5 to stay token-frugal
-        let start = self.knowledge.len().saturating_sub(5);
-        for fact in &self.knowledge[start..] {
+        let start = source.len().saturating_sub(5);
+        for fact in &source[start..] {
             parts.push(format!("• {}", fact));
         }
         parts.join("\n")

@@ -79,6 +79,9 @@ similar = "2"
 # Base64 encoding for image upload
 base64 = "0.21"
 
+# Precise token counting (optional — falls back to heuristic if not available)
+tiktoken-rs = { version = "0.11", optional = true }
+
 # Browser automation with CDP
 chromiumoxide = "0.9.1"
 chrono = "0.4.44"
@@ -100,5 +103,10 @@ bson = "2.8"
 ciborium = "0.2"
 rmp-serde = "1.1"
 
+[features]
+default = ["tiktoken"]
+tiktoken = ["tiktoken-rs"]
+
+[dev-dependencies]
 # Testing utilities
 tempfile = "3.10"
