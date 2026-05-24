@@ -61,9 +61,6 @@ regex = "1"
 # File watching / globbing
 glob = "0.3"
 
-# Syntax highlighting in terminal
-syntect = "5"
-
 # Markdown rendering in terminal
 termimad = "0.30"
 
