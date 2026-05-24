@@ -17,7 +17,7 @@ fi
 
 # 安装前端依赖
 echo "📦 安装前端依赖..."
-npm install
+npm ci
 
 # 构建前端
 echo "🔨 构建前端..."

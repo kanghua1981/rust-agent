@@ -128,6 +128,46 @@ pub trait MemoryProvider: Send + Sync {
 
     /// Returns session log entries.
     fn session_log(&self) -> Vec<String>;
+
+    // ── Lifecycle hooks (default no-ops, override to opt in) ──────────────
+
+    /// Called at the start of each turn with the user message.
+    ///
+    /// Use for turn-counting, scope management, periodic maintenance.
+    /// `remaining_tokens` and `model` provide runtime context; providers use what they need.
+    fn on_turn_start(&self, _turn_number: u32, _message: &str, _remaining_tokens: u64, _model: &str) {}
+
+    /// Called when a session ends (explicit exit or timeout).
+    ///
+    /// `messages` is the full conversation history. Use for end-of-session
+    /// fact extraction, summarization, etc.
+    fn on_session_end(&self, _messages: &[crate::conversation::Message]) {}
+
+    /// Called when the agent switches session_id mid-process.
+    ///
+    /// Fires on session resume, branch, reset, and context compression.
+    /// Providers that cache per-session state should update/reset their state here.
+    fn on_session_switch(&self, _new_session_id: &str, _parent_session_id: &str, _reset: bool) {}
+
+    /// Called before context compression discards old messages.
+    ///
+    /// `messages` is the list about to be summarized/discarded. Use to extract
+    /// insights before they're lost. Return text to inject into the compression
+    /// summary prompt. Return empty string for no contribution.
+    fn on_pre_compress(&self, _messages: &[crate::conversation::Message]) -> String {
+        String::new()
+    }
+
+    /// Called when the built-in memory tool writes an entry (add/replace/remove).
+    ///
+    /// External providers can mirror built-in memory writes to their backend.
+    fn on_memory_write(&self, _action: &str, _target: &str, _content: &str) {}
+
+    /// Called when a sub-agent delegation completes.
+    ///
+    /// `task` is the delegation prompt, `result` is the sub-agent's final response,
+    /// `child_session_id` is the sub-agent's session identifier.
+    fn on_delegation(&self, _task: &str, _result: &str, _child_session_id: &str) {}
 }
 
 // ── LocalFileMemory ──────────────────────────────────────────────────────────

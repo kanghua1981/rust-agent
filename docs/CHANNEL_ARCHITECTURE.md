@@ -1,7 +1,7 @@
-# Channel 架构与远程工具代理设计
+# Channel 架构设计
 
-> 状态：设计讨论阶段，尚未实现
-> 最后更新：2026-05-09
+> 状态：Phase 1 ✅ / Phase 2 待实现 / Phase 3 ✅
+> 最后更新：2026-06-08
 
 ---
 
@@ -299,192 +299,58 @@ Server 推送给客户端的事件（现有协议已全部支持）：
 
 ---
 
-## 5. 远程工具代理（Full Tool Proxy）
+## 5. `./agent connect` 客户端极简化设计
 
-当 `workdir_owner == "client"` 时，所有文件/命令类工具调用由 Server 转发到 Client 本地执行。
+### 5.1 设计原则
 
-### 5.1 为什么可行
-
-LLM 从来没见过真实的文件系统——它始终只消费工具返回的**文本结果**。无论工具在 Server 本地执行还是代理到 Client 执行，LLM 看到的是完全相同的文本反馈。因此工具代理**不会引入新的误判**。
-
-### 5.2 协议扩展
-
-需要在现有协议上增加少量新消息类型：
-
-```typescript
-// === 新增 Client-side 消息 ===
-
-// 连接握手时声明工作目录归属和代理配置
-interface HandshakeMessage extends BaseMessage {
-  type: 'handshake';
-  data: {
-    workdir: string;
-    workdir_owner: 'client' | 'server';       // 工作目录在谁的文件系统上
-    proxy_tools: string[];                     // 需要代理的工具列表
-    environment: ClientEnvironment;            // 客户端环境快照（注入 system prompt）
-  };
-}
-
-interface ClientEnvironment {
-  os: string;                   // "macOS 14.3", "Ubuntu 22.04"
-  shell: string;                // "zsh", "bash"
-  arch: string;                 // "x86_64", "aarch64"
-  package_manager: string;      // "brew", "apt", "dnf"
-  project_type?: string;        // "rust", "python", "node"
-  available_bins?: string[];    // ["cargo", "git", "docker"]
-}
-
-// 工具代理请求（Server → Client）
-interface ToolProxyRequestEvent extends BaseMessage {
-  type: 'tool_proxy_request';
-  data: {
-    proxy_id: string;            // 关联 ID
-    tool: string;                // 工具名
-    args: Record<string, any>;   // 工具参数
-  };
-}
-
-// 工具代理结果（Client → Server）
-interface ToolProxyResultMessage extends BaseMessage {
-  type: 'tool_proxy_result';
-  data: {
-    proxy_id: string;
-    result: ToolResultData;      // 工具返回结果（与本地工具调用格式一致）
-  };
-}
-
-interface ToolResultData {
-  ok: boolean;
-  output?: string;
-  error?: string;
-}
-```
-
-### 5.3 全量代理策略
-
-**规则：要么全代理，要么一个都不代理。不允许混合。**
+`./agent connect` 是一个**纯粹的事件转发+渲染层**。它不执行任何工具，不维护对话状态。所有工具在 Server 侧执行，Client 只负责将 Server 推送的事件渲染到终端。
 
 ```
-workdir_owner == "client" → 所有 [read_file, write_file, edit_file, multi_edit_file,
-                            run_command, git, grep_search, file_search, list_directory]
-                            全部代理到 Client 执行
-
-workdir_owner == "server" → 所有工具在 Server 本地执行（现有行为）
-```
-
-无状态工具（`think`）不受影响，在哪执行都一样。
-
-### 5.4 环境信息注入
-
-Client 在连接握手时发送环境快照，Agent Server 将其注入 system prompt：
-
-```
-You are connected to a user's local machine via a secure proxy.
-ALL file operations and shell commands are executed on the USER'S MACHINE:
-
-  OS: macOS 14.3
-  Shell: zsh
-  Architecture: aarch64 (Apple Silicon)
-  Package Manager: Homebrew (brew)
-  Working Directory: /Users/xxx/projects/foo
-  Available Tools: cargo, git, docker, python3, node
-
-Use `brew` for package installation, NOT `apt-get`.
-Use macOS-style paths and commands.
-```
-
-这确保 LLM 不会用 Server 的环境去推断 Client 端的操作。
-
-### 5.5 Agent 侧的改动
-
-```rust
-// agent.rs — 工具执行循环中的改动点
-
-// 当前逻辑：
-let result = tool_executor.execute(&tool_name, &args).await;
-
-// 增加判断：
-let result = if is_proxy_tool(&tool_name, &session_proxy_config) {
-    output.send_tool_proxy_request(&tool_name, &args).await?
-} else {
-    tool_executor.execute(&tool_name, &args).await?
-};
-```
-
-Agent 核心的改动仅限于：**在执行工具之前判断是否需要代理**。如果代理，将工具调用转发给 OutputBackend，OutputBackend 的 WebSocket 实现负责发送 `tool_proxy_request` 并等待 `tool_proxy_result`。如果 OutputBackend 是 Cli（本地模式），则永远不会触发代理路径。
-
-### 5.6 错误处理
-
-| 场景 | 处理 |
-|------|------|
-| 网络断开，代理请求未送达 | 超时后返回错误给 LLM："Tool proxy request timed out" |
-| Client 执行工具时崩溃 | Client 重连后返回 `tool_proxy_result` 带 error |
-| 代理的工具不在 Client 支持的列表中 | Server 返回 "Tool not available on client" |
-
----
-
-## 6. 客户端极简化设计
-
-### 6.1 设计原则
-
-Client-side Channel 应该是一个**薄壳**：
-
-```
-┌─ Client-side Channel ──────────────────────────────────────────────┐
+┌─ ./agent connect ─────────────────────────────────────────────────┐
 │                                                                     │
-│  ┌──────────────┐    ┌──────────────────┐    ┌──────────────────┐   │
-│  │  通信层       │    │  本地工具执行器    │    │  渲染层（复用）   │   │
-│  │  WebSocket   │    │  (if proxy mode) │    │  ui.rs           │   │
-│  │  客户端       │    │                  │    │  output.rs       │   │
-│  │              │    │  read_file        │    │  cli.rs          │   │
-│  │  收发 JSON   │    │  write_file       │    │                  │   │
-│  │  事件        │    │  run_command      │    │  （纯 display,    │   │
-│  │              │    │  grep_search      │    │   不做决策）      │   │
-│  └──────┬───────┘    └────────┬─────────┘    └────────┬─────────┘   │
-│         │                     │                       │             │
-│         └─────────────────────┼───────────────────────┘             │
-│                               │                                     │
-│                       事件 → 渲染 映射                               │
-│                       代理 → 执行 映射                               │
+│  ┌──────────────┐                        ┌──────────────────┐       │
+│  │  通信层       │                        │  渲染层（复用）   │       │
+│  │  WebSocket   │                        │  ui.rs           │       │
+│  │  客户端       │                        │  output.rs       │       │
+│  │              │                        │  cli.rs          │       │
+│  │  收发 JSON   │                        │                  │       │
+│  │  事件        │                        │  （纯 display,    │       │
+│  │              │                        │   不做决策）      │       │
+│  └──────┬───────┘                        └────────┬─────────┘       │
+│         │                                         │                 │
+│         └────────────── 事件 → 渲染 ──────────────┘                 │
+│                                                                     │
+│  简单循环：用户输入 → send → recv 事件 → 渲染                        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Client 不做的事：**
 - ❌ 不做 LLM 推理
 - ❌ 不做对话管理
-- ❌ 不做工具编排（何时调用哪个工具是 Server 决定的）
+- ❌ 不做工具执行（所有工具在 Server 侧执行）
 - ❌ 不做上下文窗口管理
 
 **Client 做的事：**
 - ✅ WebSocket 连接管理（重连、心跳）
 - ✅ 将用户输入包装为 `user_message` 发送
 - ✅ 接收 Server 事件并渲染到终端/UI
-- ✅ 收到 `tool_proxy_request` 时在本地执行并返回结果
 - ✅ 将用户确认/回答包装为 `confirm_response`/`ask_user_response` 发回
 
-### 6.2 `./agent connect` 的极简实现草图
+### 5.2 `./agent connect` 实现草图
 
 ```rust
 // src/connect.rs — 核心循环
 
-pub async fn run(url: &str, workdir: &Path) -> Result<()> {
+pub async fn run(url: &str) -> Result<()> {
     // 1. 连接 WebSocket
     let (ws, _) = tokio_tungstenite::connect_async(url).await?;
 
-    // 2. 发送握手（环境快照 + 代理声明）
-    let handshake = Handshake {
-        workdir: workdir.to_string_lossy().to_string(),
-        workdir_owner: "client",
-        proxy_tools: vec!["read_file", "write_file", "edit_file", ...],
-        environment: probe_environment()?,
-    };
-    ws.send(handshake.to_json()).await?;
-
-    // 3. 等待 ready
+    // 2. 等待 ready
     let ready = wait_for_ready(&ws).await?;
 
-    // 4. 主循环：用户输入 ↔ Server 事件
+    // 3. 主循环：用户输入 ↔ Server 事件
     let mut repl = CliRepl::new();
+    let output = CliOutput::new();
     loop {
         tokio::select! {
             // 用户在终端输入
@@ -494,14 +360,15 @@ pub async fn run(url: &str, workdir: &Path) -> Result<()> {
             // Server 推送事件
             event = ws.recv() => {
                 match event["type"].as_str() {
-                    "streaming_token" => output.push_token(&event["data"]["token"]),
-                    "tool_use" => output.show_tool(&event["data"]),
-                    "tool_proxy_request" => {
-                        // 在本地执行工具
-                        let result = local_execute_tool(&event["data"]).await;
-                        ws.send(json!({"type":"tool_proxy_result","data":result})).await?;
+                    "streaming_token" => output.on_streaming_text(&event["data"]["token"]),
+                    "tool_use" => output.on_tool_use(&event["data"]),
+                    "tool_result" => output.on_tool_result(&event["data"]),
+                    "confirm_request" => {
+                        output.on_confirm_request(&event["data"]);
+                        let approved = repl.ask_yes_no();
+                        ws.send(json!({"type":"confirm_response","data":{"approved":approved}})).await?;
                     }
-                    "done" => { output.flush(); }
+                    "done" => output.flush(),
                     // ... 其他事件全部翻译为 output 调用
                 }
             }
@@ -512,9 +379,9 @@ pub async fn run(url: &str, workdir: &Path) -> Result<()> {
 
 ---
 
-## 7. 实施路线图
+## 6. 实施路线图
 
-### Phase 1：WeChat Bridge MVP（TypeScript，独立包，零侵入 Agent）
+### Phase 1：WeChat Bridge MVP（TypeScript，独立包，零侵入 Agent） ✅ 已完成
 
 **目标：** 验证"Agent Server ↔ 外部平台"的 WebSocket 协议是否流畅。
 
@@ -651,19 +518,18 @@ class SessionPool {
 }
 ```
 
-### Phase 2：`./agent connect` 远程 CLI 客户端
+### Phase 2：`./agent connect` 远程 CLI 客户端（待实现）
 
-**目标：** 验证 Client-side Channel 模式，最大化代码复用。
+**目标：** 实现远程 CLI 客户端，最大化代码复用。
 
 | 任务 | 位置 | 说明 |
 |------|------|------|
 | 新增 `src/connect.rs` | 新建 | WebSocket 客户端核心 |
 | `main.rs` 增加 `Connect` 子命令 | 编辑 | clap 解析 |
-| 实现 handshake 与环境探测 | 新建/编辑 | `src/connect.rs` |
 
 Agent Server 侧改动：**零**（现有协议已足够）。
 
-### Phase 3：`[[channels]]` 扩展点
+### Phase 3：`[[channels]]` 扩展点 ✅ 已完成
 
 **目标：** 让 PluginManager 管理 Server-side Channel 进程的生命周期。
 
@@ -675,20 +541,7 @@ Agent Server 侧改动：**零**（现有协议已足够）。
 | 编辑 `src/plugin/mod.rs` | 编辑 | 导出 channel 模块 |
 | 编辑 `src/server.rs` | 编辑 | 启动/关闭时调用 ChannelManager |
 
-### Phase 4：全量工具代理
-
-**目标：** 实现 `workdir_owner == "client"` 时的工具全量代理。
-
-| 任务 | 位置 | 说明 |
-|------|------|------|
-| 协议扩展：`handshake`、`tool_proxy_request`/`result` | `agent.ts` | 新增消息类型 |
-| OutputBackend 代理接口 | `src/output.rs` | 增加 `send_tool_proxy_request()` |
-| WsOutput 代理实现 | `src/output.rs` | WebSocket 的代理转发 |
-| Agent 循环代理判断 | `src/agent.rs` | 工具执行前检查是否需要代理 |
-| Connect 客户端本地执行 | `src/connect.rs` | 接收代理请求，本地执行，返回结果 |
-| 环境探针 | `src/connect.rs` | `probe_environment()` 收集 OS/shell/etc |
-
-### Phase 5：微信插件化封装
+### Phase 4：微信插件化封装（待实现）
 
 **目标：** 将 Phase 1 的 WeChat Bridge 打包为标准插件，通过 `[[channels]]` 声明实现开箱即用。
 
@@ -702,31 +555,28 @@ Agent Server 侧改动：**零**（现有协议已足够）。
 ### 依赖关系
 
 ```
-Phase 1 (WeChat Bridge)  ──独立──►  可直接使用，不依赖后续 Phase
+Phase 1 (WeChat Bridge)  ──独立──►  可直接使用，不依赖后续 Phase ✅
         │
 Phase 2 (./agent connect) ─独立──►  可直接使用，不依赖 Phase 1
-        │                                    │
-Phase 3 ([[channels]])    ◄──────────────────┘  将 Phase 1 的 Bridge 管理起来
         │
-Phase 4 (Tool Proxy)      ◄────────────────────  connect 客户端的高级能力
+Phase 3 ([[channels]])    ◄── Phase 1  通过插件声明管理 Bridge 生命周期 ✅
         │
-Phase 5 (Plugin 封装)     ◄── Phase 3 + Phase 1  打包为开箱即用的插件
+Phase 4 (Plugin 封装)     ◄── Phase 3  将 Bridge 打包为开箱即用的插件
 ```
 
 Phase 1 和 Phase 2 可以**并行开发**——互不依赖，分别验证 Server-side 和 Client-side Channel 模式。
 
 ---
 
-## 8. 决策记录
+## 7. 决策记录
 
 | 决策点 | 结论 | 理由 |
 |--------|------|------|
 | CLI 是否 Channel 化 | ❌ 不做 | CLI 是 Agent 原生界面，同进程，不需要网络 |
 | `./agent connect` 是否新建 crate | ❌ 作为子命令 | 大量复用 ui.rs/output.rs/cli.rs |
-| 工具代理策略 | 全量代理 | 不允许部分代理，防止 LLM 认知分裂 |
-| 环境注入 | handshake 时发送 | 注入 system prompt，让 LLM 正确理解执行环境 |
+| 工具代理（Tool Proxy） | ❌ 不做 | 增加大量复杂度（协议扩展、Agent 循环分支、Client 本地执行器），收益有限——用户完全可以在本地运行 Agent 或使用 Web UI 操作远程 Agent |
 | 会话模型 | persistent + TTL | 多轮对话体验好，TTL 防止资源泄漏 |
-| Channel 二进制分发 | 自动下载 | 类似 rust-analyzer，从 GitHub Release 下载 |
+| Channel 二进制分发 | 自动下载（待实现） | 类似 rust-analyzer，从 GitHub Release 下载 |
 | WeChat Bridge 语言 | **TypeScript** | `@wechatbot/wechatbot` 是官方 TypeScript SDK；复用 `web-ui/src/types/agent.ts` 协议类型；Rust 生态无成熟微信 SDK |
 | WeChat Bridge 在哪 | `bridges/wechat/` 独立 npm 包 | 零侵入 Agent，故障隔离 |
 | Bridge 连接模式 | 一个微信用户一条 WebSocket → 一个 worker 进程 | 利用现有 process-per-connection 模型；用户间天然隔离；并发无阻塞 |
@@ -735,7 +585,7 @@ Phase 1 和 Phase 2 可以**并行开发**——互不依赖，分别验证 Serv
 
 ---
 
-## 9. 附录：WeChat Bridge 语言选择分析
+## 8. 附录：WeChat Bridge 语言选择分析
 
 ### 9.1 判断标准
 

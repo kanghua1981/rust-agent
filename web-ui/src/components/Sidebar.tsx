@@ -198,23 +198,18 @@ const PresetsSection: React.FC<PresetsSectionProps> = ({
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onLoadSession, onNewSession }) => {
-  const { 
-    connectionStatus, 
-    toolCalls, 
-    pendingConfirmations, 
-    serverUrl, 
-    workdir,
-    config, 
-    setConfig, 
-    messages, 
-    sessionInfo, 
-    pendingChanges, 
-    nodeList,
-    presets,
-    applyPreset
-  } = useAgentStore();
-
-  const runningTools = toolCalls.filter(t => t.status === 'executing').length;
+  // Selective subscriptions — subscribe only to what the component renders.
+  // Avoids re-rendering on every streaming token / toolCall / message change.
+  const connectionStatus = useAgentStore(s => s.connectionStatus);
+  const serverUrl = useAgentStore(s => s.serverUrl);
+  const workdir = useAgentStore(s => s.workdir);
+  const pendingChanges = useAgentStore(s => s.pendingChanges);
+  const nodeList = useAgentStore(s => s.nodeList);
+  const presets = useAgentStore(s => s.presets);
+  const applyPreset = useAgentStore(s => s.applyPreset);
+  // Derived values — primitive selectors only fire on actual value change
+  const runningTools = useAgentStore(s => s.toolCalls.filter(t => t.status === 'executing').length);
+  const pendingCount = useAgentStore(s => s.pendingConfirmations.length);
   
   // 处理预设快速连接
   const handleQuickConnect = (presetId: string) => {
@@ -251,7 +246,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
           导航
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-          <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingConfirmations.length || undefined} onClick={() => onTabChange('chat')} />
+          <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingCount || undefined} onClick={() => onTabChange('chat')} />
           <NavItem icon="🔨" label="工具调用" active={activeTab === 'tools'} badge={runningTools || undefined} onClick={() => onTabChange('tools')} />
           <NavItem icon="🌐" label="节点" active={activeTab === 'nodes'} badge={nodeList.length || undefined} onClick={() => onTabChange('nodes')} />
           <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} onClick={() => onTabChange('sessions')} />

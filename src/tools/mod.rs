@@ -20,6 +20,7 @@ pub mod browser;
 pub mod script_tool;
 pub mod upload_image;
 pub mod todo;
+pub mod memory_tool;
 // pub mod git; // Removed - Git operations handled by run_command
 
 use std::sync::Arc;
@@ -178,6 +179,13 @@ impl ToolExecutor {
     fn register(&mut self, tool: Box<dyn Tool + Send + Sync>) {
         let def = tool.definition();
         self.tools.insert(def.name.clone(), tool);
+    }
+
+    /// Register the memory tool after Agent construction (needs the Agent's
+    /// MemoryProvider). Called from Agent::new().
+    pub fn register_memory_tool(&mut self, memory: std::sync::Arc<dyn crate::memory::MemoryProvider>) {
+        let tool = Box::new(memory_tool::MemoryTool::new(memory));
+        self.register(tool);
     }
 
     /// Scan `workdir` for `tool.json` files and register each as a ScriptTool.

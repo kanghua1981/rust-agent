@@ -95,6 +95,8 @@ pub struct Agent {
     hook_bus: Option<Arc<crate::plugin::hook_bus::HookBus>>,
     /// Number of completed message turns. Used to trigger periodic knowledge extraction.
     knowledge_extract_turns: u32,
+    /// Total completed turns since agent was created. Passed to memory provider hooks.
+    total_turns: u64,
 }
 
 impl Agent {
@@ -220,7 +222,7 @@ impl Agent {
             client,
             tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
-            memory,
+            memory: memory.clone(),
             total_input_tokens: 0,
             total_output_tokens: 0,
             role_token_usage: HashMap::new(),
@@ -238,10 +240,14 @@ impl Agent {
             plugin_manager,
             hook_bus: None,
             knowledge_extract_turns: 0,
+            total_turns: 0,
         };
         
         // Set path manager in tool executor
         agent.tool_executor.set_path_manager(agent.path_manager.clone());
+        
+        // Register memory tool so the LLM can manage its own memory
+        agent.tool_executor.register_memory_tool(memory);
         
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {
@@ -276,7 +282,7 @@ impl Agent {
             client,
             tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
-            memory,
+            memory: memory.clone(),
             total_input_tokens: 0,
             total_output_tokens: 0,
             role_token_usage: HashMap::new(),
@@ -294,10 +300,14 @@ impl Agent {
             plugin_manager,
             hook_bus: None,
             knowledge_extract_turns: 0,
+            total_turns: 0,
         };
         
         // Set path manager in tool executor
         agent.tool_executor.set_path_manager(agent.path_manager.clone());
+        
+        // Register memory tool so the LLM can manage its own memory
+        agent.tool_executor.register_memory_tool(memory);
         
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {
@@ -347,9 +357,12 @@ impl Agent {
         self.session_id.as_deref()
     }
 
-    /// Set session ID
+    /// Set session ID and notify memory providers of the switch.
     pub fn set_session_id(&mut self, id: String) {
-        self.session_id = Some(id);
+        let old_id = self.session_id.take();
+        let old_str = old_id.as_deref().unwrap_or("");
+        self.session_id = Some(id.clone());
+        self.memory.on_session_switch(&id, old_str, false);
     }
 
     /// 设置 Hook 事件总线共享引用。
@@ -917,6 +930,18 @@ impl Agent {
             }
         }
 
+        // ── Turn start: notify memory providers ─────────────────────────
+        self.total_turns += 1;
+        let max_tokens = context::max_context_tokens(&self.config.model);
+        let used_tokens = context::estimate_conversation_tokens(&self.conversation);
+        let remaining_tokens = max_tokens.saturating_sub(used_tokens) as u64;
+        self.memory.on_turn_start(
+            self.total_turns as u32,
+            user_input,
+            remaining_tokens,
+            &self.config.model,
+        );
+
         // Prepend relevant memory context to this turn (file-map + session-log scored
         // by keyword overlap with the user message). This keeps the system prompt lean
         // while still surfacing relevant history at each turn.
@@ -1471,10 +1496,19 @@ impl Agent {
             }
         };
 
-        // Build condensed context from the messages about to be removed
-        let truncation_context = context::build_truncation_context(
+        // Ask memory providers for pre-compression insights before messages are lost.
+        let memory_insights = self.memory.on_pre_compress(
             &self.conversation.messages[plan.remove_start..plan.remove_end],
         );
+
+        // Build condensed context from the messages about to be removed
+        let mut truncation_context = context::build_truncation_context(
+            &self.conversation.messages[plan.remove_start..plan.remove_end],
+        );
+        if !memory_insights.is_empty() {
+            truncation_context.push_str("\n\n## Memory Provider Insights\n");
+            truncation_context.push_str(&memory_insights);
+        }
 
         // Try LLM-driven summarization
         let summary = match self.generate_truncation_summary(&truncation_context).await {

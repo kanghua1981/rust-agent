@@ -1,7 +1,6 @@
-import React, { useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useRef, useMemo } from 'react';
 import { useAgentStore } from '../stores/agentStore';
-import { MessageItem } from './MessageItem';
-import { ConfirmCard } from './ConfirmCard';
+import { VirtualMessageList } from './VirtualMessageList';
 import type { ToolCall } from '../types/agent';
 import type { DiffEntry as StoreDiffEntry } from '../stores/agentStore';
 
@@ -21,43 +20,93 @@ export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan })
   const diffs = useAgentStore(s => s.diffs);
   const thinkingMessageId = useAgentStore(s => s.thinkingMessageId);
 
-  // Pre-compute toolCalls and diffs per message so MessageItem doesn't need to
-  // subscribe to the full arrays (avoids O(n²) re-renders on every tool call).
+  // ── Stable-reference cache: reuse arrays whose contents haven't changed ──
+  // Without this, useMemo creates new arrays every time → React.memo on
+  // MessageItem is completely defeated → all 300 messages re-render.
+  const stableRef = useRef<Map<string, { toolCalls: ToolCall[]; diffs: StoreDiffEntry[] }>>(new Map());
+  const stableKeys = useRef(new Map<string, string>()); // msgId → fingerprint
+
+  // Pre-compute toolCalls and diffs per message. O(n+m) via indexing instead
+  // of the original O(n×m) nested-filter that ran ~150K comparisons per update.
   const messageDataMap = useMemo(() => {
-    const map = new Map<string, { toolCalls: ToolCall[]; diffs: StoreDiffEntry[] }>();
+    // ── Phase 1: index toolCalls by messageId (O(toolCalls.length)) ──
+    const tcByMsgId = new Map<string, ToolCall[]>();
+    const unmatchedTCs: ToolCall[] = [];
+    for (const tc of toolCalls) {
+      if (tc.messageId) {
+        const arr = tcByMsgId.get(tc.messageId);
+        if (arr) arr.push(tc);
+        else tcByMsgId.set(tc.messageId, [tc]);
+      } else {
+        unmatchedTCs.push(tc);
+      }
+    }
+
+    // ── Phase 1b: index diffs by minute-bucket (O(diffs.length)) ──
+    const diffsByMinute = new Map<number, StoreDiffEntry[]>();
+    for (const d of diffs) {
+      const bucket = Math.floor(d.timestamp / 60000);
+      const arr = diffsByMinute.get(bucket);
+      if (arr) arr.push(d);
+      else diffsByMinute.set(bucket, [d]);
+    }
+
+    const prev = stableRef.current;
+    const prevKeys = stableKeys.current;
+    const next = new Map<string, { toolCalls: ToolCall[]; diffs: StoreDiffEntry[] }>();
+    const nextKeys = new Map<string, string>();
+
+    // ── Phase 2: assign to each message (O(messages.length)) ──
     for (const msg of messages) {
       if (msg.role === 'user') continue;
-      const relatedTCs = toolCalls.filter(
-        tc => tc.messageId ? tc.messageId === msg.id : Math.abs(tc.timestamp - msg.timestamp) < 5000
-      );
-      const relatedDiffs = diffs.filter(
-        d => Math.abs(d.timestamp - msg.timestamp) < 60000
-      );
-      map.set(msg.id, { toolCalls: relatedTCs, diffs: relatedDiffs });
+
+      // Direct-by-messageId hit (vast majority of cases)
+      let relatedTCs = tcByMsgId.get(msg.id);
+
+      // Fallback: unmatched (no messageId) toolCalls within 5s window
+      if (unmatchedTCs.length > 0) {
+        const nearby = unmatchedTCs.filter(
+          tc => Math.abs(tc.timestamp - msg.timestamp) < 5000,
+        );
+        if (nearby.length > 0) {
+          relatedTCs = relatedTCs
+            ? [...relatedTCs, ...nearby]
+            : nearby;
+        }
+      }
+      if (!relatedTCs) relatedTCs = [];
+
+      // Diffs: check current + adjacent minute-buckets
+      const msgMinute = Math.floor(msg.timestamp / 60000);
+      let relatedDiffs: StoreDiffEntry[] = [];
+      for (let b = msgMinute - 1; b <= msgMinute + 1; b++) {
+        const bucket = diffsByMinute.get(b);
+        if (bucket) {
+          for (const d of bucket) {
+            if (Math.abs(d.timestamp - msg.timestamp) < 60000) {
+              relatedDiffs.push(d);
+            }
+          }
+        }
+      }
+
+      // ── Stable-reference optimisation ──────────────────────────────
+      // If the data for this message hasn't changed, reuse the previous
+      // array reference so React.memo on MessageItem actually works.
+      const fp = `${relatedTCs.map(tc => tc.id).join(',')}|${relatedDiffs.map(d => d.id).join(',')}`;
+      nextKeys.set(msg.id, fp);
+
+      if (prev.has(msg.id) && prevKeys.get(msg.id) === fp) {
+        next.set(msg.id, prev.get(msg.id)!);
+      } else {
+        next.set(msg.id, { toolCalls: relatedTCs, diffs: relatedDiffs });
+      }
     }
-    return map;
+
+    stableRef.current = next;
+    stableKeys.current = nextKeys;
+    return next;
   }, [messages, toolCalls, diffs]);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // Track whether the user is near the bottom. Start true so initial messages auto-scroll.
-  const isNearBottomRef = useRef(true);
-
-  const handleScroll = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    // "Near bottom" = within 200px of the bottom edge
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-  }, []);
-
-  // Auto-scroll only when user is already near the bottom.
-  // This way reading history is never interrupted by new messages.
-  const msgCount = messages.length;
-  const confirmCount = pendingConfirmations.length;
-  useEffect(() => {
-    if (isNearBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [msgCount, confirmCount]);
 
   if (connectionStatus === 'disconnected' || connectionStatus === 'error') {
     return (
@@ -101,76 +150,16 @@ export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan })
   }
 
   return (
-    <div
-      ref={scrollContainerRef}
-      onScroll={handleScroll}
-      style={{
-        flex: 1, overflowY: 'auto', padding: '20px 24px',
-        display: 'flex', flexDirection: 'column',
-      }}
-    >
-      {messages.length === 0 ? (
-        <div style={{
-          flex: 1, display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center',
-          color: 'var(--text3)', gap: '10px',
-        }}>
-          <span style={{ fontSize: '36px' }}>💬</span>
-          <p style={{ fontSize: '14px', color: 'var(--text2)' }}>发送消息开始对话</p>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxWidth: '800px', width: '100%', margin: '0 auto' }}>
-          {messages.map(msg => {
-            const data = messageDataMap.get(msg.id);
-            return (
-              <MessageItem
-                key={msg.id}
-                message={msg}
-                isStreaming={streamingMessageId === msg.id}
-                isThinking={thinkingMessageId === msg.id}
-                toolCalls={data?.toolCalls ?? []}
-                diffs={data?.diffs ?? []}
-              />
-            );
-          })}
-
-          {/* Inline confirmations */}
-          {pendingConfirmations.length > 0 && (
-            <div style={{ maxWidth: '680px', margin: '8px 40px 0' }}>
-              {pendingConfirmations.map(c => (
-                <ConfirmCard
-                  key={c.id}
-                  confirmation={c}
-                  onConfirm={onConfirm}
-                  onAnswer={(id, answer) => { onAnswer(id, answer); }}
-                  onReviewPlan={onReviewPlan}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Processing indicator */}
-          {isProcessing && pendingConfirmations.length === 0 && !streamingMessageId && (
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '6px 0', marginLeft: '40px' }}>
-              <div style={{
-                width: '30px', height: '30px', borderRadius: '50%',
-                background: 'linear-gradient(135deg, #0ea5e9, #6366f1)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
-              }}>🤖</div>
-              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                {[0, 1, 2].map(i => (
-                  <div key={i} style={{
-                    width: '6px', height: '6px', borderRadius: '50%',
-                    background: 'var(--accent)',
-                    animation: `blink 1.2s ${i * 0.2}s infinite`,
-                  }} />
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      <div ref={bottomRef} />
-    </div>
+    <VirtualMessageList
+      messages={messages}
+      messageDataMap={messageDataMap}
+      streamingMessageId={streamingMessageId}
+      thinkingMessageId={thinkingMessageId}
+      pendingConfirmations={pendingConfirmations}
+      isProcessing={isProcessing}
+      onConfirm={onConfirm}
+      onAnswer={onAnswer}
+      onReviewPlan={onReviewPlan}
+    />
   );
 };
