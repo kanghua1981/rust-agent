@@ -1,5 +1,6 @@
 import React, { useRef, useMemo } from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { useShallow } from 'zustand/react/shallow';
 import { VirtualMessageList } from './VirtualMessageList';
 import type { ToolCall } from '../types/agent';
 import type { DiffEntry as StoreDiffEntry } from '../stores/agentStore';
@@ -11,14 +12,21 @@ interface Props {
 }
 
 export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan }) => {
+  // 高频变化 — 独立订阅（驱 messageDataMap 的 useMemo 重算）
   const messages = useAgentStore(s => s.messages);
-  const pendingConfirmations = useAgentStore(s => s.pendingConfirmations);
-  const streamingMessageId = useAgentStore(s => s.streamingMessageId);
-  const connectionStatus = useAgentStore(s => s.connectionStatus);
-  const isProcessing = useAgentStore(s => s.isProcessing);
   const toolCalls = useAgentStore(s => s.toolCalls);
   const diffs = useAgentStore(s => s.diffs);
-  const thinkingMessageId = useAgentStore(s => s.thinkingMessageId);
+
+  // 低频变化 — 合并为一次 shallow 比较订阅
+  const { streamingMessageId, connectionStatus, isProcessing, thinkingMessageId, pendingConfirmations } = useAgentStore(
+    useShallow(s => ({
+      streamingMessageId: s.streamingMessageId,
+      connectionStatus: s.connectionStatus,
+      isProcessing: s.isProcessing,
+      thinkingMessageId: s.thinkingMessageId,
+      pendingConfirmations: s.pendingConfirmations,
+    })),
+  );
 
   // ── Stable-reference cache: reuse arrays whose contents haven't changed ──
   // Without this, useMemo creates new arrays every time → React.memo on

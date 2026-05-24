@@ -15,7 +15,17 @@ const statusConfig = {
 };
 
 export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onNewSession }) => {
-  const { connectionStatus, serverUrl, workdir, isProcessing, sandboxBackend, pendingChanges, config, messages, toolCalls, pendingConfirmations } = useAgentStore();
+  const connectionStatus = useAgentStore(s => s.connectionStatus);
+  const serverUrl = useAgentStore(s => s.serverUrl);
+  const workdir = useAgentStore(s => s.workdir);
+  const isProcessing = useAgentStore(s => s.isProcessing);
+  const sandboxBackend = useAgentStore(s => s.sandboxBackend);
+  const pendingChanges = useAgentStore(s => s.pendingChanges);
+  const config = useAgentStore(s => s.config);
+  // 只订阅 .length — 频率从 ~20次/秒 降到仅长度变化时触发
+  const msgCount = useAgentStore(s => s.messages.length);
+  const toolCallCount = useAgentStore(s => s.toolCalls.length);
+  const pendingConfCount = useAgentStore(s => s.pendingConfirmations.length);
   const cfg = statusConfig[connectionStatus];
   const isolation = config.isolation ?? 'container';
 
@@ -148,7 +158,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
             flexShrink: 0,
           }}>
             <span>💬</span>
-            <span>{messages.length}</span>
+            <span>{msgCount}</span>
           </div>
           
           {/* 工具调用徽章 */}
@@ -166,11 +176,11 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
             flexShrink: 0,
           }}>
             <span>🔨</span>
-            <span>{toolCalls.length}</span>
+            <span>{toolCallCount}</span>
           </div>
           
           {/* 待确认徽章（只在有确认时显示） */}
-          {pendingConfirmations.length > 0 && (
+          {pendingConfCount > 0 && (
             <div style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -185,7 +195,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
               flexShrink: 0,
             }}>
               <span>⏳</span>
-              <span>{pendingConfirmations.length}</span>
+              <span>{pendingConfCount}</span>
             </div>
           )}
         </div>

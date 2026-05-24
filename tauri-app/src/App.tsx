@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
@@ -10,6 +10,7 @@ import { SandboxPanel } from './components/SandboxPanel';
 import { NodesPanel } from './components/NodesPanel';
 import { TaskPanelList } from './components/TaskPanelList';
 import { ConnectModal } from './components/ConnectModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
 import { useAgentPool } from './hooks/useAgentPool';
@@ -24,17 +25,17 @@ function App() {
   const { reset, config } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
-  const handleConnect = () => {
+  const handleConnect = useCallback(() => {
     connect();
-  };
+  }, [connect]);
 
-  const handleDisconnect = () => {
+  const handleDisconnect = useCallback(() => {
     disconnect();
     reset();
-  };
+  }, [disconnect, reset]);
 
   // File upload handler: read file as base64 and send via WebSocket
-  const handleUpload = (file: File) => {
+  const handleUpload = useCallback((file: File) => {
     // Size check on client side (50 MB limit, same as server)
     if (file.size > 50 * 1024 * 1024) {
       alert(`文件 ${file.name} 太大 (${(file.size / 1024 / 1024).toFixed(1)} MB)，最大 50 MB`);
@@ -51,7 +52,7 @@ function App() {
       console.error('File read error:', reader.error);
     };
     reader.readAsDataURL(file);
-  };
+  }, [uploadFile]);
 
   // 键盘快捷键处理
 
@@ -140,6 +141,7 @@ function App() {
 
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
+          <ErrorBoundary>
           {activeTab === 'chat' && (
             <>
               <ChatArea
@@ -162,6 +164,7 @@ function App() {
               onRollback={sandboxRollback}
             />
           )}
+          </ErrorBoundary>
         </main>
         <TaskPanelList />
         </div>

@@ -2,90 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { SessionMeta } from '../types/agent';
+import { isTauri, exportSessionAsMarkdown, exportSessionAsJson } from '../utils/export';
 
 interface Props {
   onSwitchToChat: () => void;
-}
-
-// ── Export helpers ────────────────────────────────────────────────────────────
-
-// Detect Tauri runtime (window.__TAURI__ is injected by Tauri WebView)
-const isTauri = () => typeof window !== 'undefined' && '__TAURI__' in window;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const tauriInvoke = (): ((cmd: string, args?: Record<string, unknown>) => Promise<any>) | null => {
-  if (!isTauri()) return null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (window as any).__TAURI__.core?.invoke ?? (window as any).__TAURI__.tauri?.invoke ?? null;
-};
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-async function saveViaTauri(content: string, filename: string): Promise<string> {
-  const invoke = tauriInvoke()!;
-  const homeDir = await invoke('get_home_dir');
-  const filePath = `${homeDir}/Downloads/${filename}`;
-  await invoke('write_file', { path: filePath, content });
-  return filePath;
-}
-
-async function exportAsMarkdown(
-  messages: ReturnType<typeof useAgentStore.getState>['messages'],
-  onSaved: (path: string) => void,
-  onError: (err: string) => void,
-) {
-  const lines: string[] = [`# Agent 对话导出\n\n> 导出时间: ${new Date().toLocaleString()}\n`];
-  for (const msg of messages) {
-    if (msg.role === 'system') continue;
-    const label = msg.role === 'user' ? '**用户**' : '**助手**';
-    lines.push(`---\n\n${label}\n\n${msg.content}\n`);
-  }
-  const filename = `agent-chat-${Date.now()}.md`;
-  const text = lines.join('\n');
-  if (isTauri()) {
-    try {
-      const path = await saveViaTauri(text, filename);
-      onSaved(path);
-    } catch (e) {
-      onError(String(e));
-    }
-  } else {
-    downloadBlob(new Blob([text], { type: 'text/markdown;charset=utf-8' }), filename);
-    onSaved(filename);
-  }
-}
-
-async function exportAsJson(
-  messages: ReturnType<typeof useAgentStore.getState>['messages'],
-  onSaved: (path: string) => void,
-  onError: (err: string) => void,
-) {
-  const data = {
-    exported_at: new Date().toISOString(),
-    messages: messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({ role: m.role, content: m.content, timestamp: m.timestamp })),
-  };
-  const filename = `agent-chat-${Date.now()}.json`;
-  const text = JSON.stringify(data, null, 2);
-  if (isTauri()) {
-    try {
-      const path = await saveViaTauri(text, filename);
-      onSaved(path);
-    } catch (e) {
-      onError(String(e));
-    }
-  } else {
-    downloadBlob(new Blob([text], { type: 'application/json;charset=utf-8' }), filename);
-    onSaved(filename);
-  }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -162,7 +82,7 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
-              onClick={() => exportAsMarkdown(messages, handleSaved, handleSaveError)}
+              onClick={() => exportSessionAsMarkdown({ messages }, handleSaved, handleSaveError)}
               disabled={messages.length === 0}
               style={{
                 ...btnBase,
@@ -174,7 +94,7 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
               ↓ Markdown
             </button>
             <button
-              onClick={() => exportAsJson(messages, handleSaved, handleSaveError)}
+              onClick={() => exportSessionAsJson({ messages }, handleSaved, handleSaveError)}
               disabled={messages.length === 0}
               style={{
                 ...btnBase,

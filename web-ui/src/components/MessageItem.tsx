@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message, ToolCall } from '../types/agent';
 import { ToolCallCard } from './ToolCallCard';
 import { DiffViewer } from './DiffViewer';
 import type { DiffEntry } from '../stores/agentStore';
+
+// Module-level constant to avoid re-creating array on every render
+const markdownPlugins = [remarkGfm];
 
 interface Props {
   message: Message;
@@ -116,6 +119,12 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
   const hasThinking = !!message.thinking;
   const showThinking = hasThinking || isCurrentlyThinking;
 
+  // 缓存 ReactMarkdown 输出 — 仅在 message.content 变化时重新解析
+  const markdownContent = useMemo(
+    () => message.content ? <ReactMarkdown remarkPlugins={markdownPlugins}>{message.content}</ReactMarkdown> : null,
+    [message.content],
+  );
+
   return (
     <div
       className="fade-in"
@@ -200,9 +209,7 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
               <span style={{ whiteSpace: 'pre-wrap', fontSize: '14px' }}>{message.content}</span>
             ) : (
               <div className="md-content" style={{ fontSize: '14px' }}>
-                {message.content ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                ) : null}
+                {markdownContent}
                 {isStreaming && <span className="cursor" />}
               </div>
             )}

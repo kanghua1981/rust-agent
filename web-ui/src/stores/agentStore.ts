@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, subscribeWithSelector } from 'zustand/middleware';
 import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
@@ -178,7 +178,8 @@ const initialState = {
 };
 
 export const useAgentStore = create<AgentState>()(
-  persist(
+  subscribeWithSelector(
+    persist(
     (set, get) => ({
       ...initialState,
       
@@ -402,5 +403,6 @@ export const useAgentStore = create<AgentState>()(
         connectionHistory: state.connectionHistory,
       }),
     }
+  )
   )
 );

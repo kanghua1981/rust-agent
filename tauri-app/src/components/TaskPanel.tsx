@@ -5,71 +5,10 @@
  * 渲染消息流、工具调用状态和任务状态徽章。
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useTaskStore, TaskSession, TaskMessage, TaskToolCall, closeTaskWs } from '../stores/taskStore';
-
-// ── Export helpers (mirrors SessionsPanel logic, adapted for TaskMessage[]) ─────
-
-const isTauri = () => typeof window !== 'undefined' && '__TAURI__' in window;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const tauriInvoke = (): ((cmd: string, args?: Record<string, unknown>) => Promise<any>) | null => {
-  if (!isTauri()) return null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (window as any).__TAURI__.core?.invoke ?? (window as any).__TAURI__.tauri?.invoke ?? null;
-};
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
-}
-async function saveViaTauri(content: string, filename: string): Promise<string> {
-  const invoke = tauriInvoke()!;
-  const homeDir = await invoke('get_home_dir');
-  const filePath = `${homeDir}/Downloads/${filename}`;
-  await invoke('write_file', { path: filePath, content });
-  return filePath;
-}
-
-async function exportTaskAsMarkdown(task: TaskSession, onSaved: (p: string) => void, onError: (e: string) => void) {
-  const lines: string[] = [
-    `# 任务会话导出\n\n> 任务: ${task.prompt}\n> 导出时间: ${new Date().toLocaleString()}\n`,
-  ];
-  for (const msg of task.messages) {
-    if (msg.role === 'system') continue;
-    const label = msg.role === 'user' ? '**用户**' : '**助手**';
-    lines.push(`---\n\n${label}\n\n${msg.content}\n`);
-  }
-  if (task.toolCalls.length) {
-    lines.push(`---\n\n## 工具调用记录\n`);
-    for (const c of task.toolCalls) {
-      lines.push(`- **${c.tool}** (${c.status}): \`${JSON.stringify(c.input).slice(0, 120)}\`\n`);
-    }
-  }
-  const filename = `task-${Date.now()}.md`;
-  const text = lines.join('\n');
-  if (isTauri()) { try { onSaved(await saveViaTauri(text, filename)); } catch(e) { onError(String(e)); } }
-  else { downloadBlob(new Blob([text], { type: 'text/markdown;charset=utf-8' }), filename); onSaved(filename); }
-}
-
-async function exportTaskAsJson(task: TaskSession, onSaved: (p: string) => void, onError: (e: string) => void) {
-  const data = {
-    exported_at: new Date().toISOString(),
-    prompt: task.prompt,
-    status: task.status,
-    server: task.serverUrl,
-    started_at: new Date(task.startedAt).toISOString(),
-    ended_at: task.endedAt ? new Date(task.endedAt).toISOString() : null,
-    messages: task.messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({ role: m.role, content: m.content, timestamp: m.timestamp })),
-    tool_calls: task.toolCalls.map(c => ({ tool: c.tool, status: c.status, input: c.input, output: c.output })),
-  };
-  const filename = `task-${Date.now()}.json`;
-  const text = JSON.stringify(data, null, 2);
-  if (isTauri()) { try { onSaved(await saveViaTauri(text, filename)); } catch(e) { onError(String(e)); } }
-  else { downloadBlob(new Blob([text], { type: 'application/json;charset=utf-8' }), filename); onSaved(filename); }
-}
+import { exportSessionAsMarkdown, exportSessionAsJson } from '../utils/export';
 
 // ── Elapsed timer helper ──────────────────────────────────────────────────────
 
@@ -158,10 +97,20 @@ const ToolCallRow: React.FC<{ call: TaskToolCall }> = ({ call }) => {
   );
 };
 
-// ── Message row ───────────────────────────────────────────────────────────────
+// ── Message row (memo'd) ─────────────────────────────────────────────────────
 
-const TaskMessageRow: React.FC<{ msg: TaskMessage; isStreaming: boolean; toolCalls: TaskToolCall[] }> = ({
-  msg, isStreaming, toolCalls,
+// Module-level constant for markdown plugins
+const mdPlugins: unknown[] = []; // react-markdown v10 uses default plugins
+
+interface TaskMessageRowProps {
+  msg: TaskMessage;
+  isStreaming: boolean;
+  /** Pre-built minute-bucket index: Map<minuteBucket, TaskToolCall[]> */
+  toolCallIndex: Map<number, TaskToolCall[]>;
+}
+
+export const TaskMessageRow = React.memo<TaskMessageRowProps>(({
+  msg, isStreaming, toolCallIndex,
 }) => {
   if (msg.role === 'system') {
     if (msg.meta?.stageLabel) {
@@ -206,9 +155,24 @@ const TaskMessageRow: React.FC<{ msg: TaskMessage; isStreaming: boolean; toolCal
     );
   }
 
-  // Assistant message
-  const related = toolCalls.filter(
-    (c) => Math.abs(c.timestamp - msg.timestamp) < 60000,
+  // O(1) lookup: check current + adjacent minute-buckets
+  const msgMinute = Math.floor(msg.timestamp / 60000);
+  let related: TaskToolCall[] = [];
+  for (let b = msgMinute - 1; b <= msgMinute + 1; b++) {
+    const bucket = toolCallIndex.get(b);
+    if (bucket) {
+      for (const c of bucket) {
+        if (Math.abs(c.timestamp - msg.timestamp) < 60000) {
+          related.push(c);
+        }
+      }
+    }
+  }
+
+  // ReactMarkdown output cached on content + streaming flag
+  const markdownEl = useMemo(
+    () => <ReactMarkdown>{msg.content + (isStreaming ? '▋' : '')}</ReactMarkdown>,
+    [msg.content, isStreaming],
   );
 
   return (
@@ -233,13 +197,14 @@ const TaskMessageRow: React.FC<{ msg: TaskMessage; isStreaming: boolean; toolCal
             lineHeight: '1.6',
             color: 'var(--text)',
           }}>
-            <ReactMarkdown>{msg.content + (isStreaming ? '▋' : '')}</ReactMarkdown>
+            {markdownEl}
           </div>
         )}
       </div>
     </div>
   );
-};
+});
+TaskMessageRow.displayName = 'TaskMessageRow';
 
 // ── TaskFocusModal — full-screen expanded view ───────────────────────────────
 
@@ -248,6 +213,18 @@ const TaskFocusModal: React.FC<{ task: TaskSession; onClose: () => void }> = ({ 
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+
+  // 预建工具调用索引：Map<分钟桶, TaskToolCall[]>，使每条消息匹配变为 O(1)
+  const toolCallIndex = useMemo(() => {
+    const idx = new Map<number, TaskToolCall[]>();
+    for (const c of task.toolCalls) {
+      const bucket = Math.floor(c.timestamp / 60000);
+      const arr = idx.get(bucket);
+      if (arr) arr.push(c);
+      else idx.set(bucket, [c]);
+    }
+    return idx;
+  }, [task.toolCalls]);
 
   // Close on Escape
   useEffect(() => {
@@ -355,7 +332,7 @@ const TaskFocusModal: React.FC<{ task: TaskSession; onClose: () => void }> = ({ 
               key={msg.id}
               msg={msg}
               isStreaming={task.streamingMessageId === msg.id}
-              toolCalls={task.toolCalls}
+              toolCallIndex={toolCallIndex}
             />
           ))}
           <div ref={bottomRef} />
@@ -377,7 +354,7 @@ const TaskFocusModal: React.FC<{ task: TaskSession; onClose: () => void }> = ({ 
             <span style={{ color: '#10b981', flexShrink: 0 }}>{exportStatus}</span>
           )}
           <button
-            onClick={() => exportTaskAsMarkdown(task, (p) => { setExportStatus(`✓ ${p}`); setTimeout(() => setExportStatus(null), 3000); }, (e) => setExportStatus(`❌ ${e}`))}
+            onClick={() => exportSessionAsMarkdown({ messages: task.messages, toolCalls: task.toolCalls, extraHeader: `> 任务: ${task.prompt}` }, (p) => { setExportStatus(`✓ ${p}`); setTimeout(() => setExportStatus(null), 3000); }, (e) => setExportStatus(`❌ ${e}`))}
             title="导出为 Markdown"
             style={{
               background: 'var(--bg2)', border: '1px solid var(--border)',
@@ -386,7 +363,7 @@ const TaskFocusModal: React.FC<{ task: TaskSession; onClose: () => void }> = ({ 
             }}
           >↓ MD</button>
           <button
-            onClick={() => exportTaskAsJson(task, (p) => { setExportStatus(`✓ ${p}`); setTimeout(() => setExportStatus(null), 3000); }, (e) => setExportStatus(`❌ ${e}`))}
+            onClick={() => exportSessionAsJson({ messages: task.messages, toolCalls: task.toolCalls, extraHeader: `> 任务: ${task.prompt}` }, (p) => { setExportStatus(`✓ ${p}`); setTimeout(() => setExportStatus(null), 3000); }, (e) => setExportStatus(`❌ ${e}`))}
             title="导出为 JSON"
             style={{
               background: 'var(--bg2)', border: '1px solid var(--border)',
@@ -441,6 +418,18 @@ const TaskPanelInner: React.FC<{
     if (isNearBottom.current) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [task.messages.length, task.toolCalls.length]);
 
+  // 预建工具调用索引
+  const toolCallIndex = useMemo(() => {
+    const idx = new Map<number, TaskToolCall[]>();
+    for (const c of task.toolCalls) {
+      const bucket = Math.floor(c.timestamp / 60000);
+      const arr = idx.get(bucket);
+      if (arr) arr.push(c);
+      else idx.set(bucket, [c]);
+    }
+    return idx;
+  }, [task.toolCalls]);
+
   const panelBorder = task.status === 'running'
     ? '1px solid rgba(16,185,129,0.4)'
     : task.status === 'error'
@@ -489,7 +478,7 @@ const TaskPanelInner: React.FC<{
           }}
         >⤢</button>
         <button
-          onClick={(e) => { e.stopPropagation(); exportTaskAsMarkdown(task, () => {}, () => {}); }}
+          onClick={(e) => { e.stopPropagation(); exportSessionAsMarkdown({ messages: task.messages, toolCalls: task.toolCalls, extraHeader: `> 任务: ${task.prompt}` }, () => {}, () => {}); }}
           title="导出导出 Markdown"
           style={{
             background: 'transparent', border: 'none',
@@ -545,7 +534,7 @@ const TaskPanelInner: React.FC<{
               key={msg.id}
               msg={msg}
               isStreaming={task.streamingMessageId === msg.id}
-              toolCalls={task.toolCalls}
+              toolCallIndex={toolCallIndex}
             />
           ))}
           <div ref={bottomRef} />

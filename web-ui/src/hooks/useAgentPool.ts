@@ -324,71 +324,76 @@ export function useAgentPool() {
   const autoPromoteRef = useRef<string | null>(null); // taskId of current promoted task
 
   useEffect(() => {
-    const unsub = useAgentStore.subscribe((state, prev) => {
-      // A new tool call appeared that wasn't there before
-      if (state.toolCalls.length <= prev.toolCalls.length) return;
-      // Already promoted this session
-      if (autoPromoteRef.current) return;
-      // Only promote for long-running tools
-      const newCall = state.toolCalls[state.toolCalls.length - 1];
-      const longRunningTools = ['call_node', 'run_command', 'script_tool', 'browser'];
-      if (!longRunningTools.includes(newCall.tool)) return;
+    const unsub = useAgentStore.subscribe(
+      (state) => state.toolCalls.length,
+      (newLen, prevLen) => {
+        if (newLen <= prevLen) return;
+        // Already promoted this session
+        if (autoPromoteRef.current) return;
+        // Only promote for long-running tools
+        const newCall = useAgentStore.getState().toolCalls[newLen - 1];
+        if (!newCall) return;
+        const longRunningTools = ['call_node', 'run_command', 'script_tool', 'browser'];
+        if (!longRunningTools.includes(newCall.tool)) return;
 
-      // Find the user prompt that triggered this session
-      const userMsg = [...state.messages].reverse().find((m) => m.role === 'user');
-      if (!userMsg) return;
+        // Find the user prompt that triggered this session
+        const userMsg = [...useAgentStore.getState().messages].reverse().find((m) => m.role === 'user');
+        if (!userMsg) return;
 
-      // Create a silent "shadow" task in taskStore to track this in the panel
-      // (messages are sourced from agentStore while running, then snapshotted on done)
-      const taskId = createTask({
-        serverUrl: serverUrl,
-        prompt: userMsg.content,
-        workdir,
-      });
-      autoPromoteRef.current = taskId;
+        // Create a silent "shadow" task in taskStore to track this in the panel
+        const taskId = createTask({
+          serverUrl: serverUrl,
+          prompt: userMsg.content,
+          workdir,
+        });
+        autoPromoteRef.current = taskId;
 
-      // Mark this task as "mirroring" the main agentStore session
-      // We do NOT open a second WS — the panel reads from agentStore via a flag.
-      useTaskStore.getState().setTaskStatus(taskId, 'running');
-    });
-
+        // Mark this task as "mirroring" the main agentStore session
+        useTaskStore.getState().setTaskStatus(taskId, 'running');
+      },
+      { fireImmediately: false },
+    );
     return unsub;
   }, [serverUrl, workdir, createTask]);
 
   // Reset auto-promote tracking when main session finishes
   useEffect(() => {
-    const unsub = useAgentStore.subscribe((state, prev) => {
-      if (!prev.isProcessing || state.isProcessing) return;
-      // Main session done — snapshot messages to taskStore if promoted
-      const taskId = autoPromoteRef.current;
-      if (!taskId) return;
+    const unsub = useAgentStore.subscribe(
+      (state) => state.isProcessing,
+      (isProcessing, wasProcessing) => {
+        if (!wasProcessing || isProcessing) return;
+        // Main session done — snapshot messages to taskStore if promoted
+        const taskId = autoPromoteRef.current;
+        if (!taskId) return;
 
-      const snapMessages: TaskMessage[] = state.messages.map((m) => ({
-        id: m.id,
-        role: m.role as 'user' | 'assistant' | 'system',
-        content: m.content,
-        timestamp: m.timestamp,
-        meta: m.meta as Record<string, unknown> | undefined,
-      }));
-      const snapToolCalls: TaskToolCall[] = state.toolCalls.map((c) => ({
-        id: c.id,
-        tool: c.tool,
-        input: c.input,
-        status: c.status as 'executing' | 'completed' | 'error',
-        output: c.output,
-        timestamp: c.timestamp,
-      }));
+        const state = useAgentStore.getState();
+        const snapMessages: TaskMessage[] = state.messages.map((m) => ({
+          id: m.id,
+          role: m.role as 'user' | 'assistant' | 'system',
+          content: m.content,
+          timestamp: m.timestamp,
+          meta: m.meta as Record<string, unknown> | undefined,
+        }));
+        const snapToolCalls: TaskToolCall[] = state.toolCalls.map((c) => ({
+          id: c.id,
+          tool: c.tool,
+          input: c.input,
+          status: c.status as 'executing' | 'completed' | 'error',
+          output: c.output,
+          timestamp: c.timestamp,
+        }));
 
-      const taskState = useTaskStore.getState();
-      // Replace placeholder messages with actual snapshot
-      snapMessages.forEach((m) => taskState.addTaskMessage(taskId, m));
-      snapToolCalls.forEach((c) => taskState.addTaskToolCall(taskId, c));
-      taskState.setTaskStatus(taskId, 'done');
-      taskState.setTaskProcessing(taskId, false);
+        const taskState = useTaskStore.getState();
+        // Replace placeholder messages with actual snapshot
+        snapMessages.forEach((m) => taskState.addTaskMessage(taskId, m));
+        snapToolCalls.forEach((c) => taskState.addTaskToolCall(taskId, c));
+        taskState.setTaskStatus(taskId, 'done');
+        taskState.setTaskProcessing(taskId, false);
 
-      autoPromoteRef.current = null;
-    });
-
+        autoPromoteRef.current = null;
+      },
+      { fireImmediately: false },
+    );
     return unsub;
   }, []);
 
