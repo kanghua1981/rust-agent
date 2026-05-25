@@ -5,18 +5,60 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, Weak};
 
 use anyhow::{Context, Result};
-/// Set by the Ctrl-C handler; checked between tool calls so the agent
-/// can stop cleanly without leaving the conversation in an invalid state.
+
+// ── Per-session interrupt system ─────────────────────────────────────────
+// Two-layer design:
+// 1. Each Agent instance owns an `Arc<AtomicBool>` for its own interrupt flag.
+// 2. A global registry holds `Weak` references to all active session flags.
+//    `request_interrupt()` sets every registered flag, so Ctrl-C (or a
+//    WebSocket "cancel" message) interrupts all sessions in the same process.
+// 3. `INTERRUPT_REQUESTED` (global AtomicBool) remains as a catch-all for
+//    code paths that don't have access to an Agent reference (streaming,
+//    call_node, etc.).  It is also set by `request_interrupt()`.
+//
+// In server mode each connection runs in a forked worker *process*, so the
+// globals are naturally isolated.  This registry is future-proofing for a
+// potential multi-session-in-one-process mode.
+
 static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Registry of per-session interrupt flags.  Each Agent registers its flag
+/// on creation (via `register_session_interrupt`) and the weak reference is
+/// automatically cleaned up when the Agent is dropped.
+static SESSION_INTERRUPTS: std::sync::LazyLock<Mutex<Vec<Weak<AtomicBool>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+fn register_session_interrupt(flag: &Arc<AtomicBool>) {
+    if let Ok(mut guard) = SESSION_INTERRUPTS.lock() {
+        // Clean up any dead weak references
+        guard.retain(|w| w.upgrade().is_some());
+        guard.push(Arc::downgrade(flag));
+    }
+}
 
 pub fn request_interrupt() {
     INTERRUPT_REQUESTED.store(true, Ordering::Relaxed);
+    if let Ok(guard) = SESSION_INTERRUPTS.lock() {
+        for weak in guard.iter() {
+            if let Some(flag) = weak.upgrade() {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 pub fn clear_interrupt() {
     INTERRUPT_REQUESTED.store(false, Ordering::Relaxed);
+    if let Ok(guard) = SESSION_INTERRUPTS.lock() {
+        for weak in guard.iter() {
+            if let Some(flag) = weak.upgrade() {
+                flag.store(false, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 pub fn is_interrupted() -> bool {
@@ -97,6 +139,24 @@ pub struct Agent {
     knowledge_extract_turns: u32,
     /// Total completed turns since agent was created. Passed to memory provider hooks.
     total_turns: u64,
+    /// Per-session interrupt flag. Set by Ctrl-C handler or WebSocket "cancel"
+    /// message. Checked between tool iterations so the agent can stop cleanly
+    /// without leaving the conversation in an invalid state.
+    interrupt_requested: Arc<AtomicBool>,
+    // ── Loop detection / guardrail fields ────────────────────────────────
+    /// Hash history of tool calls within the current turn
+    /// (tool_name, args_hash) → how many times it's been repeated.
+    turn_tool_call_hashes: HashMap<(String, u64), u32>,
+    /// Number of consecutive turns with zero file mutations
+    /// (write_file, edit_file, multi_edit_file).  Reset on mutation.
+    turns_without_mutation: u32,
+    /// Number of consecutive turns where the LLM produced identical tool calls.
+    identical_tool_turns: u32,
+    /// Snapshot of the previous turn's tool call hashes for cross-turn comparison.
+    prev_turn_hashes: HashMap<(String, u64), u32>,
+    /// Pluggable context engine for token estimation, truncation, and summarization.
+    /// Defaults to `DefaultContextEngine`; can be swapped for custom strategies.
+    pub context_engine: Box<dyn context::ContextEngine>,
 }
 
 impl Agent {
@@ -197,6 +257,22 @@ impl Agent {
         self.tool_executor.list_mcp_tools()
     }
 
+    // ── Per-session interrupt methods ───────────────────────────────────
+    /// Request interruption of this specific agent session.
+    pub fn request_interrupt(&self) {
+        self.interrupt_requested.store(true, Ordering::Relaxed);
+    }
+
+    /// Clear the interrupt flag for this session.
+    pub fn clear_interrupt(&self) {
+        self.interrupt_requested.store(false, Ordering::Relaxed);
+    }
+
+    /// Check whether an interrupt has been requested for this session.
+    pub fn is_interrupted(&self) -> bool {
+        self.interrupt_requested.load(Ordering::Relaxed)
+    }
+
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
         let memory: Arc<dyn MemoryProvider> = crate::memory::create_memory_provider(
@@ -216,6 +292,11 @@ impl Agent {
             project_dir.clone(),
             Arc::new(sandbox.clone()),
         ));
+        
+        // Per-session interrupt flag — registered in the global registry so
+        // Ctrl-C / WebSocket "cancel" can interrupt this session.
+        let interrupt_requested = Arc::new(AtomicBool::new(false));
+        register_session_interrupt(&interrupt_requested);
         
         let mut agent = Agent {
             config,
@@ -241,6 +322,12 @@ impl Agent {
             hook_bus: None,
             knowledge_extract_turns: 0,
             total_turns: 0,
+            interrupt_requested,
+            turn_tool_call_hashes: HashMap::new(),
+            turns_without_mutation: 0,
+            identical_tool_turns: 0,
+            prev_turn_hashes: HashMap::new(),
+            context_engine: Box::new(context::DefaultContextEngine),
         };
         
         // Set path manager in tool executor
@@ -282,6 +369,10 @@ impl Agent {
             Arc::new(sandbox.clone()),
         ));
         
+        // Per-session interrupt flag
+        let interrupt_requested = Arc::new(AtomicBool::new(false));
+        register_session_interrupt(&interrupt_requested);
+        
         let mut agent = Agent {
             config,
             client,
@@ -306,6 +397,12 @@ impl Agent {
             hook_bus: None,
             knowledge_extract_turns: 0,
             total_turns: 0,
+            interrupt_requested,
+            turn_tool_call_hashes: HashMap::new(),
+            turns_without_mutation: 0,
+            identical_tool_turns: 0,
+            prev_turn_hashes: HashMap::new(),
+            context_engine: Box::new(context::DefaultContextEngine),
         };
         
         // Set path manager in tool executor
@@ -938,9 +1035,23 @@ impl Agent {
             }
         }
 
+        // ── Sync global interrupt to per-session flag ─────────────────────
+        // If a Ctrl-C happened before this turn started, propagate it to our
+        // session flag and clear the global so we don't see it again next time.
+        if is_interrupted() {
+            self.request_interrupt();
+            clear_interrupt();
+        }
+
+        // ── Reset loop detection counters for new turn ──────────────────
+        self.turn_tool_call_hashes.clear();
+        self.turns_without_mutation = 0;
+        // Note: identical_tool_turns and prev_turn_hashes are NOT reset here
+        // — they track patterns *across* turns, not within a single turn.
+
         // ── Turn start: notify memory providers ─────────────────────────
         self.total_turns += 1;
-        let max_tokens = context::max_context_tokens(&self.config.model);
+        let max_tokens = self.context_engine.max_context_tokens(&self.config.model);
         let used_tokens = context::estimate_conversation_tokens(&self.conversation);
         let remaining_tokens = max_tokens.saturating_sub(used_tokens) as u64;
         self.memory.on_turn_start(
@@ -977,10 +1088,14 @@ impl Agent {
 
         loop {
             // Check for Ctrl-C interrupt between iterations
-            if is_interrupted() {
+            if self.is_interrupted() {
                 self.output.on_warning("Interrupted by user.");
                 break;
             }
+
+            // ── Loop detection guardrails ─────────────────────────────────
+            // Check for signs the agent is stuck in a loop.
+            self.check_loop_guardrails(iterations);
 
             // Drain any pending service push notifications so they are displayed
             // at a safe point (not mid-streaming).
@@ -1011,7 +1126,7 @@ impl Agent {
 
             // If the user pressed Ctrl-C during streaming, save any partial
             // text that was already printed and stop immediately.
-            if is_interrupted() {
+            if self.is_interrupted() {
                 let partial: Vec<ContentBlock> = response
                     .content
                     .into_iter()
@@ -1096,7 +1211,15 @@ impl Agent {
                 }
 
                 // Check if this tool needs confirmation
-                if needs_confirmation(&tool_name, &tool_input) {
+                let confirm_level = needs_confirmation(&tool_name, &tool_input);
+                if confirm_level != ConfirmationLevel::None {
+                    // For high-risk operations, show an extra warning
+                    if confirm_level == ConfirmationLevel::HighRisk {
+                        self.output.on_warning(&format!(
+                            "⚠️ HIGH RISK: '{}' targets a protected path or dangerous command pattern.",
+                            tool_name
+                        ));
+                    }
                     // 1. Ask hook system first — a plugin can auto-approve or deny.
                     let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
                     let approved = match hook_decision {
@@ -1169,6 +1292,23 @@ impl Agent {
                 turn_tools_used.push(tool_name.clone());
                 if result.is_error { turn_had_errors = true; }
 
+                // ── Loop-detection: track tool call hashes ───────────────
+                let args_hash = Self::hash_tool_args(&tool_name, &tool_input);
+                let entry = self.turn_tool_call_hashes
+                    .entry((tool_name.clone(), args_hash))
+                    .or_insert(0);
+                *entry += 1;
+
+                // Track whether this turn produced a file mutation
+                let is_mutation = !result.is_error
+                    && matches!(
+                        tool_name.as_str(),
+                        "write_file" | "edit_file" | "multi_edit_file"
+                    );
+                if is_mutation {
+                    self.turns_without_mutation = 0;
+                }
+
                 // Record to persistent memory
                 self.record_tool_to_memory(&tool_name, &tool_input, &result);
 
@@ -1217,6 +1357,25 @@ impl Agent {
                 ));
 
             }
+
+            // ── Per-iteration loop-detection update ──────────────────────
+            // Compare this iteration's tool call hashes with the previous
+            // iteration's. If they are identical (same tools, same args),
+            // the agent is likely stuck in a loop.
+            let current_hashes = std::mem::take(&mut self.turn_tool_call_hashes);
+            let is_identical_to_prev = !current_hashes.is_empty()
+                && current_hashes == self.prev_turn_hashes;
+            if is_identical_to_prev {
+                self.identical_tool_turns += 1;
+            } else if !current_hashes.is_empty() {
+                // Different pattern — reset the counter
+                self.identical_tool_turns = 0;
+            }
+            // Store current hashes as prev for next iteration comparison
+            self.prev_turn_hashes = current_hashes;
+
+            // Increment mutation-free counter (reset on actual mutation above)
+            self.turns_without_mutation += 1;
 
             // Check context window after tool results
             self.check_and_manage_context().await;
@@ -1460,7 +1619,7 @@ impl Agent {
     /// of the removed messages to preserve reasoning context. Falls back
     /// to a mechanical summary if the LLM call fails.
     async fn check_and_manage_context(&mut self) {
-        let status = context::check_context(&self.conversation, &self.config.model);
+        let status = self.context_engine.check_context(&self.conversation, &self.config.model);
 
         if !status.needs_truncation {
             return;
@@ -1494,11 +1653,12 @@ impl Agent {
             bus.emit_blocking(event).await;
         }
 
-        // Plan what to truncate (without modifying the conversation yet)
-        let plan = match context::plan_truncation(&self.conversation, &self.config.model) {
+        // Plan what to truncate (using the pluggable engine)
+        let plan = match self.context_engine.plan_truncation(&self.conversation, &self.config.model) {
             Some(plan) => plan,
             None => {
-                // Not enough messages to truncate meaningfully
+                // Not enough messages to truncate meaningfully — fall back to
+                // the legacy truncation which handles small-conversation edge cases.
                 context::truncate_conversation(&mut self.conversation, &self.config.model, self.memory.as_ref());
                 return;
             }
@@ -1522,14 +1682,14 @@ impl Agent {
         let summary = match self.generate_truncation_summary(&truncation_context).await {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!("LLM summarization failed ({}), using mechanical summary", e);
-                context::summarize_removed_messages(
+                tracing::warn!("LLM summarization failed ({}), using engine's mechanical summary", e);
+                self.context_engine.summarize_removed(
                     &self.conversation.messages[plan.remove_start..plan.remove_end],
                 )
             }
         };
 
-        context::apply_truncation(&mut self.conversation, &plan, &summary, self.memory.as_ref());
+        self.context_engine.apply_truncation(&mut self.conversation, &plan, &summary, self.memory.as_ref());
     }
 
     /// Use the LLM to generate a narrative summary of truncated messages.
@@ -1967,6 +2127,12 @@ Begin execution now."#,
         initial_message: &str,
         readonly_only: bool,
     ) -> Result<String> {
+        // ── Sync global interrupt to per-session flag ─────────────────────
+        if is_interrupted() {
+            self.request_interrupt();
+            clear_interrupt();
+        }
+
         let mut stage_conv = Conversation::new(&self.project_dir);
         stage_conv.system_prompt = self.conversation.system_prompt.clone();
         stage_conv.add_message(Message::user(initial_message));
@@ -1981,7 +2147,7 @@ Begin execution now."#,
         let mut final_text = String::new();
 
         for _ in 0..max_iterations {
-            if is_interrupted() {
+            if self.is_interrupted() {
                 self.output.on_warning("Interrupted by user.");
                 break;
             }
@@ -2011,7 +2177,7 @@ Begin execution now."#,
             }
 
             // If the user pressed Ctrl-C during streaming, stop immediately.
-            if is_interrupted() {
+            if self.is_interrupted() {
                 break;
             }
 
@@ -2068,7 +2234,15 @@ Begin execution now."#,
                     continue;
                 }
 
-                if !readonly_only && needs_confirmation(&tool_name, &tool_input) {
+                let confirm_level = needs_confirmation(&tool_name, &tool_input);
+                if !readonly_only && confirm_level != ConfirmationLevel::None {
+                    // High-risk warning
+                    if confirm_level == ConfirmationLevel::HighRisk {
+                        self.output.on_warning(&format!(
+                            "⚠️ HIGH RISK: '{}' targets a protected path or dangerous command pattern.",
+                            tool_name
+                        ));
+                    }
                     // 1. Ask hook system first — a plugin can auto-approve or deny.
                     let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
                     let approved = match hook_decision {
@@ -2259,19 +2433,103 @@ Directory tree:
 
         Ok(summary_text)
     }
+
+    // ── Loop detection / guardrail helpers ──────────────────────────────
+
+    /// Compute a stable hash of (tool_name, serialized_args) for loop detection.
+    fn hash_tool_args(tool_name: &str, input: &serde_json::Value) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        tool_name.hash(&mut hasher);
+        // Use canonical JSON to ensure deterministic hashing
+        input.to_string().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Check loop guardrails and inject warnings if the agent appears stuck.
+    ///
+    /// Three detection layers:
+    /// - Same tool+args called 3+ times within a single turn → warn
+    /// - 3+ consecutive turns with identical tool call patterns → warn (cross-turn loop)
+    /// - 5+ iterations without any file mutation → warn
+    fn check_loop_guardrails(&mut self, iteration: usize) {
+        // ── Layer 1: repeated identical tool calls within this turn ─────
+        for ((ref name, _), count) in &self.turn_tool_call_hashes {
+            if *count >= 3 {
+                self.output.on_warning(&format!(
+                    "⚠️ Loop detected: '{}' has been called {} times with identical arguments. \
+                     You may be stuck. Consider trying a different approach.",
+                    name, count
+                ));
+                // Reset to avoid spamming
+                break;
+            }
+        }
+
+        // ── Layer 2: identical tool call pattern across consecutive turns ──
+        if self.identical_tool_turns >= 3 {
+            self.output.on_warning(&format!(
+                "⚠️ Cross-turn loop detected: identical tool calls repeated for {} consecutive turns. \
+                 The agent appears to be stuck. Trying a completely different approach is strongly recommended.",
+                self.identical_tool_turns
+            ));
+            // Reset so we only warn once per detected loop
+            self.identical_tool_turns = 0;
+        }
+
+        // ── Layer 3: extended period without file mutations ─────────────
+        if self.turns_without_mutation >= 5 && iteration > 5 {
+            self.output.on_warning(&format!(
+                "⚠️ No file changes in the last {} iterations. \
+                 If you're stuck in analysis, try taking action: write code, edit files, or run commands.",
+                self.turns_without_mutation
+            ));
+            // Reset counter so we don't spam every iteration
+            self.turns_without_mutation = 0;
+        }
+    }
 }
 
 
 
-/// Check if a tool action needs user confirmation
-fn needs_confirmation(tool_name: &str, _input: &serde_json::Value) -> bool {
+/// Confirmation level for a tool action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationLevel {
+    /// Normal confirmation (can be auto-approved with --yes)
+    Normal,
+    /// High-risk operation — warning is shown even in auto-approve mode,
+    /// and the user must explicitly confirm unless --yes is passed.
+    HighRisk,
+    /// No confirmation needed (read-only operations)
+    None,
+}
+
+/// Check if a tool action needs user confirmation, and at what level.
+fn needs_confirmation(tool_name: &str, input: &serde_json::Value) -> ConfirmationLevel {
     match tool_name {
-        "write_file" | "edit_file" | "multi_edit_file" => true,
-        "run_command" => {
-            // All run_command executions need confirmation because they can be dangerous
-            true
+        "write_file" | "edit_file" | "multi_edit_file" => {
+            // Check if the path is sensitive
+            if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
+                let path = std::path::Path::new(path_str);
+                // Use HOME env var or fall back to empty path
+                let home = std::env::var("HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default();
+                if crate::security::check_write_safety(path, &home).is_err() {
+                    return ConfirmationLevel::HighRisk;
+                }
+            }
+            ConfirmationLevel::Normal
         }
-        _ => false,
+        "run_command" => {
+            if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+                if crate::security::is_high_risk_command(cmd) {
+                    return ConfirmationLevel::HighRisk;
+                }
+            }
+            ConfirmationLevel::Normal
+        }
+        _ => ConfirmationLevel::None,
     }
 }
 

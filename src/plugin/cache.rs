@@ -340,6 +340,7 @@ mod tests {
             system_requirements: super::super::metadata::SystemRequirements::default(),
             config: HashMap::new(),
             components: super::super::metadata::Components::default(),
+            channels: vec![],
         };
         
         let path = PathBuf::from("/tmp/test-plugin");
@@ -377,6 +378,7 @@ mod tests {
             system_requirements: super::super::metadata::SystemRequirements::default(),
             config: HashMap::new(),
             components: super::super::metadata::Components::default(),
+            channels: vec![],
         };
         
         let path = PathBuf::from("/tmp/test-plugin");

@@ -573,3 +573,6 @@ dist/.env.example
 dist/rust-agent.tar.gz
 docker/config/models.toml
 docker/config/system_prompt.md
+bridges/wechat/~/.wechatbot/context_tokens.json
+bridges/wechat/~/.wechatbot/credentials.json
+bridges/wechat/~/.wechatbot/cursor.json

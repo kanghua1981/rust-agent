@@ -16,6 +16,10 @@ impl LoadSkillTool {
 
 #[async_trait::async_trait]
 impl Tool for LoadSkillTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::Skill)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "load_skill".to_string(),

@@ -6,6 +6,10 @@ pub struct EditFileTool;
 
 #[async_trait::async_trait]
 impl Tool for EditFileTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::FileWrite)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit_file".to_string(),
@@ -83,6 +87,11 @@ impl Tool for EditFileTool {
 
 impl EditFileTool {
     async fn edit_file_internal(&self, path: &Path, old_string: &str, new_string: &str) -> ToolResult {
+        // Security check: block writing to sensitive paths
+        if let Err(reason) = crate::security::check_write_safety(path, &std::env::current_dir().unwrap_or_default()) {
+            return ToolResult::error(reason);
+        }
+
         // Read the file
         let content = match fs::read_to_string(path).await {
             Ok(c) => c,

@@ -5,6 +5,10 @@ pub struct CreateSkillTool;
 
 #[async_trait::async_trait]
 impl Tool for CreateSkillTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::Skill)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "create_skill".to_string(),

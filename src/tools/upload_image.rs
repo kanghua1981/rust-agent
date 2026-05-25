@@ -53,6 +53,10 @@ impl UploadImageTool {
 
 #[async_trait::async_trait]
 impl Tool for UploadImageTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::UploadImage)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "upload_image".to_string(),

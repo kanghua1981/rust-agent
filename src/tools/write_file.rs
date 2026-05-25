@@ -6,6 +6,10 @@ pub struct WriteFileTool;
 
 #[async_trait::async_trait]
 impl Tool for WriteFileTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::FileWrite)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".to_string(),
@@ -69,6 +73,11 @@ impl Tool for WriteFileTool {
 
 impl WriteFileTool {
     async fn write_file_internal(&self, path: &Path, content: &str) -> ToolResult {
+        // Security check: block writing to sensitive paths
+        if let Err(reason) = crate::security::check_write_safety(path, &std::env::current_dir().unwrap_or_default()) {
+            return ToolResult::error(reason);
+        }
+
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
             if !parent.exists() {

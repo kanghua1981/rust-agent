@@ -6,6 +6,10 @@ pub struct ReadFileTool;
 
 #[async_trait::async_trait]
 impl Tool for ReadFileTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::FileRead)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".to_string(),

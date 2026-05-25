@@ -554,6 +554,10 @@ impl CallNodeTool {
 
 #[async_trait]
 impl Tool for CallNodeTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::AgentComms)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "call_node".to_string(),

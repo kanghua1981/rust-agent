@@ -21,6 +21,7 @@ pub mod script_tool;
 pub mod upload_image;
 pub mod todo;
 pub mod memory_tool;
+pub mod cache;
 // pub mod git; // Removed - Git operations handled by run_command
 
 use std::sync::Arc;
@@ -37,6 +38,94 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+}
+
+/// Toolset categories for grouping tools into logical families.
+///
+/// Used by the role system (planner/executor/checker) and for
+/// runtime enable/disable of tool groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Toolset {
+    FileRead,
+    FileWrite,
+    Search,
+    Shell,
+    AgentComms,
+    Memory,
+    Browser,
+    Skill,
+    Think,
+    UploadImage,
+}
+
+impl Toolset {
+    /// Human-readable label for display and configuration.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Toolset::FileRead => "file_read",
+            Toolset::FileWrite => "file_write",
+            Toolset::Search => "search",
+            Toolset::Shell => "shell",
+            Toolset::AgentComms => "agent_comms",
+            Toolset::Memory => "memory",
+            Toolset::Browser => "browser",
+            Toolset::Skill => "skill",
+            Toolset::Think => "think",
+            Toolset::UploadImage => "upload_image",
+        }
+    }
+
+    /// Parse from a label string.
+    pub fn from_label(s: &str) -> Option<Self> {
+        match s {
+            "file_read" => Some(Toolset::FileRead),
+            "file_write" => Some(Toolset::FileWrite),
+            "search" => Some(Toolset::Search),
+            "shell" => Some(Toolset::Shell),
+            "agent_comms" => Some(Toolset::AgentComms),
+            "memory" => Some(Toolset::Memory),
+            "browser" => Some(Toolset::Browser),
+            "skill" => Some(Toolset::Skill),
+            "think" => Some(Toolset::Think),
+            "upload_image" => Some(Toolset::UploadImage),
+            _ => None,
+        }
+    }
+
+    /// Default toolsets for a planner role (explore, understand, plan).
+    pub fn planner_toolsets() -> Vec<Toolset> {
+        vec![
+            Toolset::FileRead,
+            Toolset::Search,
+            Toolset::Think,
+            Toolset::Skill,
+            Toolset::Memory,
+        ]
+    }
+
+    /// Default toolsets for an executor role (modify, build, run).
+    pub fn executor_toolsets() -> Vec<Toolset> {
+        vec![
+            Toolset::FileRead,
+            Toolset::FileWrite,
+            Toolset::Search,
+            Toolset::Shell,
+            Toolset::Browser,
+            Toolset::Think,
+            Toolset::Skill,
+            Toolset::Memory,
+        ]
+    }
+
+    /// Default toolsets for a checker role (verify, test, review).
+    pub fn checker_toolsets() -> Vec<Toolset> {
+        vec![
+            Toolset::FileRead,
+            Toolset::Search,
+            Toolset::Shell,
+            Toolset::Think,
+        ]
+    }
 }
 
 /// Result of executing a tool
@@ -74,6 +163,8 @@ pub struct ToolExecutor {
     plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
     /// Hook 事件总线（与 Agent 共享同一 Arc）
     hook_bus: Option<Arc<crate::plugin::hook_bus::HookBus>>,
+    /// In-memory cache for read-only tool results (Layer 1).
+    result_cache: std::cell::RefCell<cache::ToolResultCache>,
 }
 
 /// Trait that all tools must implement
@@ -81,6 +172,13 @@ pub struct ToolExecutor {
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult;
+
+    /// Which toolset this tool belongs to.  Used for role-based filtering.
+    /// Default returns `None`; implement for built-in tools to enable
+    /// toolset-based grouping.
+    fn toolset(&self) -> Option<Toolset> {
+        None
+    }
     
     /// Execute with path manager (optional, for tools that need advanced path handling)
     async fn execute_with_path_manager(
@@ -102,6 +200,7 @@ impl ToolExecutor {
             allowed_dir: None,
             plugin_manager,
             hook_bus: None,
+            result_cache: std::cell::RefCell::new(cache::ToolResultCache::new(200, 120)), // 200 entries, 2-min TTL
         };
 
         // Register all built-in tools
@@ -311,6 +410,42 @@ impl ToolExecutor {
             .collect()
     }
 
+    /// Get tool definitions filtered by a set of toolsets.
+    ///
+    /// Useful for role-based tool restriction: planner gets file_read+search+think,
+    /// executor gets file_write+shell+browser, etc.
+    pub fn definitions_for_toolsets(&self, toolsets: &[Toolset]) -> Vec<ToolDefinition> {
+        self.tools
+            .values()
+            .filter(|t| {
+                t.toolset()
+                    .map(|ts| toolsets.contains(&ts))
+                    .unwrap_or(true) // Tools without a toolset tag are always included
+            })
+            .map(|t| t.definition())
+            .collect()
+    }
+
+    /// Check whether a tool name belongs to a specific toolset.
+    pub fn tool_in_toolset(&self, tool_name: &str, toolset: Toolset) -> bool {
+        self.tools
+            .get(tool_name)
+            .and_then(|t| t.toolset())
+            .map(|ts| ts == toolset)
+            .unwrap_or(false)
+    }
+
+    /// Get all active toolsets (those with at least one registered tool).
+    pub fn active_toolsets(&self) -> Vec<Toolset> {
+        let mut sets: Vec<Toolset> = self.tools
+            .values()
+            .filter_map(|t| t.toolset())
+            .collect();
+        sets.sort_by_key(|s| s.label());
+        sets.dedup();
+        sets
+    }
+
     /// Execute a tool by name.
     ///
     /// Wraps the tool execution in `catch_unwind` so that a panic inside
@@ -318,11 +453,29 @@ impl ToolExecutor {
     /// `ToolResult::Error` instead of crashing the whole agent.  This
     /// prevents orphaned `tool_use` blocks without matching `tool_result`
     /// in the conversation, which would cause Anthropic API 400 errors.
+    ///
+    /// ## 3-Layer Persistence
+    /// 1. **Memory cache** — read-only tool results are cached; repeated
+    ///    identical calls return the cached result immediately.
+    /// 2. **Result size limit** — outputs exceeding 20K chars are truncated.
+    /// 3. **Session log** — results are recorded to persistent memory by
+    ///    the Agent (see `record_tool_to_memory`).
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolResult {
+        // ── Constants ────────────────────────────────────────────────────────
+        const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit_file"];
+
+        // ── Layer 1: Cache lookup for read-only tools ─────────────────────
+        if cache::ToolResultCache::is_cacheable(name) {
+            let args_hash = cache::hash_args(name, input);
+            if let Some(cached) = self.result_cache.borrow_mut().get(name, args_hash) {
+                tracing::debug!(tool = name, "cache hit");
+                return cached;
+            }
+        }
+
         // ── Directory guard ───────────────────────────────────────────────────
         // If an allowed_dir is set, reject write/edit tools that try to touch
         // paths outside it.  Read-only tools are not restricted.
-        const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit_file"];
         
         if WRITE_TOOLS.contains(&name) {
             if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
@@ -482,7 +635,40 @@ impl ToolExecutor {
             ));
         }
 
-        tool_result
+        // ── Layer 2: Enforce result size limit ────────────────────────────
+        let mut final_result = tool_result;
+        cache::enforce_result_size_limit(&mut final_result);
+
+        // ── Layer 1: Cache or invalidate ─────────────────────────────────
+        if cache::ToolResultCache::is_cacheable(name) && !final_result.is_error {
+            let args_hash = cache::hash_args(name, input);
+            let file_path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    if Path::new(s).is_absolute() {
+                        PathBuf::from(s)
+                    } else {
+                        self.project_dir.join(s)
+                    }
+                });
+            self.result_cache.borrow_mut()
+                .put(name, args_hash, file_path.as_deref(), final_result.clone());
+        }
+
+        // Invalidate cache entries for paths touched by writes
+        if WRITE_TOOLS.contains(&name) && !final_result.is_error {
+            if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
+                let path = if Path::new(path_str).is_absolute() {
+                    PathBuf::from(path_str)
+                } else {
+                    self.project_dir.join(path_str)
+                };
+                self.result_cache.borrow_mut().invalidate_path(&path);
+            }
+        }
+
+        final_result
     }
 }
 

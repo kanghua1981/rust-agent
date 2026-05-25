@@ -7,6 +7,10 @@ pub struct RunCommandTool;
 
 #[async_trait::async_trait]
 impl Tool for RunCommandTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::Shell)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "run_command".to_string(),
@@ -98,6 +102,10 @@ impl RunCommandTool {
         timeout_secs: u64,
         base_working_dir: &Path,
     ) -> ToolResult {
+        // Security check: block dangerous command patterns
+        if let Err(reason) = crate::security::check_command_safety(command) {
+            return ToolResult::error(reason);
+        }
         tracing::info!("Executing command: {}", command);
 
         let mut cmd = Command::new("bash");

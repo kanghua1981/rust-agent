@@ -100,6 +100,99 @@ fn is_cjk(c: char) -> bool {
         || (0xF900..=0xFAFF).contains(&c)  // CJK Compatibility
 }
 
+// ── Pluggable Context Engine ────────────────────────────────────────────
+
+/// Pluggable context management engine.
+///
+/// Allows swapping between different context strategies:
+/// - `DefaultContextEngine` — token-based truncation with LLM compression (current)
+/// - Future: sliding window, priority-based retention, external summarizers, etc.
+///
+/// The engine is consulted at the start of every turn and after every tool
+/// call to ensure the conversation stays within the model's context window.
+pub trait ContextEngine: Send + Sync {
+    /// Estimate the token count for `text` using the engine's tokenizer.
+    fn estimate_tokens(&self, text: &str, model: &str) -> usize;
+
+    /// Return the maximum context window size (in tokens) for `model`.
+    fn max_context_tokens(&self, model: &str) -> usize;
+
+    /// Check the current context window status.
+    fn check_context(
+        &self,
+        conversation: &Conversation,
+        model: &str,
+    ) -> ContextStatus;
+
+    /// Plan what to truncate (or `None` if truncation is not needed).
+    fn plan_truncation(
+        &self,
+        conversation: &Conversation,
+        model: &str,
+    ) -> Option<TruncationPlan>;
+
+    /// Apply a truncation plan, inserting a summary message for the removed
+    /// portion and notifying the memory provider.
+    fn apply_truncation(
+        &self,
+        conversation: &mut Conversation,
+        plan: &TruncationPlan,
+        summary: &str,
+        memory: &dyn crate::memory::MemoryProvider,
+    );
+
+    /// Produce a mechanical summary of the removed messages.
+    fn summarize_removed(&self, messages: &[Message]) -> String;
+}
+
+// ── Default context engine (current token-based strategy) ───────────────
+
+/// The default context engine using the current token-based truncation +
+/// optional LLM compression.  This is what the agent uses by default.
+pub struct DefaultContextEngine;
+
+impl ContextEngine for DefaultContextEngine {
+    fn estimate_tokens(&self, text: &str, model: &str) -> usize {
+        TOKEN_COUNTER.count(text, model)
+    }
+
+    fn max_context_tokens(&self, model: &str) -> usize {
+        max_context_tokens(model)
+    }
+
+    fn check_context(
+        &self,
+        conversation: &Conversation,
+        model: &str,
+    ) -> ContextStatus {
+        check_context(conversation, model)
+    }
+
+    fn plan_truncation(
+        &self,
+        conversation: &Conversation,
+        model: &str,
+    ) -> Option<TruncationPlan> {
+        plan_truncation(conversation, model)
+    }
+
+    fn apply_truncation(
+        &self,
+        conversation: &mut Conversation,
+        plan: &TruncationPlan,
+        summary: &str,
+        memory: &dyn crate::memory::MemoryProvider,
+    ) {
+        apply_truncation(conversation, plan, summary, memory)
+    }
+
+    fn summarize_removed(&self, messages: &[Message]) -> String {
+        summarize_removed_messages(messages)
+    }
+}
+
+// ── Public API (backward-compatible wrappers) ───────────────────────────
+
 /// Estimated max context tokens for different models
 pub fn max_context_tokens(model: &str) -> usize {
     let model_lower = model.to_lowercase();

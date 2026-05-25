@@ -9,6 +9,10 @@ pub struct MultiEditFileTool;
 
 #[async_trait::async_trait]
 impl Tool for MultiEditFileTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::FileWrite)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "multi_edit_file".to_string(),
@@ -95,6 +99,11 @@ impl Tool for MultiEditFileTool {
 
 impl MultiEditFileTool {
     async fn multi_edit_internal(&self, path: &Path, input: &serde_json::Value) -> ToolResult {
+        // Security check: block writing to sensitive paths
+        if let Err(reason) = crate::security::check_write_safety(path, &std::env::current_dir().unwrap_or_default()) {
+            return ToolResult::error(reason);
+        }
+
         let edits = match input.get("edits").and_then(|v| v.as_array()) {
             Some(e) => e,
             None => return ToolResult::error("Missing required parameter: edits (must be an array)"),

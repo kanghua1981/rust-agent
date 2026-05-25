@@ -24,6 +24,7 @@ mod pipeline;
 mod router;
 mod sandbox;
 mod container;
+mod security;
 mod server;
 mod ui;
 mod worker;

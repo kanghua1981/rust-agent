@@ -762,6 +762,7 @@ mod tests {
             system_requirements: SystemRequirements::default(),
             config: HashMap::new(),
             components: Components::default(),
+            channels: vec![],
         };
         
         let path = PathBuf::from("/tmp/test-plugin");

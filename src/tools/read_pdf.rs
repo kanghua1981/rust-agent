@@ -16,6 +16,10 @@ pub struct ReadPdfTool;
 
 #[async_trait::async_trait]
 impl Tool for ReadPdfTool {
+    fn toolset(&self) -> Option<super::Toolset> {
+        Some(super::Toolset::FileRead)
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_pdf".to_string(),
