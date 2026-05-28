@@ -224,7 +224,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
                 useAgentStore.getState().setConfig({ agentMode: newMode });
               }}
               style={{
-                padding: '4px 8px 4px 28px',
+                padding: '4px 8px',
                 background: 'var(--bg3)',
                 border: '1px solid var(--border)',
                 borderRadius: '6px',
@@ -241,18 +241,6 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
               <option value="plan">📋 计划</option>
               <option value="pipeline">🔀 流水线</option>
             </select>
-            <span style={{
-              position: 'absolute',
-              left: '8px',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              fontSize: '12px',
-              pointerEvents: 'none',
-            }}>
-              {config.agentMode === 'auto' ? '🤖' : 
-               config.agentMode === 'simple' ? '⚡' : 
-               config.agentMode === 'plan' ? '📋' : '🔀'}
-            </span>
           </div>
 
           {/* 清空会话按钮 */}

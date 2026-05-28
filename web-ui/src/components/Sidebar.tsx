@@ -66,6 +66,16 @@ function abbreviateServerUrl(url: string): string {
   }
 }
 
+// 缩写工作目录路径（取最后两级目录）
+function abbreviateWorkdir(workdir: string): string {
+  // 去掉末尾的 /
+  const cleaned = workdir.replace(/\/+$/, '');
+  const parts = cleaned.split('/').filter(Boolean);
+  if (parts.length <= 2) return cleaned;
+  // 显示最后两级: .../parent/current
+  return '…/' + parts.slice(-2).join('/');
+}
+
 // 预设配置项组件
 interface PresetItemProps {
   preset: ConfigPreset;
@@ -98,6 +108,11 @@ const PresetItem: React.FC<PresetItemProps> = ({ preset, isActive, isConnecting,
       <div style={{ fontSize: '10px', color: 'var(--text3)', fontFamily: 'monospace' }}>
         {abbreviateServerUrl(preset.serverUrl)}
       </div>
+      {preset.workdir && (
+        <div style={{ fontSize: '10px', color: 'var(--text3)', fontFamily: 'monospace', marginTop: '1px' }}>
+          📂 {abbreviateWorkdir(preset.workdir)}
+        </div>
+      )}
     </div>
     <button
       style={{
@@ -126,6 +141,7 @@ const PresetItem: React.FC<PresetItemProps> = ({ preset, isActive, isConnecting,
 interface PresetsSectionProps {
   presets: ConfigPreset[];
   currentServerUrl: string;
+  currentWorkdir?: string;
   connectionStatus: string;
   onConnect: (presetId: string) => void;
   onOpenSettings: () => void;
@@ -133,7 +149,8 @@ interface PresetsSectionProps {
 
 const PresetsSection: React.FC<PresetsSectionProps> = ({ 
   presets, 
-  currentServerUrl, 
+  currentServerUrl,
+  currentWorkdir,
   connectionStatus, 
   onConnect, 
   onOpenSettings 
@@ -171,7 +188,7 @@ const PresetsSection: React.FC<PresetsSectionProps> = ({
             <PresetItem
               key={preset.id}
               preset={preset}
-              isActive={connectionStatus === 'connected' && preset.serverUrl === currentServerUrl}
+              isActive={connectionStatus === 'connected' && preset.serverUrl === currentServerUrl && ((!preset.workdir && !currentWorkdir) || preset.workdir === currentWorkdir)}
               isConnecting={connectionStatus === 'connecting'}
               onConnect={onConnect}
             />
@@ -260,6 +277,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
         <PresetsSection
           presets={presets}
           currentServerUrl={serverUrl}
+          currentWorkdir={workdir}
           connectionStatus={connectionStatus}
           onConnect={handleQuickConnect}
           onOpenSettings={handleOpenSettings}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { TokenUsageBadge } from './TokenUsageBadge';
 
 interface HeaderProps {
   onOpenConnect: () => void;
@@ -178,6 +179,9 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
             <span>🔨</span>
             <span>{toolCallCount}</span>
           </div>
+
+          {/* Token 用量徽章 */}
+          <TokenUsageBadge />
           
           {/* 待确认徽章（只在有确认时显示） */}
           {pendingConfCount > 0 && (
@@ -220,7 +224,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
                 useAgentStore.getState().setConfig({ agentMode: newMode });
               }}
               style={{
-                padding: '4px 8px 4px 28px',
+                padding: '4px 8px',
                 background: 'var(--bg3)',
                 border: '1px solid var(--border)',
                 borderRadius: '6px',
@@ -237,18 +241,6 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
               <option value="plan">📋 计划</option>
               <option value="pipeline">🔀 流水线</option>
             </select>
-            <span style={{
-              position: 'absolute',
-              left: '8px',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              fontSize: '12px',
-              pointerEvents: 'none',
-            }}>
-              {config.agentMode === 'auto' ? '🤖' : 
-               config.agentMode === 'simple' ? '⚡' : 
-               config.agentMode === 'plan' ? '📋' : '🔀'}
-            </span>
           </div>
 
           {/* 清空会话按钮 */}

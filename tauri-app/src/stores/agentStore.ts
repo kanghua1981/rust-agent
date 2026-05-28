@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface SandboxFileChange {
@@ -60,6 +60,9 @@ interface AgentState {
   // Workdir the server actually reported in the ready frame (real connected workdir)
   connectedWorkdir: string | null;
   
+  // Token usage (updated on each 'done' event)
+  tokenUsage: TokenUsage | null;
+  
   
   // 集群 token（认证）
   clusterToken: string;
@@ -111,6 +114,7 @@ interface AgentState {
   setNodeList: (nodes: VirtualNodeInfo[]) => void;
   setClusterToken: (token: string) => void;
   setConnectedWorkdir: (workdir: string | null) => void;
+  setTokenUsage: (usage: TokenUsage) => void;
   addConnectionHistory: (serverUrl: string, workdir?: string) => void;
   removeConnectionHistory: (id: string) => void;
   clearConnectionHistory: () => void;
@@ -168,6 +172,7 @@ const initialState = {
   nodeList: [],
   clusterToken: '',
   connectedWorkdir: null,
+  tokenUsage: null,
   presets: persistedConfig.presets || [],
   connectionHistory: [],
   config: {
@@ -325,6 +330,8 @@ export const useAgentStore = create<AgentState>()(
   setClusterToken: (token) => set({ clusterToken: token }),
   setConnectedWorkdir: (workdir) => set({ connectedWorkdir: workdir }),
 
+  setTokenUsage: (usage) => set({ tokenUsage: usage }),
+
   addConnectionHistory: (serverUrl, workdir) => {
     const now = Date.now();
     set((state) => {
@@ -373,6 +380,7 @@ export const useAgentStore = create<AgentState>()(
     streamingMessageId: null,
     thinkingMessageId: null,
     currentMessage: '',
+    tokenUsage: null,
   }),
     
   // reset only clears session/conversation state, preserving connection settings and presets
@@ -388,6 +396,7 @@ export const useAgentStore = create<AgentState>()(
     thinkingMessageId: null,
     currentMessage: '',
     sessionInfo: null,
+    tokenUsage: null,
     // preserve: serverUrl, workdir, config, presets
   })),
 }),

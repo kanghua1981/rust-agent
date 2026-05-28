@@ -67,6 +67,7 @@ export const useWebSocket = () => {
     setSandboxChangesData,
     setNodeList,
     setConnectedWorkdir,
+    setTokenUsage,
     addConnectionHistory,
   } = useAgentStore();
 
@@ -412,6 +413,14 @@ export const useWebSocket = () => {
         setStreamingMessageId(null);
         if (event.data?.pending_changes !== undefined) {
           setPendingChanges(event.data.pending_changes);
+        }
+        // Extract token usage from done event
+        if (event.data?.input_tokens !== undefined || event.data?.output_tokens !== undefined) {
+          setTokenUsage({
+            input_tokens: event.data.input_tokens ?? 0,
+            output_tokens: event.data.output_tokens ?? 0,
+            role_usage: event.data.role_usage,
+          });
         }
         if (event.data?.text && lastAssistantMsgIdRef.current) {
           const state = useAgentStore.getState();
