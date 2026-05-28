@@ -67,6 +67,7 @@ export const useWebSocket = () => {
     setSandboxChangesData,
     setNodeList,
     setConnectedWorkdir,
+    setTokenUsage,
     addConnectionHistory,
   } = useAgentStore();
 
@@ -352,9 +353,13 @@ export const useWebSocket = () => {
             .filter(c => c.tool === event.data.tool && c.status === 'executing')
             .sort((a, b) => a.timestamp - b.timestamp)[0];
           if (match) {
+            // Runtime type guard: ensure output is a string
+            const output = typeof event.data.output === 'string'
+              ? event.data.output
+              : String(event.data.output ?? '');
             updateToolCall(match.id, {
               status: event.data.is_error ? 'error' : 'completed',
-              output: event.data.output,
+              output,
             });
           }
         }
@@ -394,7 +399,11 @@ export const useWebSocket = () => {
         break;
 
       case 'diff':
-        addDiff({ id: uuidv4(), path: event.data.path, diff: event.data.diff, timestamp: Date.now() });
+        // Runtime type guard: ensure diff is a string before passing to component
+        if (event.data?.path != null) {
+          const diffStr = typeof event.data.diff === 'string' ? event.data.diff : String(event.data.diff ?? '');
+          addDiff({ id: uuidv4(), path: String(event.data.path), diff: diffStr, timestamp: Date.now() });
+        }
         break;
 
       case 'done':
@@ -404,6 +413,14 @@ export const useWebSocket = () => {
         setStreamingMessageId(null);
         if (event.data?.pending_changes !== undefined) {
           setPendingChanges(event.data.pending_changes);
+        }
+        // Extract token usage from done event
+        if (event.data?.input_tokens !== undefined || event.data?.output_tokens !== undefined) {
+          setTokenUsage({
+            input_tokens: event.data.input_tokens ?? 0,
+            output_tokens: event.data.output_tokens ?? 0,
+            role_usage: event.data.role_usage,
+          });
         }
         if (event.data?.text && lastAssistantMsgIdRef.current) {
           const state = useAgentStore.getState();
@@ -489,12 +506,17 @@ export const useWebSocket = () => {
       case 'session_restored': {
         // Populate the chat with the restored history.
         const { messages: restored } = event.data;
-        restored.forEach((m: { id: string; role: string; content: string }) => {
+        const now = Date.now();
+        restored.forEach((m: { id: string; role: string; content: string; timestamp?: number }, i: number) => {
+          // Use server-provided timestamp if available, otherwise spread
+          // timestamps incrementally to avoid identical timestamps corrupting
+          // minute-bucket diff assignment in ChatArea.
+          const ts = m.timestamp ?? (now - (restored.length - i) * 1000);
           addMessage({
             id: m.id,
             role: m.role as 'user' | 'assistant' | 'system',
             content: m.content,
-            timestamp: Date.now(),
+            timestamp: ts,
           });
         });
         // Reset last assistant msg ref so next stream attaches correctly.

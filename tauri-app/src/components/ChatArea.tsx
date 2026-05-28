@@ -37,6 +37,16 @@ export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan })
   // Pre-compute toolCalls and diffs per message. O(n+m) via indexing instead
   // of the original O(n×m) nested-filter that ran ~150K comparisons per update.
   const messageDataMap = useMemo(() => {
+    // ── Session cleared: reset stable-reference caches ──
+    // Without this, stale cache entries from a previous session survive
+    // across session clears, potentially leaking data or causing mismatches.
+    if (messages.length === 0) {
+      stableRef.current.clear();
+      stableKeys.current.clear();
+      const empty = new Map<string, { toolCalls: ToolCall[]; diffs: StoreDiffEntry[] }>();
+      return empty;
+    }
+
     // ── Phase 1: index toolCalls by messageId (O(toolCalls.length)) ──
     const tcByMsgId = new Map<string, ToolCall[]>();
     const unmatchedTCs: ToolCall[] = [];

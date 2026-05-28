@@ -413,11 +413,20 @@ export interface ContextWarningEvent extends BaseMessage {
   };
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  role_usage?: Record<string, [number, number]>; // role -> [input, output]
+}
+
 export interface DoneEvent extends BaseMessage {
   type: 'done';
   data: {
     text: string;
     pending_changes?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    role_usage?: Record<string, [number, number]>;
   };
 }
 

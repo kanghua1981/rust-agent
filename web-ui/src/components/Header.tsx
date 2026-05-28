@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { TokenUsageBadge } from './TokenUsageBadge';
 
 interface HeaderProps {
   onOpenConnect: () => void;
@@ -178,6 +179,9 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
             <span>🔨</span>
             <span>{toolCallCount}</span>
           </div>
+
+          {/* Token 用量徽章 */}
+          <TokenUsageBadge />
           
           {/* 待确认徽章（只在有确认时显示） */}
           {pendingConfCount > 0 && (

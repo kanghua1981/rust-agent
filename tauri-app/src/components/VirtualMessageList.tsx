@@ -2,6 +2,7 @@ import React, { useCallback } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { useAgentStore } from '../stores/agentStore';
 import { MessageItem } from './MessageItem';
+import { ErrorBoundary } from './ErrorBoundary';
 import { ConfirmCard } from './ConfirmCard';
 import type { ToolCall } from '../types/agent';
 import type { DiffEntry as StoreDiffEntry } from '../stores/agentStore';
@@ -34,13 +35,15 @@ export const VirtualMessageList: React.FC<Props> = ({
       const data = messageDataMap.get(msg.id);
       return (
         <div style={{ maxWidth: '800px', margin: '0 auto', width: '100%' }}>
-          <MessageItem
-            message={msg}
-            isStreaming={streamingMessageId === msg.id}
-            isThinking={thinkingMessageId === msg.id}
-            toolCalls={data?.toolCalls ?? []}
-            diffs={data?.diffs ?? []}
-          />
+          <ErrorBoundary>
+            <MessageItem
+              message={msg}
+              isStreaming={streamingMessageId === msg.id}
+              isThinking={thinkingMessageId === msg.id}
+              toolCalls={data?.toolCalls ?? []}
+              diffs={data?.diffs ?? []}
+            />
+          </ErrorBoundary>
         </div>
       );
     },

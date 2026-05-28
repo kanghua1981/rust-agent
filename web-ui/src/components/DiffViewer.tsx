@@ -8,7 +8,7 @@ interface Props {
 export const DiffViewer: React.FC<Props> = ({ path, diff }) => {
   const [collapsed, setCollapsed] = useState(false);
 
-  const lines = diff.split('\n');
+  const lines = (diff ?? '').split('\n');
 
   const lineColor = (line: string): React.CSSProperties => {
     if (line.startsWith('+') && !line.startsWith('+++')) return { background: 'rgba(16,185,129,0.12)', color: '#6ee7b7' };

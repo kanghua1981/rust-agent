@@ -384,7 +384,21 @@ async fn run_async(
                 match process_result {
                     Ok(final_text) => {
                         let pending = agent.sandbox.ops_count().await;
-                        let done = serde_json::json!({ "text": final_text, "pending_changes": pending });
+                        let (input_tokens, output_tokens) = agent.token_usage();
+                        let role_usage: serde_json::Map<String, serde_json::Value> = agent
+                            .role_token_usage()
+                            .iter()
+                            .map(|(role, &(inp, out))| {
+                                (role.clone(), serde_json::json!([inp, out]))
+                            })
+                            .collect();
+                        let done = serde_json::json!({
+                            "text": final_text,
+                            "pending_changes": pending,
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "role_usage": role_usage,
+                        });
                         if let Some(ref req_id) = req_id {
                             let id_str = req_id.as_str().unwrap_or("");
                             ws_output.emit_public_with_id("done", done, id_str);
@@ -412,8 +426,11 @@ async fn run_async(
                         ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
                     }
                     Err(e) => {
+                        let (input_tokens, output_tokens) = agent.token_usage();
                         ws_output.emit_public("error", serde_json::json!({
                             "message": format!("{:#}", e),
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
                         }));
                     }
                 }

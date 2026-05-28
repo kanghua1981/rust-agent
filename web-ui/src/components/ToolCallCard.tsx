@@ -23,9 +23,15 @@ export const ToolCallCard: React.FC<Props> = ({ toolCall }) => {
   const st = statusStyles[toolCall.status] || statusStyles.executing;
   const icon = toolIcons[toolCall.tool] || '🔧';
 
-  const inputStr = typeof toolCall.input === 'string'
-    ? toolCall.input
-    : JSON.stringify(toolCall.input, null, 2);
+  const inputStr = (() => {
+    if (toolCall.input == null) return '(空)';
+    if (typeof toolCall.input === 'string') return toolCall.input;
+    try {
+      return JSON.stringify(toolCall.input, null, 2);
+    } catch {
+      return String(toolCall.input);
+    }
+  })();
 
   return (
     <div
@@ -87,7 +93,7 @@ export const ToolCallCard: React.FC<Props> = ({ toolCall }) => {
                 overflowX: 'auto', maxHeight: '300px', overflowY: 'auto',
                 color: toolCall.status === 'error' ? 'var(--red)' : 'var(--text)', margin: 0,
               }}>
-                {toolCall.output}
+                {typeof toolCall.output === 'string' ? toolCall.output : String(toolCall.output ?? '')}
               </pre>
             </>
           )}
