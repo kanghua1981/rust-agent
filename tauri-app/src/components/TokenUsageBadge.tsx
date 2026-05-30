@@ -11,7 +11,9 @@ export const TokenUsageBadge: React.FC = () => {
   const tokenUsage = useAgentStore(s => s.tokenUsage);
   const [showTooltip, setShowTooltip] = useState(false);
 
-  if (!tokenUsage) return null;
+  if (!tokenUsage || typeof tokenUsage.input_tokens !== 'number' || typeof tokenUsage.output_tokens !== 'number') {
+    return null;
+  }
 
   const { input_tokens, output_tokens, role_usage } = tokenUsage;
   const total = input_tokens + output_tokens;

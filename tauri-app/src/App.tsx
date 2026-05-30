@@ -9,24 +9,54 @@ import { SessionsPanel } from './components/SessionsPanel';
 import { SandboxPanel } from './components/SandboxPanel';
 import { NodesPanel } from './components/NodesPanel';
 import { TaskPanelList } from './components/TaskPanelList';
+import { PluginsPanel } from './components/PluginsPanel';
+import { ConnectionTabs } from './components/ConnectionTabs';
 import { ConnectModal } from './components/ConnectModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
 import { useAgentPool } from './hooks/useAgentPool';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [showConnect, setShowConnect] = useState(false);
 
-  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, loadSession, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile } = useWebSocket();
-  const { reset, config } = useAgentStore();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote } = useWebSocket();
+  const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
   const handleConnect = useCallback(() => {
-    connect();
+    const st = useAgentStore.getState();
+    // Save current active slot state (flat proxy → connections map)
+    st._saveActiveSlot();
+
+    // Read the target URL/workdir from the flat proxy (set by ConnectModal/applyPreset)
+    const targetUrl = st.serverUrl;
+    const targetWorkdir = st.workdir;
+
+    // Create a new connection slot — every connection gets its own isolated slot
+    const slotId = `conn_${Date.now()}`;
+    // Label: last workdir component if set, otherwise host:port
+    const hostLabel = (() => {
+      if (targetWorkdir) {
+        return targetWorkdir.split('/').filter(Boolean).pop() || targetWorkdir;
+      }
+      try {
+        const u = new URL(targetUrl.replace(/^ws(s?):/, 'http$1:'));
+        return u.host + (u.pathname && u.pathname !== '/' ? u.pathname : '');
+      } catch {
+        return targetUrl.replace(/^wss?:\/\//, '');
+      }
+    })();
+    st.createConnectionSlot(slotId, hostLabel, targetUrl, targetWorkdir);
+
+    // Switch to the new (empty) slot — this clears messages/toolCalls from the flat proxy
+    st.setActiveConnection(slotId);
+
+    // Connect with the new slot
+    connect(slotId);
   }, [connect]);
 
   const handleDisconnect = useCallback(() => {
@@ -123,39 +153,49 @@ function App() {
       color: 'var(--text)',
       overflow: 'hidden',
     }}>
-      <Header
-        onOpenConnect={() => setShowConnect(true)}
-        onDisconnect={handleDisconnect}
-        onNewSession={newSession}
-      />
-
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        <Sidebar
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
+      <ErrorBoundary>
+        <Header
           onOpenConnect={() => setShowConnect(true)}
-          onQuickConnect={handleConnect}  // 添加快速连接支持
-          onLoadSession={loadSession}
+          onDisconnect={handleDisconnect}
           onNewSession={newSession}
         />
+      </ErrorBoundary>
+
+      <ErrorBoundary>
+        <ConnectionTabs onNewConnection={() => setShowConnect(true)} switchToConnection={switchToConnection} disconnectSlot={disconnect} connectSlot={connect} />
+      </ErrorBoundary>
+
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        <ErrorBoundary>
+          <Sidebar
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            onOpenConnect={() => setShowConnect(true)}
+            onQuickConnect={handleConnect}  // 添加快速连接支持
+            onNewSession={newSession}
+          />
+        </ErrorBoundary>
 
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
-          <ErrorBoundary>
+          <ErrorBoundary key={activeTab}>
           {activeTab === 'chat' && (
             <>
               <ChatArea
                 onConfirm={confirmToolCall}
                 onAnswer={(id, answer) => { answerQuestion(answer); useAgentStore.getState().removePendingConfirmation(id); }}
                 onReviewPlan={(id, approved, feedback) => { reviewPlan(approved, feedback); useAgentStore.getState().removePendingConfirmation(id); }}
+                onRestoreSession={() => loadSession()}
+                onDismissRestore={() => useAgentStore.getState().setSessionRestoreAvailable(null)}
               />
               <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} onUpload={handleUpload} />
             </>
           )}
           {activeTab === 'tools' && <ToolsPanel />}
           {activeTab === 'nodes' && <NodesPanel />}
-          {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} />}
-          {activeTab === 'settings' && <SettingsPanel />}
+          {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} isConnected={connectionStatus === 'connected'} onListSessions={listSessions} onDeleteSession={deleteSession} onLoadSessionById={loadSessionById} />}
+          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />}
+          {activeTab === 'plugins' && <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />}
           {activeTab === 'sandbox' && (
             <SandboxPanel
               onSandboxListChanges={sandboxListChanges}
@@ -166,15 +206,19 @@ function App() {
           )}
           </ErrorBoundary>
         </main>
-        <TaskPanelList />
+        <ErrorBoundary>
+          <TaskPanelList />
+        </ErrorBoundary>
         </div>
       </div>
 
       {showConnect && (
-        <ConnectModal
-          onConnect={handleConnect}
-          onClose={() => setShowConnect(false)}
-        />
+        <ErrorBoundary>
+          <ConnectModal
+            onConnect={handleConnect}
+            onClose={() => setShowConnect(false)}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

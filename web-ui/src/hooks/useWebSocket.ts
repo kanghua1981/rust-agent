@@ -27,20 +27,98 @@ function ensureAgentPath(url: string): string {
   }
 }
 
+// ── Per-slot WebSocket connection state ──
+// Each connection slot gets its own live WebSocket, so switching tabs
+// doesn't disconnect — it just swaps which slot's data is displayed.
+interface SlotConn {
+  ws: WebSocket;
+  streamingMsgId: string | null;
+  thinkingMsgId: string | null;
+  lastAssistantMsgId: string | null;
+  tokenBuf: string;
+  thinkingBuf: string;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+}
+
 export const useWebSocket = () => {
-  const wsRef = useRef<WebSocket | null>(null);
+  // ── All live connections, keyed by slot ID ──
+  const connMapRef = useRef<Map<string, SlotConn>>(new Map());
+
+  // ── Global refs — always point to the *active* connection's state ──
   const streamingMsgIdRef = useRef<string | null>(null);
   const thinkingMsgIdRef = useRef<string | null>(null);
   const lastAssistantMsgIdRef = useRef<string | null>(null);
-
-  // ── Token batching: accumulate streaming tokens and flush periodically ──
-  // Instead of calling appendToMessage() on every single token (which causes
-  // O(n²) string concatenation and hundreds of React state updates per second),
-  // we batch tokens and flush every ~50ms or when the buffer reaches 20 tokens.
   const tokenBufRef = useRef<string>('');
   const thinkingBufRef = useRef<string>('');
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── Helpers: sync global refs to/from a specific connection ──
+  const saveRefsToConn = (conn: SlotConn) => {
+    conn.streamingMsgId = streamingMsgIdRef.current;
+    conn.thinkingMsgId = thinkingMsgIdRef.current;
+    conn.lastAssistantMsgId = lastAssistantMsgIdRef.current;
+    conn.tokenBuf = tokenBufRef.current;
+    conn.thinkingBuf = thinkingBufRef.current;
+    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+    conn.flushTimer = null;
+  };
+
+  const loadRefsFromConn = (conn: SlotConn) => {
+    // Flush any pending tokens for the outgoing connection first
+    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+    streamingMsgIdRef.current = conn.streamingMsgId;
+    thinkingMsgIdRef.current = conn.thinkingMsgId;
+    lastAssistantMsgIdRef.current = conn.lastAssistantMsgId;
+    tokenBufRef.current = conn.tokenBuf;
+    thinkingBufRef.current = conn.thinkingBuf;
+    // Don't restore a timer — it would fire in the wrong context
+  };
+
+  // ── Token flushing (operates on global refs = active connection) ──
+  const flushTokens = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const textToken = tokenBufRef.current;
+    const thinkToken = thinkingBufRef.current;
+    tokenBufRef.current = '';
+    thinkingBufRef.current = '';
+    const st = useAgentStore.getState();
+    const sId = streamingMsgIdRef.current;
+    const tId = thinkingMsgIdRef.current;
+    if (textToken && sId) {
+      st.appendToMessage(sId, textToken);
+    }
+    if (thinkToken && tId) {
+      st.appendToThinking(tId, thinkToken);
+    }
+  }, []);
+
+  const scheduleFlush = useCallback(() => {
+    if (!flushTimerRef.current) {
+      flushTimerRef.current = setTimeout(flushTokens, 50);
+    }
+  }, [flushTokens]);
+
+  // ── Helpers for store access ──
+  const getActiveSlotId = () => useAgentStore.getState().activeConnectionId;
+  const getActiveConn = (): SlotConn | undefined => {
+    const id = getActiveSlotId();
+    return id ? connMapRef.current.get(id) : undefined;
+  };
+
+  // ── Send on the *active* connection ──
+  const sendRaw = useCallback((message: ClientMessage) => {
+    const conn = getActiveConn();
+    if (conn?.ws.readyState === WebSocket.OPEN) {
+      conn.ws.send(JSON.stringify(message));
+      return true;
+    }
+    return false;
+  }, []);
+
+  // ── Store actions (destructured for existing handleServerEvent compatibility) ──
   const {
     connectionStatus,
     serverUrl,
@@ -61,6 +139,7 @@ export const useWebSocket = () => {
     setSessionInfo,
     setSessionList,
     removeSessionFromList,
+    setSessionRestoreAvailable,
     clearSession,
     setSandboxBackend,
     setPendingChanges,
@@ -69,54 +148,23 @@ export const useWebSocket = () => {
     setConnectedWorkdir,
     setTokenUsage,
     addConnectionHistory,
+    setPlugins,
+    activeConnectionId,
+    connections,
+    createConnectionSlot,
+    removeConnectionSlot,
+    _saveActiveSlot,
+    _updateSlot,
   } = useAgentStore();
 
-  // Flush batched streaming tokens to the store. Called on a 50ms timer
-  // and when the stream ends. Reduces state updates from hundreds/sec to ~20/sec
-  // and avoids O(n²) string concatenation on every token.
-  const flushTokens = useCallback(() => {
-    if (flushTimerRef.current) {
-      clearTimeout(flushTimerRef.current);
-      flushTimerRef.current = null;
-    }
-    const textToken = tokenBufRef.current;
-    const thinkToken = thinkingBufRef.current;
-    tokenBufRef.current = '';
-    thinkingBufRef.current = '';
-    // Use getState() to read latest refs without re-subscribing
-    const st = useAgentStore.getState();
-    const sId = streamingMsgIdRef.current;
-    const tId = thinkingMsgIdRef.current;
-    if (textToken && sId) {
-      st.appendToMessage(sId, textToken);
-    }
-    if (thinkToken && tId) {
-      st.appendToThinking(tId, thinkToken);
-    }
-  }, []);
-
-  // Schedule a flush if not already scheduled (50ms debounce).
-  const scheduleFlush = useCallback(() => {
-    if (!flushTimerRef.current) {
-      flushTimerRef.current = setTimeout(flushTokens, 50);
-    }
-  }, [flushTokens]);
-
-  const sendRaw = useCallback((message: ClientMessage) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-      return true;
-    }
-    return false;
-  }, []);
-
   const sendUserMessage = useCallback((text: string) => {
+    const st = useAgentStore.getState();
     const userMsgId = uuidv4();
     addMessage({ id: userMsgId, role: 'user', content: text, timestamp: Date.now() });
 
     const ok = sendRaw({
       type: 'user_message',
-      data: { text, workdir, model: config.model },
+      data: { text, workdir: st.workdir, model: st.config.model },
       id: userMsgId,
     });
 
@@ -128,7 +176,7 @@ export const useWebSocket = () => {
       return assistantMsgId;
     }
     return null;
-  }, [sendRaw, workdir, config.model, addMessage, setIsProcessing]);
+  }, [sendRaw, addMessage, setIsProcessing]);
 
   const sendCancel = useCallback(() => {
     sendRaw({ type: 'cancel', data: {} });
@@ -197,7 +245,6 @@ export const useWebSocket = () => {
   }, [sendRaw, clearSession]);
 
   const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
-    // Emit a system message showing upload intent
     const uploadMsgId = uuidv4();
     addMessage({
       id: uploadMsgId,
@@ -211,6 +258,23 @@ export const useWebSocket = () => {
     });
   }, [sendRaw, addMessage]);
 
+  const listPlugins = useCallback(() => {
+    sendRaw({ type: 'list_plugins', data: {} });
+  }, [sendRaw]);
+
+  const enablePlugin = useCallback((id: string) => {
+    sendRaw({ type: 'enable_plugin', data: { id } });
+  }, [sendRaw]);
+
+  const disablePlugin = useCallback((id: string) => {
+    sendRaw({ type: 'disable_plugin', data: { id } });
+  }, [sendRaw]);
+
+  // ── Core event handler — writes to the flat proxy ──
+  // IMPORTANT: This function must be called while the global refs
+  // (streamingMsgIdRef etc.) point to the correct connection's state.
+  // For active-slot events this is naturally the case.
+  // For inactive-slot events, processEventForSlot() swaps the refs first.
   const handleServerEvent = useCallback((event: ServerEvent) => {
     switch (event.type) {
       case 'ready':
@@ -231,7 +295,6 @@ export const useWebSocket = () => {
         break;
 
       case 'sandbox_changes_result':
-        // 存到全局 store 供 SandboxPanel 读取
         setPendingChanges(event.data.pending_changes);
         setSandboxChangesData(event.data.files);
         break;
@@ -294,7 +357,7 @@ export const useWebSocket = () => {
         break;
 
       case 'thinking_end':
-        flushTokens(); // flush remaining batched thinking tokens
+        flushTokens();
         thinkingMsgIdRef.current = null;
         setThinkingMessageId(null);
         break;
@@ -312,7 +375,7 @@ export const useWebSocket = () => {
         break;
 
       case 'stream_end':
-        flushTokens(); // flush any remaining batched tokens
+        flushTokens();
         streamingMsgIdRef.current = null;
         setStreamingMessageId(null);
         break;
@@ -347,13 +410,11 @@ export const useWebSocket = () => {
 
       case 'tool_result':
         if (event.data?.tool) {
-          // Find oldest executing tool call with this name (server sends no id)
           const storeState = useAgentStore.getState();
           const match = storeState.toolCalls
             .filter(c => c.tool === event.data.tool && c.status === 'executing')
             .sort((a, b) => a.timestamp - b.timestamp)[0];
           if (match) {
-            // Runtime type guard: ensure output is a string
             const output = typeof event.data.output === 'string'
               ? event.data.output
               : String(event.data.output ?? '');
@@ -368,7 +429,6 @@ export const useWebSocket = () => {
       case 'confirm_request': {
         const confirmId = event.data.tool_id || uuidv4();
         if (config.autoApprove) {
-          // 自动批准，直接回复服务器
           sendRaw({ type: 'confirm_response', data: { approved: true, tool_id: confirmId } });
         } else {
           addPendingConfirmation({
@@ -399,7 +459,6 @@ export const useWebSocket = () => {
         break;
 
       case 'diff':
-        // Runtime type guard: ensure diff is a string before passing to component
         if (event.data?.path != null) {
           const diffStr = typeof event.data.diff === 'string' ? event.data.diff : String(event.data.diff ?? '');
           addDiff({ id: uuidv4(), path: String(event.data.path), diff: diffStr, timestamp: Date.now() });
@@ -407,14 +466,13 @@ export const useWebSocket = () => {
         break;
 
       case 'done':
-        flushTokens(); // flush any remaining batched tokens
+        flushTokens();
         setIsProcessing(false);
         streamingMsgIdRef.current = null;
         setStreamingMessageId(null);
         if (event.data?.pending_changes !== undefined) {
           setPendingChanges(event.data.pending_changes);
         }
-        // Extract token usage from done event
         if (event.data?.input_tokens !== undefined || event.data?.output_tokens !== undefined) {
           setTokenUsage({
             input_tokens: event.data.input_tokens ?? 0,
@@ -437,7 +495,7 @@ export const useWebSocket = () => {
         break;
 
       case 'cancelled':
-        flushTokens(); // flush any remaining batched tokens
+        flushTokens();
         setIsProcessing(false);
         streamingMsgIdRef.current = null;
         setStreamingMessageId(null);
@@ -451,8 +509,6 @@ export const useWebSocket = () => {
         break;
 
       case 'role_header':
-        // Pipeline stage banner: insert a styled system message so the user
-        // can see which role is now active (Planner / Executor / Checker).
         addMessage({
           id: uuidv4(),
           role: 'system',
@@ -460,7 +516,6 @@ export const useWebSocket = () => {
           timestamp: Date.now(),
           meta: { stageLabel: event.data.label, stageModel: event.data.model },
         });
-        // Each pipeline stage gets its own assistant bubble.
         {
           const stageMsgId = uuidv4();
           addMessage({ id: stageMsgId, role: 'assistant', content: '', timestamp: Date.now() });
@@ -469,13 +524,10 @@ export const useWebSocket = () => {
         break;
 
       case 'stage_end':
-        // Mark an empty stage bubble as done so it's removed; just clear refs.
         if (lastAssistantMsgIdRef.current) {
           const st = useAgentStore.getState();
           const stageMsg = st.messages.find(m => m.id === lastAssistantMsgIdRef.current);
-          // If stage produced no text yet (content empty), drop it so we don't leave blank bubbles.
           if (stageMsg && !stageMsg.content) {
-            // Replace with a thin stage-end divider message.
             updateMessage(lastAssistantMsgIdRef.current, '');
           }
         }
@@ -499,18 +551,31 @@ export const useWebSocket = () => {
         break;
 
       case 'session_cleared':
-        // Clear local frontend state when server starts new session
         clearSession();
         break;
 
+      case 'plugins_list':
+        setPlugins(event.data.plugins ?? []);
+        break;
+
+      case 'session_available': {
+        // Auto-restore notification: a previous session exists but we
+        // don't auto-load its messages.  Show a banner for the user to
+        // explicitly restore (or dismiss).
+        setSessionRestoreAvailable({
+          message_count: event.data.message_count,
+        });
+        break;
+      }
+
       case 'session_restored': {
-        // Populate the chat with the restored history.
+        // Full restore — user explicitly requested it (or load_session command).
+        // Clear the restore hint first, then load messages.
+        setSessionRestoreAvailable(null);
+        clearSession();
         const { messages: restored } = event.data;
         const now = Date.now();
         restored.forEach((m: { id: string; role: string; content: string; timestamp?: number }, i: number) => {
-          // Use server-provided timestamp if available, otherwise spread
-          // timestamps incrementally to avoid identical timestamps corrupting
-          // minute-bucket diff assignment in ChatArea.
           const ts = m.timestamp ?? (now - (restored.length - i) * 1000);
           addMessage({
             id: m.id,
@@ -519,7 +584,6 @@ export const useWebSocket = () => {
             timestamp: ts,
           });
         });
-        // Reset last assistant msg ref so next stream attaches correctly.
         lastAssistantMsgIdRef.current = null;
         break;
       }
@@ -529,36 +593,95 @@ export const useWebSocket = () => {
     updateMessage, addMessage,
     addToolCall, updateToolCall, addPendingConfirmation, addDiff,
     setIsProcessing, setStreamingMessageId, setThinkingMessageId, setSessionInfo, setSessionList,
-    removeSessionFromList, clearSession, setSandboxBackend, setPendingChanges,
+    removeSessionFromList, setSessionRestoreAvailable, clearSession, setSandboxBackend, setPendingChanges,
+    setPlugins,
   ]);
 
-  // Sync execution mode to server whenever it changes or connection is established.
-  // NOTE: isolation mode is connection-time only (sent as URL ?mode=), not a runtime toggle.
-  const agentMode = config.agentMode ?? 'auto';
-  const isolation = config.isolation ?? 'container';
-  useEffect(() => {
-    if (connectionStatus === 'connected') {
-      sendRaw({ type: 'set_mode', data: { mode: agentMode as 'auto' | 'simple' | 'plan' | 'pipeline' } });
-      // 连接建立时发送工作目录
-      if (workdir) {
-        sendRaw({ type: 'set_workdir', data: { workdir } });
-      }
+  // ── Process an event for a specific slot ──
+  // If the slot is active, process directly. If inactive, temp-switch
+  // the store and refs so handleServerEvent writes to the correct slot.
+  // React 18 batches all set() calls → no visual flash.
+  const processEventForSlot = useCallback((event: ServerEvent, slotId: string) => {
+    const st = useAgentStore.getState();
+    if (slotId === st.activeConnectionId) {
+      // Active slot — refs already loaded, process directly
+      handleServerEvent(event);
+      // Save ref state back to connection
+      const conn = connMapRef.current.get(slotId);
+      if (conn) saveRefsToConn(conn);
+      return;
     }
-  }, [agentMode, connectionStatus, sendRaw, workdir]);
 
-  const connect = useCallback(() => {
-    wsRef.current?.close();
-    setConnectionStatus('connecting');
+    // Inactive slot — swap everything, process, swap back
+    const origId = st.activeConnectionId;
+    const origConn = origId ? connMapRef.current.get(origId) : undefined;
+    const targetConn = connMapRef.current.get(slotId);
+    if (!targetConn) return;
+
+    // Save current active state
+    if (origConn) saveRefsToConn(origConn);
+    st._saveActiveSlot();
+
+    // Switch to target slot
+    loadRefsFromConn(targetConn);
+    st.setActiveConnection(slotId);
+
+    // Process (writes to flat proxy = target slot)
+    handleServerEvent(event);
+
+    // Save target slot state
+    saveRefsToConn(targetConn);
+    st._saveActiveSlot();
+
+    // Switch back
+    if (origId) {
+      if (origConn) loadRefsFromConn(origConn);
+      st.setActiveConnection(origId);
+    }
+  }, [handleServerEvent]);
+
+  // ── Connect a specific slot ──
+  const connect = useCallback((slotId?: string) => {
+    const st = useAgentStore.getState();
+    const id = slotId || st.activeConnectionId;
+    if (!id) {
+      setConnectionStatus('disconnected');
+      return;
+    }
+
+    // Defensive: sync flat proxy → slot so the slot always has the latest serverUrl/workdir
+    // (e.g. when applyPreset updated the flat proxy but not the legacy 'default' slot)
+    if (id === st.activeConnectionId) {
+      st._saveActiveSlot();
+    }
+
+    const slot = st.connections[id];
+    if (!slot || !slot.serverUrl) {
+      setConnectionStatus('disconnected');
+      return;
+    }
+
+    // Close existing WS for this slot if any
+    const existing = connMapRef.current.get(id);
+    if (existing) {
+      existing.ws.close();
+      connMapRef.current.delete(id);
+    }
+
+    const currentServerUrl = slot.serverUrl;
+    const currentWorkdir = slot.workdir;
+    const currentIsolation = st.config.isolation ?? 'container';
+    const currentClusterToken = st.clusterToken;
+
+    // Update flat proxy if this is the active slot
+    if (id === st.activeConnectionId) {
+      setConnectionStatus('connecting');
+    } else {
+      // Inactive slot: just update its stored status
+      st._updateSlot(id, s => ({ ...s, connectionStatus: 'connecting' }));
+    }
+
     try {
-      // Read latest values directly from Zustand to avoid stale closure
-      // when applyPreset() + connect() are called in the same synchronous tick.
-      const st = useAgentStore.getState();
-      const currentServerUrl = st.serverUrl;
-      const currentWorkdir = st.workdir;
-      const currentIsolation = st.config.isolation ?? 'container';
-      const currentClusterToken = st.clusterToken;
-
-      // Ensure URL targets /agent path; append workdir/mode as query params.
       const base = ensureAgentPath(currentServerUrl);
       const params: string[] = [];
       if (currentWorkdir) params.push(`workdir=${encodeURIComponent(currentWorkdir)}`);
@@ -567,42 +690,166 @@ export const useWebSocket = () => {
       const sep = base.includes('?') ? '&' : '?';
       const wsUrl = params.length > 0 ? `${base}${sep}${params.join('&')}` : base;
       const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      ws.onopen = () => { 
-        setConnectionStatus('connected'); 
-        // 添加连接历史记录
+
+      const conn: SlotConn = {
+        ws,
+        streamingMsgId: null,
+        thinkingMsgId: null,
+        lastAssistantMsgId: null,
+        tokenBuf: '',
+        thinkingBuf: '',
+        flushTimer: null,
+      };
+
+      connMapRef.current.set(id, conn);
+
+      ws.onopen = () => {
+        if (id === useAgentStore.getState().activeConnectionId) {
+          setConnectionStatus('connected');
+          // Clear any stale session-restore hint from a previous connection
+          setSessionRestoreAvailable(null);
+        } else {
+          st._updateSlot(id, s => ({ ...s, connectionStatus: 'connected' }));
+        }
         addConnectionHistory(currentServerUrl, currentWorkdir);
+        ws.send(JSON.stringify({ type: 'list_plugins', data: {} }));
+
+        // If user opted for a fresh session, send new_session after connect.
+        // This runs BEFORE the server's auto-restore emits session_available,
+        // so the restored conversation is immediately discarded.
+        if (st.config.newSessionOnConnect) {
+          ws.send(JSON.stringify({ type: 'new_session', data: {} }));
+        }
       };
-      ws.onclose = () => { 
-        flushTokens(); // flush remaining tokens on disconnect
-        setConnectionStatus('disconnected'); setConnectedWorkdir(null); streamingMsgIdRef.current = null; setStreamingMessageId(null); setIsProcessing(false); 
+
+      ws.onclose = () => {
+        if (connMapRef.current.get(id)?.ws !== ws) return; // stale close
+        // Flush
+        if (id === useAgentStore.getState().activeConnectionId) {
+          flushTokens();
+          setConnectionStatus('disconnected');
+          setConnectedWorkdir(null);
+          setStreamingMessageId(null);
+          setIsProcessing(false);
+          streamingMsgIdRef.current = null;
+        }
+        // Clean up connection map
+        if (connMapRef.current.get(id)?.ws === ws) {
+          connMapRef.current.delete(id);
+        }
       };
-      ws.onerror = () => { setConnectionStatus('error'); };
+
+      ws.onerror = () => {
+        if (id === useAgentStore.getState().activeConnectionId) {
+          setConnectionStatus('error');
+        } else {
+          st._updateSlot(id, s => ({ ...s, connectionStatus: 'error' }));
+        }
+      };
+
       ws.onmessage = (e) => {
-        try { handleServerEvent(JSON.parse(e.data) as ServerEvent); }
-        catch (err) { console.error('[ws] parse error:', err); }
+        try {
+          const event = JSON.parse(e.data) as ServerEvent;
+          processEventForSlot(event, id);
+        } catch (err) {
+          console.error('[ws] parse error:', err);
+        }
       };
+
+      // If this is the active slot, wire up global refs
+      if (id === st.activeConnectionId) {
+        loadRefsFromConn(conn);
+      }
     } catch (err) {
-      setConnectionStatus('error');
+      if (id === st.activeConnectionId) {
+        setConnectionStatus('error');
+      } else {
+        st._updateSlot(id, s => ({ ...s, connectionStatus: 'error' }));
+      }
       console.error('[ws] connect failed:', err);
     }
-  }, [setConnectionStatus, handleServerEvent, setIsProcessing, setStreamingMessageId, addConnectionHistory, flushTokens]);
+  }, [setConnectionStatus, setIsProcessing, setStreamingMessageId, addConnectionHistory, flushTokens, processEventForSlot]);
 
-  const disconnect = useCallback(() => {
-    // Guard: only update global state if this hook instance actually owns a WebSocket.
-    // Multiple components (SettingsPanel, SessionsPanel, etc.) each call useWebSocket()
-    // and get their own wsRef (initially null). Without this guard, when those components
-    // unmount their cleanup calls disconnect() which would unconditionally set the global
-    // connectionStatus to 'disconnected' even though the real WS (owned by App.tsx) is
-    // still open.
-    if (!wsRef.current) return;
-    wsRef.current.close();
-    wsRef.current = null;
-    setConnectionStatus('disconnected');
-    setSessionInfo(null);
+  // ── Disconnect a specific slot ──
+  const disconnect = useCallback((slotId?: string) => {
+    const id = slotId || useAgentStore.getState().activeConnectionId;
+    if (!id) return;
+
+    const conn = connMapRef.current.get(id);
+    if (!conn) return;
+
+    // Save state
+    if (id === useAgentStore.getState().activeConnectionId) {
+      useAgentStore.getState()._saveActiveSlot();
+      saveRefsToConn(conn);
+    }
+
+    conn.ws.close();
+    connMapRef.current.delete(id);
+
+    if (id === useAgentStore.getState().activeConnectionId) {
+      setConnectionStatus('disconnected');
+      setSessionInfo(null);
+    }
   }, [setConnectionStatus, setSessionInfo]);
 
-  useEffect(() => () => { disconnect(); }, [disconnect]);
+  // ── Switch active tab (no WS change!) ──
+  // Called by ConnectionTabs or other UI when the user clicks a different tab.
+  // Saves current refs to old connection, loads refs from new connection,
+  // and swaps the flat proxy in the store.
+  const switchToConnection = useCallback((id: string) => {
+    const st = useAgentStore.getState();
+    if (id === st.activeConnectionId) return;
+
+    // Save current refs to old connection
+    const oldId = st.activeConnectionId;
+    const oldConn = oldId ? connMapRef.current.get(oldId) : undefined;
+    if (oldConn) saveRefsToConn(oldConn);
+
+    // Save flat proxy to old slot
+    st._saveActiveSlot();
+
+    // Switch to new slot (updates flat proxy)
+    st.setActiveConnection(id);
+
+    // Load refs from new connection (if it has a live WS)
+    const newConn = connMapRef.current.get(id);
+    if (newConn) {
+      loadRefsFromConn(newConn);
+    } else {
+      // No live WS yet — reset refs
+      streamingMsgIdRef.current = null;
+      thinkingMsgIdRef.current = null;
+      lastAssistantMsgIdRef.current = null;
+      tokenBufRef.current = '';
+      thinkingBufRef.current = '';
+    }
+
+    // If the new slot has no WS yet, auto-connect
+    if (!newConn && st.connections[id]?.serverUrl) {
+      connect(id);
+    }
+  }, [connect]);
+
+  // ── Sync execution mode to server ──
+  const agentMode = config.agentMode ?? 'auto';
+  useEffect(() => {
+    const st = useAgentStore.getState();
+    if (st.connectionStatus === 'connected') {
+      sendRaw({ type: 'set_mode', data: { mode: agentMode as 'auto' | 'simple' | 'plan' | 'pipeline' } });
+      if (st.workdir) {
+        sendRaw({ type: 'set_workdir', data: { workdir: st.workdir } });
+      }
+    }
+  }, [agentMode, connectionStatus, sendRaw]);
+
+  // ── Cleanup on unmount: close all connections ──
+  useEffect(() => () => {
+    connMapRef.current.forEach(conn => {
+      try { conn.ws.close(); } catch {}
+    });
+    connMapRef.current.clear();
+  }, []);
 
   return {
     connectionStatus,
@@ -626,6 +873,10 @@ export const useWebSocket = () => {
     deleteSession,
     loadSessionById,
     uploadFile,
+    listPlugins,
+    enablePlugin,
+    disablePlugin,
+    switchToConnection,
     isConnected: connectionStatus === 'connected',
   };
 };

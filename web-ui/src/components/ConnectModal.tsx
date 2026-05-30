@@ -74,7 +74,8 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
         setConfig({ 
           autoApprove: preset.autoApprove,
           agentMode: preset.agentMode,
-          isolation: preset.isolation || 'container'
+          isolation: preset.isolation || 'container',
+          newSessionOnConnect: preset.newSessionOnConnect ?? false,
         });
       }
     }
@@ -322,6 +323,9 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
                     outline: 'none', fontFamily: 'monospace', fontSize: '13px',
                   }}
                 />
+                <p style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '4px' }}>
+                  📝 连接后自动恢复该目录的会话
+                </p>
               </div>
 
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
@@ -332,6 +336,16 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
                   style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
                 />
                 <span style={{ fontSize: '13px', color: 'var(--text2)' }}>自动确认工具调用（跳过每次确认弹窗）</span>
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={!!config.newSessionOnConnect}
+                  onChange={(e) => setConfig({ newSessionOnConnect: e.target.checked })}
+                  style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
+                />
+                <span style={{ fontSize: '13px', color: 'var(--text2)' }}>连接后自动开始新会话（不恢复历史）</span>
               </label>
 
               <div>

@@ -1,17 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { useAgentStore } from '../stores/agentStore';
-import { useWebSocket } from '../hooks/useWebSocket';
 import { isDesktopApp, getEnvironmentInfo } from '../utils/environment';
 import type { ConfigPreset } from '../types/agent';
 
-export const SettingsPanel: React.FC = () => {
+interface SettingsPanelProps {
+  isConnected: boolean;
+  onSetWorkdirRemote: (workdir: string) => void;
+}
+
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote }) => {
   const { 
-    serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset, connectionStatus,
-    clusterToken, setClusterToken,
+    serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset,
+    clusterToken, setClusterToken, connectionStatus,
     presets, addPreset, updatePreset, deletePreset, applyPreset 
   } = useAgentStore();
-
-  const { isConnected, setWorkdirRemote } = useWebSocket();
   
   const [activeTab, setActiveTab] = useState<'current' | 'presets'>('current');
   const [showNewPreset, setShowNewPreset] = useState(false);
@@ -59,7 +61,7 @@ export const SettingsPanel: React.FC = () => {
     const newWorkdir = dirDraft.trim();
     setWorkdir(newWorkdir);
     if (isConnected && newWorkdir) {
-      setWorkdirRemote(newWorkdir);
+      onSetWorkdirRemote(newWorkdir);
     }
     setClusterToken(tokenDraft.trim());
     if (modelDraft.trim()) setConfig({ model: modelDraft.trim() });
@@ -114,7 +116,7 @@ export const SettingsPanel: React.FC = () => {
       if (preset.workdir) {
         setWorkdir(preset.workdir);
         if (isConnected) {
-          setWorkdirRemote(preset.workdir);
+          onSetWorkdirRemote(preset.workdir);
         }
       }
       setConfig({

@@ -20,7 +20,10 @@ export type ClientMessage =
   | DeleteSessionMessage
   | LoadSessionByIdMessage
   | CancelMessage
-  | UploadFileMessage;
+  | UploadFileMessage
+  | ListPluginsMessage
+  | EnablePluginMessage
+  | DisablePluginMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
@@ -92,6 +95,7 @@ export type ServerEvent =
   | StageEndEvent
   | SessionInfoEvent
   | SessionRestoredEvent
+  | SessionAvailableEvent
   | SessionClearedEvent
   | SessionsListEvent
   | SessionDeletedEvent
@@ -102,7 +106,8 @@ export type ServerEvent =
   | SandboxRollbackResultEvent
   | CancelledEvent
   | UploadFileResultEvent
-  | AgentEvent;
+  | AgentEvent
+  | PluginsListEvent;
 
 export interface SessionMeta {
   id: string;
@@ -207,6 +212,18 @@ export interface SessionRestoredEvent extends BaseMessage {
   data: {
     message_count: number;
     messages: SessionRestoredMessage[];
+  };
+}
+
+// Auto-restore notification (metadata only — no messages).
+// Sent by the worker on connect when a local session exists.
+// The UI shows a "restore available" banner; clicking it sends
+// a load_session command which re-emits session_restored with full messages.
+export interface SessionAvailableEvent extends BaseMessage {
+  type: 'session_available';
+  data: {
+    message_count: number;
+    session_id: string;
   };
 }
 
@@ -501,6 +518,38 @@ export interface UploadFileResultEvent extends BaseMessage {
   };
 }
 
+// ── 插件系统 ──
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  tools: string[]; // tool names provided by this plugin
+  author?: string;
+  homepage?: string;
+}
+
+export interface ListPluginsMessage extends BaseMessage {
+  type: 'list_plugins';
+  data: {};
+}
+
+export interface EnablePluginMessage extends BaseMessage {
+  type: 'enable_plugin';
+  data: { id: string };
+}
+
+export interface DisablePluginMessage extends BaseMessage {
+  type: 'disable_plugin';
+  data: { id: string };
+}
+
+export interface PluginsListEvent extends BaseMessage {
+  type: 'plugins_list';
+  data: { plugins: PluginInfo[] };
+}
+
 // 工具类型定义
 export interface ToolCall {
   id: string;
@@ -540,6 +589,7 @@ export interface AgentConfig {
   autoApprove?: boolean;
   agentMode?: 'auto' | 'simple' | 'plan' | 'pipeline';
   isolation?: 'normal' | 'container' | 'sandbox';
+  newSessionOnConnect?: boolean;
 }
 
 // 文件信息
@@ -561,6 +611,7 @@ export interface ConfigPreset {
   autoApprove: boolean;
   agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
   isolation?: 'normal' | 'container' | 'sandbox';
+  newSessionOnConnect?: boolean;
   createdAt: number;
 }
 
@@ -572,4 +623,52 @@ export interface ConnectionHistory {
   connectedAt: number;
   lastConnectedAt: number;
   connectionCount: number;
+}
+
+// ── 多工程 Tab 系统：每个连接槽位的独立状态 ──
+export interface ConnectionSlot {
+  id: string;                          // 唯一连接 ID
+  label: string;                       // Tab 标签（如 "project-name :8080"）
+  connectionStatus: ConnectionStatus;
+  serverUrl: string;
+  workdir?: string;
+  connectedWorkdir: string | null;
+  messages: Message[];
+  toolCalls: ToolCall[];
+  pendingConfirmations: PendingConfirmation[];  // stored here only for type; kept in store level
+  diffs: DiffEntry[];                 // stored here only for type
+  isProcessing: boolean;
+  streamingMessageId: string | null;
+  thinkingMessageId: string | null;
+  currentMessage: string;
+  sessionInfo: SessionInfo | null;
+  sessionList: SessionMeta[];
+  sandboxBackend: string;
+  pendingChanges: number;
+  sandboxChangesData: SandboxFileChange[] | null;
+  tokenUsage: TokenUsage | null;
+  nodeList: VirtualNodeInfo[];
+  plugins: PluginInfo[];
+}
+
+export interface PendingConfirmation {
+  id: string;
+  action: string;
+  details?: string;
+  type: 'confirm' | 'ask_user' | 'review_plan';
+}
+
+export interface DiffEntry {
+  id: string;
+  path: string;
+  diff: string;
+  timestamp: number;
+}
+
+export interface SandboxFileChange {
+  path: string;
+  kind: 'modified' | 'created' | 'deleted' | 'unchanged';
+  original_size: number | null;
+  current_size: number | null;
+  diff: string | null;
 }

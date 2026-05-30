@@ -1,18 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
-import { useWebSocket } from '../hooks/useWebSocket';
 import type { SessionMeta } from '../types/agent';
 import { isTauri, exportSessionAsMarkdown, exportSessionAsJson } from '../utils/export';
 
 interface Props {
   onSwitchToChat: () => void;
+  isConnected: boolean;
+  onListSessions: () => void;
+  onDeleteSession: (id: string) => void;
+  onLoadSessionById: (id: string) => void;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
+export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat, isConnected, onListSessions, onDeleteSession, onLoadSessionById }) => {
   const { messages, sessionList } = useAgentStore();
-  const { listSessions, deleteSession, loadSessionById, isConnected } = useWebSocket();
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<{ ok?: string; err?: string } | null>(null);
 
@@ -27,12 +29,12 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
 
   // Auto-load list when panel becomes active and connected
   useEffect(() => {
-    if (isConnected) listSessions();
+    if (isConnected) onListSessions();
   }, [isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDelete = (id: string) => {
     if (confirmDeleteId === id) {
-      deleteSession(id);
+      onDeleteSession(id);
       setConfirmDeleteId(null);
     } else {
       setConfirmDeleteId(id);
@@ -40,7 +42,7 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
   };
 
   const handleLoad = (id: string) => {
-    loadSessionById(id);
+    onLoadSessionById(id);
     onSwitchToChat();
   };
 
@@ -56,7 +58,7 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px', maxWidth: '760px', margin: '0 auto', width: '100%' }}>
       <h2 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text)', marginBottom: '4px' }}>会话管理</h2>
-      <p style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '20px' }}>导出当前对话或管理历史会话记录</p>
+      <p style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '20px' }}>导出当前对话或管理历史会话记录 · 每个工作目录只有一个会话，连接时自动恢复</p>
 
       {/* ── Export current chat ──────────────────────────────────────────── */}
       <section style={{ marginBottom: '28px' }}>
@@ -111,10 +113,10 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
       <section>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
           <p style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-            历史会话 ({sessionList.length})
+            使用过的工作目录 ({sessionList.length})
           </p>
           <button
-            onClick={listSessions}
+            onClick={onListSessions}
             disabled={!isConnected}
             style={{ ...btnBase, background: 'var(--bg3)', color: isConnected ? 'var(--text2)' : 'var(--text3)', fontSize: '11px' }}
           >
@@ -130,7 +132,7 @@ export const SessionsPanel: React.FC<Props> = ({ onSwitchToChat }) => {
 
         {isConnected && sessionList.length === 0 && (
           <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text3)', fontSize: '13px', background: 'var(--bg2)', borderRadius: '10px', border: '1px solid var(--border)' }}>
-            暂无历史会话
+            暂无历史工作目录
           </div>
         )}
 
@@ -224,7 +226,7 @@ const SessionCard: React.FC<CardProps> = ({
                 color: isConnected ? '#fff' : 'var(--text3)',
                 borderColor: isConnected ? 'var(--accent)' : 'var(--border)',
               }}
-            >加载</button>
+            >切换并连接</button>
             <button
               onClick={onDelete}
               style={{ ...btnBase, background: 'var(--bg3)', color: 'var(--red)' }}

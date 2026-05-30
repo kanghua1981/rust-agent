@@ -135,10 +135,12 @@ async fn run_async(
     );
 
     // Hook 总线 + system_prompt 追加（与 cli.rs 保持一致）
+    let extra_prompt: String;
+    let hook_bus: Arc<crate::plugin::hook_bus::HookBus>;
     {
         let pm_lock = plugin_manager.lock().await;
-        let hook_bus = pm_lock.get_hook_bus();
-        let extra_prompt = pm_lock.collect_system_prompts();
+        hook_bus = pm_lock.get_hook_bus();
+        extra_prompt = pm_lock.collect_system_prompts();
         drop(pm_lock);
         agent.set_hook_bus(Some(hook_bus.clone()));
         if !extra_prompt.is_empty() {
@@ -316,6 +318,41 @@ async fn run_async(
         workspaces
     };
     let (node_caps, virtual_nodes) = workspaces::probe_capabilities(&effective_workspaces);
+
+    // ── Auto-restore local session (same as CLI mode) ─────────────────
+    // Worker mode: when connecting to a workdir that has a local session
+    // (.agent/session.json), automatically restore the agent's conversation
+    // so context is preserved.  But only emit a "session_available" summary
+    // to the UI — the user must explicitly click "restore" to load the full
+    // message history into the chat area.
+    match crate::persistence::load_local_session(&project_dir) {
+        Ok(Some(session)) => {
+            let msg_count = session.messages.len();
+            let mut conv = crate::persistence::restore_conversation(&session);
+            // Re-apply plugin system prompts in case they've changed since
+            // the session was last saved.
+            if !extra_prompt.is_empty() {
+                conv.system_prompt.push_str(&extra_prompt);
+            }
+            agent.conversation = conv;
+            ws_output.emit_public("session_available", serde_json::json!({
+                "message_count": msg_count,
+                "session_id": "local",
+            }));
+            tracing::info!(
+                "Worker: auto-restored local session with {} messages for {} (UI notified)",
+                msg_count,
+                project_dir.display()
+            );
+        }
+        Ok(None) => {
+            // No existing session - fresh start, nothing to restore.
+        }
+        Err(e) => {
+            tracing::warn!("Worker: failed to load local session: {}", e);
+        }
+    }
+
     ws_output.emit_public("ready", serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "workdir": project_dir.display().to_string(),

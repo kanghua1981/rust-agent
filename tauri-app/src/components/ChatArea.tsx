@@ -9,22 +9,25 @@ interface Props {
   onConfirm: (id: string, approved: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
   onReviewPlan: (id: string, approved: boolean, feedback?: string) => void;
+  onRestoreSession: () => void;
+  onDismissRestore: () => void;
 }
 
-export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan }) => {
+export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan, onRestoreSession, onDismissRestore }) => {
   // 高频变化 — 独立订阅（驱 messageDataMap 的 useMemo 重算）
-  const messages = useAgentStore(s => s.messages);
-  const toolCalls = useAgentStore(s => s.toolCalls);
-  const diffs = useAgentStore(s => s.diffs);
+  const messages = useAgentStore(s => s.messages ?? []);
+  const toolCalls = useAgentStore(s => s.toolCalls ?? []);
+  const diffs = useAgentStore(s => s.diffs ?? []);
 
   // 低频变化 — 合并为一次 shallow 比较订阅
-  const { streamingMessageId, connectionStatus, isProcessing, thinkingMessageId, pendingConfirmations } = useAgentStore(
+  const { streamingMessageId, connectionStatus, isProcessing, thinkingMessageId, pendingConfirmations, sessionRestoreAvailable } = useAgentStore(
     useShallow(s => ({
       streamingMessageId: s.streamingMessageId,
       connectionStatus: s.connectionStatus,
       isProcessing: s.isProcessing,
       thinkingMessageId: s.thinkingMessageId,
       pendingConfirmations: s.pendingConfirmations,
+      sessionRestoreAvailable: s.sessionRestoreAvailable,
     })),
   );
 
@@ -168,16 +171,71 @@ export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan })
   }
 
   return (
-    <VirtualMessageList
-      messages={messages}
-      messageDataMap={messageDataMap}
-      streamingMessageId={streamingMessageId}
-      thinkingMessageId={thinkingMessageId}
-      pendingConfirmations={pendingConfirmations}
-      isProcessing={isProcessing}
-      onConfirm={onConfirm}
-      onAnswer={onAnswer}
-      onReviewPlan={onReviewPlan}
-    />
+    <>
+      {sessionRestoreAvailable && messages.length === 0 && (
+        <div style={{
+          margin: '12px 16px 0',
+          padding: '12px 16px',
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(139,92,246,0.10))',
+          border: '1px solid rgba(99,102,241,0.25)',
+          borderRadius: '10px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+            <span style={{ fontSize: '18px' }}>📋</span>
+            <span style={{ fontSize: '13px', color: 'var(--text)' }}>
+              检测到上次会话（<strong>{sessionRestoreAvailable.message_count}</strong> 条消息）
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+            <button
+              onClick={onDismissRestore}
+              style={{
+                padding: '5px 12px',
+                background: 'var(--bg3)',
+                color: 'var(--text2)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              忽略
+            </button>
+            <button
+              onClick={onRestoreSession}
+              style={{
+                padding: '5px 14px',
+                background: 'var(--accent)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              恢复会话
+            </button>
+          </div>
+        </div>
+      )}
+      <VirtualMessageList
+        messages={messages}
+        messageDataMap={messageDataMap}
+        streamingMessageId={streamingMessageId}
+        thinkingMessageId={thinkingMessageId}
+        pendingConfirmations={pendingConfirmations}
+        isProcessing={isProcessing}
+        onConfirm={onConfirm}
+        onAnswer={onAnswer}
+        onReviewPlan={onReviewPlan}
+      />
+    </>
   );
 };

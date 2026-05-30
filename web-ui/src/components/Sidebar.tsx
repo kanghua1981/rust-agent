@@ -2,14 +2,13 @@ import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ConfigPreset } from '../types/agent';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins';
 
 interface SidebarProps {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenConnect: () => void;
   onQuickConnect?: () => void;  // 可选：快速连接函数
-  onLoadSession: () => void;
   onNewSession: () => void;
 }
 
@@ -157,7 +156,7 @@ const PresetsSection: React.FC<PresetsSectionProps> = ({
 }) => {
   const [expanded, setExpanded] = useState(false);
   
-  if (presets.length === 0) {
+  if (!presets || presets.length === 0) {
     return null;
   }
   
@@ -214,19 +213,20 @@ const PresetsSection: React.FC<PresetsSectionProps> = ({
   );
 };
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onLoadSession, onNewSession }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onNewSession }) => {
   // Selective subscriptions — subscribe only to what the component renders.
   // Avoids re-rendering on every streaming token / toolCall / message change.
   const connectionStatus = useAgentStore(s => s.connectionStatus);
   const serverUrl = useAgentStore(s => s.serverUrl);
   const workdir = useAgentStore(s => s.workdir);
   const pendingChanges = useAgentStore(s => s.pendingChanges);
-  const nodeList = useAgentStore(s => s.nodeList);
-  const presets = useAgentStore(s => s.presets);
+  const nodeList = useAgentStore(s => s.nodeList ?? []);
+  const presets = useAgentStore(s => s.presets ?? []);
   const applyPreset = useAgentStore(s => s.applyPreset);
+  const plugins = useAgentStore(s => s.plugins ?? []);
   // Derived values — primitive selectors only fire on actual value change
-  const runningTools = useAgentStore(s => s.toolCalls.filter(t => t.status === 'executing').length);
-  const pendingCount = useAgentStore(s => s.pendingConfirmations.length);
+  const runningTools = useAgentStore(s => (s.toolCalls ?? []).filter(t => t.status === 'executing').length);
+  const pendingCount = useAgentStore(s => (s.pendingConfirmations ?? []).length);
   
   // 处理预设快速连接
   const handleQuickConnect = (presetId: string) => {
@@ -268,6 +268,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
           <NavItem icon="🌐" label="节点" active={activeTab === 'nodes'} badge={nodeList.length || undefined} onClick={() => onTabChange('nodes')} />
           <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} onClick={() => onTabChange('sessions')} />
           <NavItem icon="🔒" label="沙盒" active={activeTab === 'sandbox'} badge={pendingChanges || undefined} onClick={() => onTabChange('sandbox')} />
+          <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} onClick={() => onTabChange('plugins')} />
           <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} onClick={() => onTabChange('settings')} />
         </div>
 

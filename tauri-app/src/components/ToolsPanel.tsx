@@ -3,7 +3,7 @@ import { useAgentStore } from '../stores/agentStore';
 import { ToolCallCard } from './ToolCallCard';
 
 export const ToolsPanel: React.FC = () => {
-  const { toolCalls } = useAgentStore();
+  const toolCalls = useAgentStore(s => s.toolCalls ?? []);
 
   if (toolCalls.length === 0) {
     return (
