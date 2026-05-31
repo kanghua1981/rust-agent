@@ -1760,12 +1760,31 @@ Summary:"#,
         &self.role_token_usage
     }
 
-    /// Reset the conversation
+    /// Reset the conversation — clears all messages AND rebuilds the
+    /// system prompt from the project directory.  This ensures that
+    /// `/clear` followed by `/save` does not persist stale project
+    /// context (summary, skills, memory) that was loaded at startup.
     pub fn reset(&mut self) {
-        self.conversation.clear();
+        // Rebuild the entire conversation, which re-reads .agent/summary.md,
+        // .agent/skills/, .agent/memory.md, and custom system_prompt.md files.
+        self.conversation = Conversation::new(&self.project_dir);
         self.total_input_tokens = 0;
         self.total_output_tokens = 0;
         self.role_token_usage.clear();
+
+        // Re-apply sandbox note if sandbox is active
+        if self.sandbox.working_dir() != &self.project_dir {
+            let sandbox_note = "\n\n## Sandbox Mode\n\
+            - You are running in **sandbox mode** (overlay filesystem).\n\
+            - All file operations are isolated in the sandbox directory.\n\
+            - **IMPORTANT**: Always use **relative paths** (e.g., `src/main.rs`) not absolute paths.\n\
+            - Absolute paths to files outside the sandbox will be rejected with \"Access denied\".\n\
+            - Use `/changes` to see modified files, `/rollback` to undo, `/commit` to apply changes.";
+            self.conversation.system_prompt.push_str(sandbox_note);
+        }
+
+        // Re-take knowledge snapshot so the fresh system prompt is frozen
+        self.memory.take_knowledge_snapshot();
     }
 
     /// Record a tool action to persistent memory.

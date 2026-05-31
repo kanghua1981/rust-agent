@@ -117,7 +117,7 @@ function App() {
             case 'c': // Ctrl+Shift+C: 清空会话
               e.preventDefault();
               if (window.confirm('确定要清空当前会话吗？')) {
-                useAgentStore.getState().clearSession();
+                newSession();
               }
               break;
               

@@ -247,7 +247,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
           <button
             onClick={() => {
               if (window.confirm('确定要清空当前会话的所有消息吗？此操作不可撤销。')) {
-                useAgentStore.getState().clearSession();
+                onNewSession?.();
               }
             }}
             style={{
