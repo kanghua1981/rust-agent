@@ -12,7 +12,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
   const { 
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset,
     clusterToken, setClusterToken, connectionStatus,
-    presets, addPreset, updatePreset, deletePreset, applyPreset 
+    presets, addPreset, updatePreset, deletePreset, applyPreset,
+    availableModels,
   } = useAgentStore();
   
   const [activeTab, setActiveTab] = useState<'current' | 'presets'>('current');
@@ -219,12 +220,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
 
           <Section title="模型">
             <Field label="模型名称（留空使用服务器默认）">
-              <input
-                value={modelDraft}
-                onChange={(e) => setModelDraft(e.target.value)}
-                placeholder="claude-opus-4-5"
-                style={inputStyle}
-              />
+              {availableModels.length > 0 ? (
+                <select
+                  value={modelDraft}
+                  onChange={(e) => setModelDraft(e.target.value)}
+                  style={selectStyle}
+                >
+                  <option value="">使用服务器默认</option>
+                  {availableModels.map(m => (
+                    <option key={m.alias} value={m.alias}>{m.alias} — {m.model}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={modelDraft}
+                  onChange={(e) => setModelDraft(e.target.value)}
+                  placeholder="claude-opus-4-5"
+                  style={inputStyle}
+                />
+              )}
             </Field>
           </Section>
 

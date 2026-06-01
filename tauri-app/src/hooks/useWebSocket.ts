@@ -155,6 +155,8 @@ export const useWebSocket = () => {
     setTokenUsage,
     addConnectionHistory,
     setPlugins,
+    setAvailableModels,
+    setActiveModel,
     activeConnectionId,
     connections,
     createConnectionSlot,
@@ -226,6 +228,7 @@ export const useWebSocket = () => {
   }, [sendRaw]);
 
   const setModelRemote = useCallback((model: string) => {
+    useAgentStore.getState().setActiveModel(model);
     sendRaw({ type: 'set_model', data: { model } });
   }, [sendRaw]);
 
@@ -290,6 +293,12 @@ export const useWebSocket = () => {
         setConnectedWorkdir(event.data.workdir ?? null);
         if (event.data.virtual_nodes) {
           setNodeList(event.data.virtual_nodes);
+        }
+        if (event.data.available_models) {
+          setAvailableModels(event.data.available_models);
+        }
+        if (event.data.active_model) {
+          setActiveModel(event.data.active_model);
         }
         break;
 
@@ -564,6 +573,10 @@ export const useWebSocket = () => {
         setPlugins(event.data.plugins ?? []);
         break;
 
+      case 'model_changed':
+        setActiveModel(event.data.alias);
+        break;
+
       case 'session_available': {
         // Auto-restore notification: a previous session exists but we
         // don't auto-load its messages.  Show a banner for the user to
@@ -600,7 +613,7 @@ export const useWebSocket = () => {
     addToolCall, updateToolCall, addPendingConfirmation, addDiff,
     setIsProcessing, setStreamingMessageId, setThinkingMessageId, setSessionInfo, setSessionList,
     removeSessionFromList, setSessionRestoreAvailable, clearSession, setSandboxBackend, setPendingChanges,
-    setPlugins,
+    setPlugins, setAvailableModels, setActiveModel,
   ]);
 
   // ── Batch-queue for inactive slots (avoids store swaps on every event) ──

@@ -107,7 +107,8 @@ export type ServerEvent =
   | CancelledEvent
   | UploadFileResultEvent
   | AgentEvent
-  | PluginsListEvent;
+  | PluginsListEvent
+  | ModelChangedEvent;
 
 export interface SessionMeta {
   id: string;
@@ -457,7 +458,18 @@ export interface ReadyEvent extends BaseMessage {
     sandbox_backend?: 'overlay' | 'snapshot' | 'disabled';
     caps?: NodeCapabilities;
     virtual_nodes?: VirtualNodeInfo[];
+    available_models?: ModelInfo[];
+    active_model?: string | null;
   };
+}
+
+export interface ModelInfo {
+  alias: string;
+  provider: string;
+  model: string;
+  base_url?: string | null;
+  thinking_enabled?: boolean | null;
+  reasoning_effort?: string | null;
 }
 
 export interface NodeCapabilities {
@@ -548,6 +560,15 @@ export interface DisablePluginMessage extends BaseMessage {
 export interface PluginsListEvent extends BaseMessage {
   type: 'plugins_list';
   data: { plugins: PluginInfo[] };
+}
+
+export interface ModelChangedEvent extends BaseMessage {
+  type: 'model_changed';
+  data: {
+    alias: string;
+    model: string;
+    provider: string;
+  };
 }
 
 // 工具类型定义
@@ -650,6 +671,8 @@ export interface ConnectionSlot {
   nodeList: VirtualNodeInfo[];
   plugins: PluginInfo[];
   sessionRestoreAvailable: { message_count: number } | null;
+  availableModels: ModelInfo[];
+  activeModel: string | null;
 }
 
 export interface PendingConfirmation {

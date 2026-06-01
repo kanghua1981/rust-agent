@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface SandboxFileChange {
@@ -49,6 +49,8 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
     nodeList: [],
     plugins: [],
     sessionRestoreAvailable: null,
+    availableModels: [],
+    activeModel: null,
   };
 }
 
@@ -91,6 +93,9 @@ interface AgentState {
   tokenUsage: TokenUsage | null;
 
   plugins: PluginInfo[];
+
+  availableModels: ModelInfo[];
+  activeModel: string | null;
 
   // ── Global shared state (not per-connection) ──
   clusterToken: string;
@@ -149,6 +154,8 @@ interface AgentState {
   removeConnectionHistory: (id: string) => void;
   clearConnectionHistory: () => void;
   setPlugins: (plugins: PluginInfo[]) => void;
+  setAvailableModels: (models: ModelInfo[]) => void;
+  setActiveModel: (alias: string | null) => void;
   reset: () => void;
 }
 
@@ -221,6 +228,9 @@ const initialState = {
   tokenUsage: null as TokenUsage | null,
 
   plugins: [] as PluginInfo[],
+
+  availableModels: [] as ModelInfo[],
+  activeModel: null as string | null,
 
   // ── Global shared ──
   clusterToken: '',
@@ -308,6 +318,8 @@ export const useAgentStore = create<AgentState>()(
           nodeList: state.nodeList,
           tokenUsage: state.tokenUsage,
           plugins: state.plugins,
+          availableModels: state.availableModels,
+          activeModel: state.activeModel,
         };
         set({ connections: { ...state.connections, [id]: updated } });
       },
@@ -342,6 +354,8 @@ export const useAgentStore = create<AgentState>()(
             nodeList: updatedSlot.nodeList,
             tokenUsage: updatedSlot.tokenUsage,
             plugins: updatedSlot.plugins,
+            availableModels: updatedSlot.availableModels,
+            activeModel: updatedSlot.activeModel,
           });
         } else {
           // Inactive slot — only update the connections map
@@ -402,6 +416,8 @@ export const useAgentStore = create<AgentState>()(
               nodeList: nextSlot.nodeList,
               tokenUsage: nextSlot.tokenUsage,
               plugins: nextSlot.plugins,
+              availableModels: nextSlot.availableModels,
+              activeModel: nextSlot.activeModel,
             });
           } else {
             // No connections left; keep an empty placeholder
@@ -430,6 +446,8 @@ export const useAgentStore = create<AgentState>()(
               nodeList: [],
               tokenUsage: null,
               plugins: [],
+              availableModels: [],
+              activeModel: null,
             });
           }
         } else {
@@ -497,6 +515,8 @@ export const useAgentStore = create<AgentState>()(
           nodeList: target.nodeList,
           tokenUsage: target.tokenUsage,
           plugins: target.plugins,
+          availableModels: target.availableModels,
+          activeModel: target.activeModel,
         });
       },
 
@@ -554,6 +574,12 @@ export const useAgentStore = create<AgentState>()(
 
       setPlugins: (plugins) =>
         set(syncActiveSlot({ plugins })),
+
+      setAvailableModels: (models) =>
+        set(syncActiveSlot({ availableModels: models })),
+
+      setActiveModel: (alias) =>
+        set(syncActiveSlot({ activeModel: alias })),
 
       // ── Heavy mutations (write to BOTH flat proxy + connections[activeId]) ──
 
@@ -710,6 +736,8 @@ export const useAgentStore = create<AgentState>()(
             sessionInfo: null,
             sessionList: [],
             sessionRestoreAvailable: null,
+            availableModels: state.availableModels,
+            activeModel: state.activeModel,
           };
           if (slotId && state.connections[slotId]) {
             result.connections = {
@@ -727,6 +755,8 @@ export const useAgentStore = create<AgentState>()(
                 sessionInfo: null,
                 sessionList: [],
                 sessionRestoreAvailable: null,
+                availableModels: state.connections[slotId].availableModels,
+                activeModel: state.connections[slotId].activeModel,
               },
             };
           }
@@ -792,6 +822,8 @@ export const useAgentStore = create<AgentState>()(
           nodeList: [],
           tokenUsage: null,
           plugins: [],
+          availableModels: [],
+          activeModel: null,
         })),
       };
     },

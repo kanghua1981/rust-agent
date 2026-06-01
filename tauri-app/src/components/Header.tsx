@@ -6,6 +6,7 @@ interface HeaderProps {
   onOpenConnect: () => void;
   onDisconnect: () => void;
   onNewSession?: () => void;
+  onSetModelRemote?: (alias: string) => void;
 }
 
 const statusConfig = {
@@ -15,7 +16,7 @@ const statusConfig = {
   error:        { color: '#ef4444', label: '连接错误', dot: '#ef4444' },
 };
 
-export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onNewSession }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
   const connectionStatus = useAgentStore(s => s.connectionStatus);
   const serverUrl = useAgentStore(s => s.serverUrl);
   const workdir = useAgentStore(s => s.workdir);
@@ -27,6 +28,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
   const msgCount = useAgentStore(s => s.messages.length);
   const toolCallCount = useAgentStore(s => s.toolCalls.length);
   const pendingConfCount = useAgentStore(s => s.pendingConfirmations.length);
+  const availableModels = useAgentStore(s => s.availableModels);
+  const activeModel = useAgentStore(s => s.activeModel);
   const cfg = statusConfig[connectionStatus];
   const isolation = config.isolation ?? 'container';
 
@@ -215,6 +218,37 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
           flexShrink: 0,
         }}>
           
+          {/* 模型选择器 — 仅在有可用模型列表时显示 */}
+          {availableModels.length > 0 && (
+            <div style={{ position: 'relative' }}>
+              <select
+                value={activeModel ?? ''}
+                onChange={(e) => {
+                  const alias = e.target.value;
+                  if (alias) onSetModelRemote?.(alias);
+                }}
+                style={{
+                  padding: '4px 8px',
+                  background: 'var(--bg3)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  color: 'var(--text)',
+                  cursor: 'pointer',
+                  appearance: 'none',
+                  minWidth: '100px',
+                }}
+                title="切换模型"
+              >
+                {availableModels.map(m => (
+                  <option key={m.alias} value={m.alias}>
+                    🧠 {m.alias} ({m.provider})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* 运行模式快捷切换 */}
           <div style={{ position: 'relative' }}>
             <select

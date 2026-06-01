@@ -353,6 +353,17 @@ async fn run_async(
         }
     }
 
+    let available_models: Vec<serde_json::Value> = agent.models_cfg.models.iter().map(|(alias, entry)| {
+        serde_json::json!({
+            "alias": alias,
+            "provider": entry.provider,
+            "model": entry.model,
+            "base_url": entry.base_url,
+            "thinking_enabled": entry.thinking_enabled,
+            "reasoning_effort": entry.reasoning_effort,
+        })
+    }).collect();
+
     ws_output.emit_public("ready", serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "workdir": project_dir.display().to_string(),
@@ -362,6 +373,8 @@ async fn run_async(
         "sandbox_backend": agent.sandbox.backend_label_sync(),
         "caps": node_caps,
         "virtual_nodes": virtual_nodes,
+        "available_models": available_models,
+        "active_model": agent.config.model_alias,
     }));
     ws_output.emit_public("session_info", session_info_json(&project_dir));
     // Always emit sandbox_status so the frontend reflects the actual state
@@ -512,6 +525,8 @@ enum ControlCmd {
     EnablePlugin(String),
     /// 为本会话禁用指定插件（仅内存，不回写磁盘）。
     DisablePlugin(String),
+    /// 切换模型。
+    SetModel(String),
     /// 上传文件到 workspace 的 uploads/ 目录。
     /// (文件名, base64内容, 可选MIME类型)
     UploadFile(String, Vec<u8>, Option<String>),
@@ -523,6 +538,21 @@ async fn handle_control_cmd(
     ws_output: &Arc<WsOutput>,
 ) {
     match ctrl {
+        ControlCmd::SetModel(alias) => {
+            if let Some(resolved) = agent.models_cfg.resolve(&alias) {
+                agent.switch_model(&resolved);
+                ws_output.emit_public("model_changed", serde_json::json!({
+                    "alias": alias,
+                    "model": resolved.model,
+                    "provider": resolved.provider.to_string(),
+                }));
+            } else {
+                ws_output.emit_public("warning", serde_json::json!({
+                    "message": format!("Unknown model alias: '{}'", alias)
+                }));
+            }
+        }
+
         ControlCmd::LoadSession => {
             match crate::persistence::load_local_session(&agent.project_dir) {
                 Ok(Some(session)) => {
@@ -855,7 +885,11 @@ fn dispatch_ws_message(
             let _ = ask_user_tx.send(serde_json::json!({ "action": action, "feedback": feedback }).to_string());
         }
 
-        "set_model" => {} // informational
+        "set_model" => {
+            if let Some(alias) = msg.get("data").and_then(|d| d.get("model")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::SetModel(alias.to_string()));
+            }
+        }
 
         "load_session"     => { let _ = ctrl_tx.send(ControlCmd::LoadSession); }
         "new_session"      => { let _ = ctrl_tx.send(ControlCmd::NewSession); }
