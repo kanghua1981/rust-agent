@@ -100,13 +100,6 @@ function App() {
         e.preventDefault();
         setShowConnect(false);
       }
-      // Cmd/Ctrl + Enter 快速发送消息（在聊天页面时）
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && activeTab === 'chat') {
-        e.preventDefault();
-        // 这里需要获取当前输入框的内容并发送
-        // 由于InputArea组件内部处理发送逻辑，我们暂时不在这里实现
-      }
-
       // 新增快捷键 - 只在聊天页面生效
       if (activeTab === 'chat') {
         if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {

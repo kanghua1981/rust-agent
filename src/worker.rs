@@ -548,6 +548,13 @@ async fn handle_control_cmd(
 
         ControlCmd::NewSession => {
             agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+            // Immediately persist the empty conversation so the old session files are overwritten.
+            if let Err(e) = crate::persistence::save_local_session(
+                &agent.conversation, &agent.project_dir,
+            ) { tracing::warn!("save_local_session on new_session: {}", e); }
+            if let Err(e) = crate::persistence::save_session_for_workdir(
+                &agent.conversation, &agent.project_dir,
+            ) { tracing::warn!("save_session_for_workdir on new_session: {}", e); }
             ws_output.emit_public("session_cleared", serde_json::json!({ "message": "New session started" }));
             ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
         }

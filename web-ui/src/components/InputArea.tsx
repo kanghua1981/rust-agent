@@ -62,8 +62,8 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
   const placeholder = !['connected'].includes(connectionStatus)
     ? '请先连接服务器…'
     : isProcessing
-    ? '⚡ 按后台任务发送，或等待当前任务完成后 Enter 发送…'
-    : '发消息给 Agent（Enter 发送，Shift+Enter 换行）';
+    ? '正在处理中… Ctrl+Enter 后台发送新任务，或等待完成后 Enter 发送'
+    : '发消息给 Agent（Enter 发送，Ctrl+Enter 后台，Shift+Enter 换行）';
 
   return (
     <div style={{
@@ -95,6 +95,13 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
             value={currentMessage}
             onChange={(e) => setCurrentMessage(e.target.value)}
             onKeyDown={(e) => {
+              // Ctrl+Enter / Cmd+Enter → background dispatch
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                handleDispatch();
+                return;
+              }
+              // Enter (without Shift) → regular send
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 handleSend();
@@ -218,7 +225,7 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
         textAlign: 'center', fontSize: '11px', color: 'var(--text3)',
         marginTop: '6px', maxWidth: '800px', margin: '6px auto 0',
       }}>
-        Enter 发送 · Shift+Enter 换行 · ⚡ 作为后台任务
+        Enter 发送 · Ctrl+Enter 后台执行 · Shift+Enter 换行
       </p>
     </div>
   );
