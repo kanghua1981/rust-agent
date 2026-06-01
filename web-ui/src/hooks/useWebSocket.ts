@@ -38,6 +38,10 @@ interface SlotConn {
   tokenBuf: string;
   thinkingBuf: string;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  /** Timer that flushes buffered tokens for this *inactive* slot vua _updateSlot */
+  inactiveFlushTimer: ReturnType<typeof setTimeout> | null;
+  /** Flag: a done/error/cancelled event has been received; stop queueing */
+  inactiveTerminated: boolean;
 }
 
 export const useWebSocket = () => {
@@ -53,6 +57,8 @@ export const useWebSocket = () => {
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Helpers: sync global refs to/from a specific connection ──
+  // These are only needed for tab switching — save/restore the token buffering state
+  // that lives outside the zustand store.
   const saveRefsToConn = (conn: SlotConn) => {
     conn.streamingMsgId = streamingMsgIdRef.current;
     conn.thinkingMsgId = thinkingMsgIdRef.current;
@@ -597,48 +603,202 @@ export const useWebSocket = () => {
     setPlugins,
   ]);
 
-  // ── Process an event for a specific slot ──
-  // If the slot is active, process directly. If inactive, temp-switch
-  // the store and refs so handleServerEvent writes to the correct slot.
-  // React 18 batches all set() calls → no visual flash.
-  const processEventForSlot = useCallback((event: ServerEvent, slotId: string) => {
+  // ── Batch-queue for inactive slots (avoids store swaps on every event) ──
+  const inactiveQueuesRef = useRef<Map<string, ServerEvent[]>>(new Map());
+  const inactiveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  /** Flush accumulated token buffers for an INACTIVE slot directly via _updateSlot.
+   *  No store swap — writes only to the connections map, not the flat proxy. */
+  const flushInactiveTokens = useCallback((slotId: string) => {
+    const conn = connMapRef.current.get(slotId);
+    if (!conn) return;
+    const textToken = conn.tokenBuf;
+    const thinkToken = conn.thinkingBuf;
+    if (!textToken && !thinkToken) return;
+    conn.tokenBuf = '';
+    conn.thinkingBuf = '';
+    if (conn.inactiveFlushTimer) {
+      clearTimeout(conn.inactiveFlushTimer);
+      conn.inactiveFlushTimer = null;
+    }
+
     const st = useAgentStore.getState();
+    st._updateSlot(slotId, (slot) => {
+      const msgs = slot.messages;
+      let changed = false;
+      const copy = [...msgs]; // shallow copy pointers (O(n) memory, no callback overhead)
+      // Streaming messages are always at the end — scan backward
+      if (textToken && conn.streamingMsgId) {
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].id === conn.streamingMsgId) {
+            copy[i] = { ...msgs[i], content: msgs[i].content + textToken };
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (thinkToken && conn.thinkingMsgId) {
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].id === conn.thinkingMsgId) {
+            copy[i] = { ...msgs[i], thinking: (msgs[i].thinking || '') + thinkToken };
+            changed = true;
+            break;
+          }
+        }
+      }
+      return changed ? { ...slot, messages: copy } : slot;
+    });
+  }, []);
+
+  /** Process all queued events for an inactive slot with ONE store swap. */
+  const flushInactiveBatch = useCallback((slotId: string) => {
+    const queue = inactiveQueuesRef.current.get(slotId);
+    if (!queue || queue.length === 0) return;
+    inactiveQueuesRef.current.delete(slotId);
+    // Clear the debounce timer so it doesn't fire after we've already flushed
+    const timer = inactiveTimersRef.current.get(slotId);
+    if (timer) { clearTimeout(timer); }
+    inactiveTimersRef.current.delete(slotId);
+
+    const st = useAgentStore.getState();
+    // Don't swap if the slot became active while we were waiting
     if (slotId === st.activeConnectionId) {
-      // Active slot — refs already loaded, process directly
-      handleServerEvent(event);
-      // Save ref state back to connection
+      for (const evt of queue) handleServerEvent(evt);
       const conn = connMapRef.current.get(slotId);
       if (conn) saveRefsToConn(conn);
       return;
     }
 
-    // Inactive slot — swap everything, process, swap back
+    const targetConn = connMapRef.current.get(slotId);
+    if (!targetConn || targetConn.inactiveTerminated) return;
+
     const origId = st.activeConnectionId;
     const origConn = origId ? connMapRef.current.get(origId) : undefined;
+    if (origConn) saveRefsToConn(origConn);
+
+    // Switch to target slot — ONE swap for the whole batch
+    loadRefsFromConn(targetConn);
+    st.setActiveConnection(slotId);  // saves old slot internally
+
+    for (const evt of queue) {
+      handleServerEvent(evt);
+    }
+
+    saveRefsToConn(targetConn);
+
+    if (origId) {
+      if (origConn) loadRefsFromConn(origConn);
+      st.setActiveConnection(origId);  // saves target slot internally
+    }
+  }, [handleServerEvent]);
+
+  /** Schedule a deferred batch flush for an inactive slot. */
+  const scheduleInactiveBatch = useCallback((slotId: string, event: ServerEvent) => {
+    const conn = connMapRef.current.get(slotId);
+    if (!conn || conn.inactiveTerminated) return;
+
+    let queue = inactiveQueuesRef.current.get(slotId);
+    if (!queue) {
+      queue = [];
+      inactiveQueuesRef.current.set(slotId, queue);
+    }
+    queue.push(event);
+
+    // Debounce: clear existing timer, set new one
+    const existing = inactiveTimersRef.current.get(slotId);
+    if (existing) clearTimeout(existing);
+    inactiveTimersRef.current.set(slotId, setTimeout(() => flushInactiveBatch(slotId), 200));
+  }, [flushInactiveBatch]);
+
+  // ── Process an event for a specific slot ──
+  // Active slot: process directly. Inactive slot: batch/accumulate WITHOUT store swap.
+  const processEventForSlot = useCallback((event: ServerEvent, slotId: string) => {
+    const st = useAgentStore.getState();
+    if (slotId === st.activeConnectionId) {
+      // Active slot — refs already loaded, process directly
+      handleServerEvent(event);
+      const conn = connMapRef.current.get(slotId);
+      if (conn) saveRefsToConn(conn);
+      return;
+    }
+
+    // ── Inactive slot: avoid store swaps ──
+    // All events are handled directly via _updateSlot, no store swap needed.
     const targetConn = connMapRef.current.get(slotId);
     if (!targetConn) return;
 
-    // Save current active state
-    if (origConn) saveRefsToConn(origConn);
-    st._saveActiveSlot();
-
-    // Switch to target slot
-    loadRefsFromConn(targetConn);
-    st.setActiveConnection(slotId);
-
-    // Process (writes to flat proxy = target slot)
-    handleServerEvent(event);
-
-    // Save target slot state
-    saveRefsToConn(targetConn);
-    st._saveActiveSlot();
-
-    // Switch back
-    if (origId) {
-      if (origConn) loadRefsFromConn(origConn);
-      st.setActiveConnection(origId);
+    // Streaming tokens: accumulate directly in SlotConn buffers (NO store swap!)
+    if (event.type === 'streaming_token') {
+      if (event.data?.token && targetConn.streamingMsgId) {
+        targetConn.tokenBuf += event.data.token;
+        if (!targetConn.inactiveFlushTimer) {
+          targetConn.inactiveFlushTimer = setTimeout(() => flushInactiveTokens(slotId), 80);
+        }
+      }
+      return;
     }
-  }, [handleServerEvent]);
+
+    if (event.type === 'thinking_token') {
+      if (event.data?.token && targetConn.thinkingMsgId) {
+        targetConn.thinkingBuf += event.data.token;
+        if (!targetConn.inactiveFlushTimer) {
+          targetConn.inactiveFlushTimer = setTimeout(() => flushInactiveTokens(slotId), 80);
+        }
+      }
+      return;
+    }
+
+    // Ref-only events: update SlotConn refs directly, no store swap
+    if (event.type === 'stream_start') {
+      targetConn.streamingMsgId = targetConn.lastAssistantMsgId;
+      // Also write streamingMessageId to the inactive slot
+      st._updateSlot(slotId, s => ({ ...s, streamingMessageId: targetConn.streamingMsgId }));
+      return;
+    }
+    if (event.type === 'stream_end') {
+      flushInactiveTokens(slotId);
+      targetConn.streamingMsgId = null;
+      st._updateSlot(slotId, s => ({ ...s, streamingMessageId: null }));
+      return;
+    }
+    if (event.type === 'thinking_start') {
+      targetConn.thinkingMsgId = targetConn.lastAssistantMsgId;
+      st._updateSlot(slotId, s => ({ ...s, thinkingMessageId: targetConn.thinkingMsgId }));
+      return;
+    }
+    if (event.type === 'thinking_end') {
+      flushInactiveTokens(slotId);
+      targetConn.thinkingMsgId = null;
+      st._updateSlot(slotId, s => ({ ...s, thinkingMessageId: null }));
+      return;
+    }
+    if (event.type === 'thinking') {
+      return; // no-op
+    }
+
+    // Terminal events: flush tokens, then batch-process with ONE store swap
+    if (event.type === 'done' || event.type === 'error' || event.type === 'cancelled') {
+      flushInactiveTokens(slotId);
+      flushInactiveBatch(slotId);
+      targetConn.inactiveTerminated = true;
+      // Direct swap for terminal event — these need handleServerEvent to update flat proxy
+      const origId = st.activeConnectionId;
+      const origConn = origId ? connMapRef.current.get(origId) : undefined;
+      if (origConn) saveRefsToConn(origConn);
+      loadRefsFromConn(targetConn);
+      st.setActiveConnection(slotId);
+      handleServerEvent(event);
+      saveRefsToConn(targetConn);
+      if (origId) {
+        if (origConn) loadRefsFromConn(origConn);
+        st.setActiveConnection(origId);
+      }
+      return;
+    }
+
+    // All other events: queue for batched processing (single swap for the whole batch)
+    scheduleInactiveBatch(slotId, event);
+  }, [handleServerEvent, flushInactiveTokens, flushInactiveBatch, scheduleInactiveBatch]);
 
   // ── Connect a specific slot ──
   const connect = useCallback((slotId?: string) => {
@@ -652,7 +812,7 @@ export const useWebSocket = () => {
     // Defensive: sync flat proxy → slot so the slot always has the latest serverUrl/workdir
     // (e.g. when applyPreset updated the flat proxy but not the legacy 'default' slot)
     if (id === st.activeConnectionId) {
-      st._saveActiveSlot();
+      st._saveActiveSlot();  // sync metadata to slot before connecting
     }
 
     const slot = st.connections[id];
@@ -699,6 +859,8 @@ export const useWebSocket = () => {
         tokenBuf: '',
         thinkingBuf: '',
         flushTimer: null,
+        inactiveFlushTimer: null,
+        inactiveTerminated: false,
       };
 
       connMapRef.current.set(id, conn);
@@ -784,6 +946,11 @@ export const useWebSocket = () => {
       saveRefsToConn(conn);
     }
 
+    // Clear any inactive-slot timers / queues
+    if (conn.inactiveFlushTimer) { clearTimeout(conn.inactiveFlushTimer); }
+    inactiveQueuesRef.current.delete(id);
+    inactiveTimersRef.current.delete(id);
+
     conn.ws.close();
     connMapRef.current.delete(id);
 
@@ -801,21 +968,36 @@ export const useWebSocket = () => {
     const st = useAgentStore.getState();
     if (id === st.activeConnectionId) return;
 
+    // Flush any pending inactive batches for the target before switching
+    flushInactiveBatch(id);
+
     // Save current refs to old connection
     const oldId = st.activeConnectionId;
     const oldConn = oldId ? connMapRef.current.get(oldId) : undefined;
     if (oldConn) saveRefsToConn(oldConn);
 
-    // Save flat proxy to old slot
-    st._saveActiveSlot();
-
-    // Switch to new slot (updates flat proxy)
+    // Switch to new slot — setActiveConnection saves old slot internally
     st.setActiveConnection(id);
 
     // Load refs from new connection (if it has a live WS)
     const newConn = connMapRef.current.get(id);
     if (newConn) {
+      // Reset terminated flag — slot is now active and should process events normally
+      newConn.inactiveTerminated = false;
+      // Clear any stale inactive queue entries and timers
+      inactiveQueuesRef.current.delete(id);
+      inactiveTimersRef.current.delete(id);
+      if (newConn.inactiveFlushTimer) {
+        clearTimeout(newConn.inactiveFlushTimer);
+        newConn.inactiveFlushTimer = null;
+      }
+
       loadRefsFromConn(newConn);
+      // Flush any tokens buffered while inactive, then schedule flush
+      if (newConn.tokenBuf || newConn.thinkingBuf) {
+        flushTokens();
+        scheduleFlush();
+      }
     } else {
       // No live WS yet — reset refs
       streamingMsgIdRef.current = null;
@@ -829,7 +1011,7 @@ export const useWebSocket = () => {
     if (!newConn && st.connections[id]?.serverUrl) {
       connect(id);
     }
-  }, [connect]);
+  }, [connect, flushInactiveBatch, flushTokens, scheduleFlush]);
 
   // ── Sync execution mode to server ──
   const agentMode = config.agentMode ?? 'auto';
@@ -845,7 +1027,12 @@ export const useWebSocket = () => {
 
   // ── Cleanup on unmount: close all connections ──
   useEffect(() => () => {
+    // Clear all inactive timers and queues
+    inactiveTimersRef.current.forEach(t => clearTimeout(t));
+    inactiveTimersRef.current.clear();
+    inactiveQueuesRef.current.clear();
     connMapRef.current.forEach(conn => {
+      if (conn.inactiveFlushTimer) clearTimeout(conn.inactiveFlushTimer);
       try { conn.ws.close(); } catch {}
     });
     connMapRef.current.clear();

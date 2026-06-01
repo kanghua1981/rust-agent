@@ -25,7 +25,7 @@ export interface PendingConfirmation {
   type: 'confirm' | 'ask_user' | 'review_plan';
 }
 
-// ── Helpers: create empty slot & extract slot state from flat store ──
+// ── Helpers: create empty slot ──
 
 function createEmptySlot(id: string, label: string, serverUrl: string, workdir?: string): ConnectionSlot {
   return {
@@ -48,33 +48,8 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
     tokenUsage: null,
     nodeList: [],
     plugins: [],
+    sessionRestoreAvailable: null,
   };
-}
-
-/** Fields from the flat state that belong to a connection slot. */
-const SLOT_FIELDS = [
-  'connectionStatus', 'serverUrl', 'workdir', 'connectedWorkdir',
-  'messages', 'toolCalls', 'pendingConfirmations', 'diffs',
-  'isProcessing', 'streamingMessageId', 'thinkingMessageId', 'currentMessage',
-  'sessionInfo', 'sessionList', 'sandboxBackend', 'pendingChanges',
-  'sandboxChangesData', 'tokenUsage', 'nodeList', 'plugins',
-] as const;
-
-function extractSlot(state: AgentState): ConnectionSlot {
-  const id = state.activeConnectionId ?? 'default';
-  return {
-    id,
-    label: state.connections[id]?.label ?? '',
-    ...Object.fromEntries(SLOT_FIELDS.map(f => [f, (state as any)[f]])) as any,
-  } as ConnectionSlot;
-}
-
-function applySlot(slot: ConnectionSlot): Partial<AgentState> {
-  const partial: any = {};
-  for (const f of SLOT_FIELDS) {
-    partial[f] = (slot as any)[f];
-  }
-  return partial;
 }
 
 // ── State interface ──
@@ -85,6 +60,8 @@ interface AgentState {
   activeConnectionId: string | null;
 
   // ── Active connection proxy state (flat, for backward compat selectors) ──
+  // These are always kept in sync with connections[activeConnectionId].
+  // Mutations write to BOTH (connections[id] + flat proxy) simultaneously.
   connectionStatus: ConnectionStatus;
   serverUrl: string;
   workdir?: string;
@@ -127,10 +104,9 @@ interface AgentState {
   createConnectionSlot: (id: string, label: string, serverUrl: string, workdir?: string) => void;
   removeConnectionSlot: (id: string) => void;
   setActiveConnection: (id: string) => void;
-  /** Save current active state into slot without switching. Called before creating new slot. */
+  /** Save current flat proxy state into the active slot (metadata sync). */
   _saveActiveSlot: () => void;
-  /** Update a specific slot's data (and flat proxy if it's the active slot).
-   *  This is the primary write path for per-slot WebSocket connections. */
+  /** Update a specific slot's data. If it's the active slot, also mirror to flat proxy. */
   _updateSlot: (slotId: string, updater: (slot: ConnectionSlot) => ConnectionSlot) => void;
 
   // ── Existing actions (operate on active connection proxy) ──
@@ -263,7 +239,50 @@ const initialState = {
 export const useAgentStore = create<AgentState>()(
   subscribeWithSelector(
     persist(
-    (set, get) => ({
+    (set, get) => {
+
+      // ── Helper: sync a flat-proxy field update to the active slot ──
+      // All "light" setters use this to write to BOTH places simultaneously.
+      const syncActiveSlot = (flatUpdates: Partial<AgentState>) => {
+        const state = get() as any;
+        const id = state.activeConnectionId;
+        if (!id || !state.connections?.[id]) return flatUpdates;
+        const slotUpdates: any = {};
+        // Map flat fields to slot fields (same names for most)
+        for (const key of Object.keys(flatUpdates)) {
+          if (key in state.connections[id]) {
+            slotUpdates[key] = (flatUpdates as any)[key];
+          }
+        }
+        if (Object.keys(slotUpdates).length === 0) return flatUpdates;
+        return {
+          ...flatUpdates,
+          connections: {
+            ...state.connections,
+            [id]: { ...state.connections[id], ...slotUpdates },
+          },
+        };
+      };
+
+      // ── Helper: sync a single heavy flat-proxy field to the active slot ──
+      // Used by addMessage, appendToMessage, addToolCall, etc.
+      // Writes the SAME reference to both flat proxy and connections[activeId].
+      const syncHeavyField = <K extends 'messages' | 'toolCalls' | 'diffs' | 'pendingConfirmations'>(
+        field: K,
+        value: any,
+      ) => (state: AgentState): any => {
+        const slotId = state.activeConnectionId;
+        const result: any = { [field]: value };
+        if (slotId && state.connections[slotId]) {
+          result.connections = {
+            ...state.connections,
+            [slotId]: { ...state.connections[slotId], [field]: value },
+          };
+        }
+        return result;
+      };
+
+      return {
       ...initialState,
 
       // ── Connection slot management ──
@@ -271,9 +290,26 @@ export const useAgentStore = create<AgentState>()(
       _saveActiveSlot: () => {
         const state = get();
         const id = state.activeConnectionId;
-        if (!id) return;
-        const slot = extractSlot(state);
-        set({ connections: { ...state.connections, [id]: slot } });
+        if (!id || !state.connections[id]) return;
+        // Save current flat proxy metadata into the slot
+        const slot = state.connections[id];
+        const updated = {
+          ...slot,
+          connectionStatus: state.connectionStatus,
+          serverUrl: state.serverUrl,
+          workdir: state.workdir,
+          connectedWorkdir: state.connectedWorkdir,
+          sandboxBackend: state.sandboxBackend,
+          pendingChanges: state.pendingChanges,
+          sandboxChangesData: state.sandboxChangesData,
+          sessionInfo: state.sessionInfo,
+          sessionList: state.sessionList,
+          sessionRestoreAvailable: state.sessionRestoreAvailable,
+          nodeList: state.nodeList,
+          tokenUsage: state.tokenUsage,
+          plugins: state.plugins,
+        };
+        set({ connections: { ...state.connections, [id]: updated } });
       },
 
       _updateSlot: (slotId, updater) => {
@@ -283,8 +319,30 @@ export const useAgentStore = create<AgentState>()(
         const updatedSlot = updater(oldSlot);
         const updated = { ...state.connections, [slotId]: updatedSlot };
         if (slotId === state.activeConnectionId) {
-          // Active slot — also mirror to flat proxy so UI reacts
-          set({ connections: updated, ...applySlot(updatedSlot) });
+          // Active slot — mirror heavy fields to flat proxy so UI reacts
+          set({
+            connections: updated,
+            messages: updatedSlot.messages,
+            toolCalls: updatedSlot.toolCalls,
+            pendingConfirmations: updatedSlot.pendingConfirmations,
+            diffs: updatedSlot.diffs,
+            isProcessing: updatedSlot.isProcessing,
+            streamingMessageId: updatedSlot.streamingMessageId,
+            thinkingMessageId: updatedSlot.thinkingMessageId,
+            connectionStatus: updatedSlot.connectionStatus,
+            serverUrl: updatedSlot.serverUrl,
+            workdir: updatedSlot.workdir,
+            connectedWorkdir: updatedSlot.connectedWorkdir,
+            sandboxBackend: updatedSlot.sandboxBackend,
+            pendingChanges: updatedSlot.pendingChanges,
+            sandboxChangesData: updatedSlot.sandboxChangesData,
+            sessionInfo: updatedSlot.sessionInfo,
+            sessionList: updatedSlot.sessionList,
+            sessionRestoreAvailable: updatedSlot.sessionRestoreAvailable,
+            nodeList: updatedSlot.nodeList,
+            tokenUsage: updatedSlot.tokenUsage,
+            plugins: updatedSlot.plugins,
+          });
         } else {
           // Inactive slot — only update the connections map
           set({ connections: updated });
@@ -293,17 +351,20 @@ export const useAgentStore = create<AgentState>()(
 
       createConnectionSlot: (id, label, serverUrl, workdir) => {
         const state = get();
-        // Save current active slot first
+        const { activeConnectionId, ...rest } = state;
+        const updated = { ...state.connections, [id]: createEmptySlot(id, label, serverUrl, workdir) };
+        // Also save current active slot state before creating new one
         const currentId = state.activeConnectionId;
-        if (currentId) {
-          const currentSlot = extractSlot(state);
-          const updated = { ...state.connections, [currentId]: currentSlot };
-          // Create new slot
-          updated[id] = createEmptySlot(id, label, serverUrl, workdir);
-          set({ connections: updated });
-        } else {
-          set({ connections: { ...state.connections, [id]: createEmptySlot(id, label, serverUrl, workdir) } });
+        if (currentId && updated[currentId]) {
+          // Update current slot metadata before adding new slot
+          updated[currentId] = {
+            ...updated[currentId],
+            connectionStatus: state.connectionStatus,
+            serverUrl: state.serverUrl,
+            workdir: state.workdir,
+          };
         }
+        set({ connections: updated });
       },
 
       removeConnectionSlot: (id) => {
@@ -319,15 +380,56 @@ export const useAgentStore = create<AgentState>()(
             set({
               connections: rest,
               activeConnectionId: nextId,
-              ...applySlot(nextSlot),
+              // Populate flat proxy from next slot
+              connectionStatus: nextSlot.connectionStatus,
+              serverUrl: nextSlot.serverUrl,
+              workdir: nextSlot.workdir,
+              connectedWorkdir: nextSlot.connectedWorkdir,
+              messages: nextSlot.messages,
+              toolCalls: nextSlot.toolCalls,
+              pendingConfirmations: nextSlot.pendingConfirmations,
+              diffs: nextSlot.diffs,
+              isProcessing: nextSlot.isProcessing,
+              streamingMessageId: nextSlot.streamingMessageId,
+              thinkingMessageId: nextSlot.thinkingMessageId,
+              currentMessage: nextSlot.currentMessage,
+              sandboxBackend: nextSlot.sandboxBackend,
+              pendingChanges: nextSlot.pendingChanges,
+              sandboxChangesData: nextSlot.sandboxChangesData,
+              sessionInfo: nextSlot.sessionInfo,
+              sessionList: nextSlot.sessionList,
+              sessionRestoreAvailable: nextSlot.sessionRestoreAvailable,
+              nodeList: nextSlot.nodeList,
+              tokenUsage: nextSlot.tokenUsage,
+              plugins: nextSlot.plugins,
             });
           } else {
-            // No connections left; keep an empty placeholder (no URL — not localhost)
+            // No connections left; keep an empty placeholder
             const emptySlot = createEmptySlot(defaultId, '', '');
             set({
               connections: { [defaultId]: emptySlot },
               activeConnectionId: defaultId,
-              ...applySlot(emptySlot),
+              connectionStatus: 'disconnected',
+              serverUrl: '',
+              workdir: undefined,
+              connectedWorkdir: null,
+              messages: [],
+              toolCalls: [],
+              pendingConfirmations: [],
+              diffs: [],
+              isProcessing: false,
+              streamingMessageId: null,
+              thinkingMessageId: null,
+              currentMessage: '',
+              sandboxBackend: 'disabled',
+              pendingChanges: 0,
+              sandboxChangesData: null,
+              sessionInfo: null,
+              sessionList: [],
+              sessionRestoreAvailable: null,
+              nodeList: [],
+              tokenUsage: null,
+              plugins: [],
             });
           }
         } else {
@@ -339,257 +441,386 @@ export const useAgentStore = create<AgentState>()(
       setActiveConnection: (id) => {
         const state = get();
         if (id === state.activeConnectionId) return;
-        // Save current
-        const currentId = state.activeConnectionId;
+
+        // Save current active slot metadata
         const updated = { ...state.connections };
-        if (currentId) {
-          updated[currentId] = extractSlot(state);
+        const currentId = state.activeConnectionId;
+        if (currentId && updated[currentId]) {
+          updated[currentId] = {
+            ...updated[currentId],
+            connectionStatus: state.connectionStatus,
+            serverUrl: state.serverUrl,
+            workdir: state.workdir,
+            connectedWorkdir: state.connectedWorkdir,
+            sandboxBackend: state.sandboxBackend,
+            pendingChanges: state.pendingChanges,
+            sessionInfo: state.sessionInfo,
+            sessionList: state.sessionList,
+            sessionRestoreAvailable: state.sessionRestoreAvailable,
+            nodeList: state.nodeList,
+            tokenUsage: state.tokenUsage,
+            plugins: state.plugins,
+          };
         }
-        // Load target — reconstruct full slot from persisted metadata
-        // (persist strips slots to {label,serverUrl,workdir}; missing fields
-        // like messages/toolCalls would become undefined and crash the UI)
+
+        // Load target slot
         let target = updated[id];
         if (!target) return;
+        // Ensure target has proper structure
         if (!Array.isArray((target as any).messages)) {
           target = createEmptySlot(id, target.label || '', target.serverUrl, target.workdir);
           updated[id] = target;
         }
+
+        // Populate flat proxy from target slot
         set({
           connections: updated,
           activeConnectionId: id,
-          ...applySlot(target),
+          connectionStatus: target.connectionStatus,
+          serverUrl: target.serverUrl,
+          workdir: target.workdir,
+          connectedWorkdir: target.connectedWorkdir,
+          messages: target.messages,
+          toolCalls: target.toolCalls,
+          pendingConfirmations: target.pendingConfirmations,
+          diffs: target.diffs,
+          isProcessing: target.isProcessing,
+          streamingMessageId: target.streamingMessageId,
+          thinkingMessageId: target.thinkingMessageId,
+          currentMessage: target.currentMessage,
+          sandboxBackend: target.sandboxBackend,
+          pendingChanges: target.pendingChanges,
+          sandboxChangesData: target.sandboxChangesData,
+          sessionInfo: target.sessionInfo,
+          sessionList: target.sessionList,
+          sessionRestoreAvailable: target.sessionRestoreAvailable,
+          nodeList: target.nodeList,
+          tokenUsage: target.tokenUsage,
+          plugins: target.plugins,
         });
       },
 
-      // ── Existing actions (operate on flat proxy, all unchanged) ──
+      // ── Light setters (sync to both flat proxy + active slot) ──
 
-      setConnectionStatus: (status) => set({ connectionStatus: status }),
+      setConnectionStatus: (status) =>
+        set(syncActiveSlot({ connectionStatus: status })),
+
       setServerUrl: (url) => {
-        set({ serverUrl: url, config: { ...get().config, serverUrl: url } });
+        set(syncActiveSlot({
+          serverUrl: url,
+          config: { ...get().config, serverUrl: url },
+        }));
       },
-      setWorkdir: (workdir) => set({ workdir: workdir || undefined }),
 
-      // ── Sliding window limits ──
-      MAX_MESSAGES: 300,
-      MAX_TOOL_CALLS: 500,
-      MAX_DIFFS: 300,
+      setWorkdir: (workdir) =>
+        set(syncActiveSlot({ workdir: workdir || undefined })),
+
+      setCurrentMessage: (message) => set({ currentMessage: message }),
+      setIsProcessing: (processing) =>
+        set(syncActiveSlot({ isProcessing: processing })),
+
+      setStreamingMessageId: (id) =>
+        set(syncActiveSlot({ streamingMessageId: id })),
+
+      setThinkingMessageId: (id) =>
+        set(syncActiveSlot({ thinkingMessageId: id })),
+
+      setSandboxBackend: (backend) =>
+        set(syncActiveSlot({ sandboxBackend: backend })),
+
+      setPendingChanges: (count) =>
+        set(syncActiveSlot({ pendingChanges: count })),
+
+      setSandboxChangesData: (data) =>
+        set(syncActiveSlot({ sandboxChangesData: data })),
+
+      setSessionInfo: (info) =>
+        set(syncActiveSlot({ sessionInfo: info })),
+
+      setSessionList: (list) =>
+        set(syncActiveSlot({ sessionList: list })),
+
+      setSessionRestoreAvailable: (info) =>
+        set(syncActiveSlot({ sessionRestoreAvailable: info })),
+
+      setNodeList: (nodes) =>
+        set(syncActiveSlot({ nodeList: nodes })),
+
+      setTokenUsage: (usage) =>
+        set(syncActiveSlot({ tokenUsage: usage })),
+
+      setConnectedWorkdir: (workdir) =>
+        set(syncActiveSlot({ connectedWorkdir: workdir })),
+
+      setPlugins: (plugins) =>
+        set(syncActiveSlot({ plugins })),
+
+      // ── Heavy mutations (write to BOTH flat proxy + connections[activeId]) ──
 
       addMessage: (message) =>
         set((state) => {
           const messages = [...state.messages, message];
-          if (messages.length > 300) {
-            return { messages: messages.slice(messages.length - 300) };
-          }
-          return { messages };
+          const trimmed = messages.length > 300 ? messages.slice(messages.length - 300) : messages;
+          return syncHeavyField('messages', trimmed)(state);
         }),
 
       updateMessage: (id, content) =>
-        set((state) => ({
-          messages: state.messages.map((msg) =>
-            msg.id === id ? { ...msg, content } : msg
-          ),
-        })),
+        set((state) => {
+          const msgs = state.messages;
+          // Streaming message is almost always the last one — scan backward
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].id === id) {
+              const copy = [...msgs];
+              copy[i] = { ...copy[i], content };
+              return syncHeavyField('messages', copy)(state);
+            }
+          }
+          return {};
+        }),
 
       appendToMessage: (id, token) =>
-        set((state) => ({
-          messages: state.messages.map((msg) =>
-            msg.id === id ? { ...msg, content: msg.content + token } : msg
-          ),
-        })),
-
-      setCurrentMessage: (message) => set({ currentMessage: message }),
-      setIsProcessing: (processing) => set({ isProcessing: processing }),
-      setStreamingMessageId: (id) => set({ streamingMessageId: id }),
-      setThinkingMessageId: (id) => set({ thinkingMessageId: id }),
+        set((state) => {
+          const msgs = state.messages;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].id === id) {
+              const copy = [...msgs];
+              copy[i] = { ...copy[i], content: copy[i].content + token };
+              return syncHeavyField('messages', copy)(state);
+            }
+          }
+          return {};
+        }),
 
       appendToThinking: (id, token) =>
-        set((state) => ({
-          messages: state.messages.map((msg) =>
-            msg.id === id ? { ...msg, thinking: (msg.thinking || '') + token } : msg
-          ),
-        })),
+        set((state) => {
+          const msgs = state.messages;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].id === id) {
+              const copy = [...msgs];
+              copy[i] = { ...copy[i], thinking: (copy[i].thinking || '') + token };
+              return syncHeavyField('messages', copy)(state);
+            }
+          }
+          return {};
+        }),
 
       addToolCall: (toolCall) =>
         set((state) => {
           const toolCalls = [...state.toolCalls, toolCall];
-          if (toolCalls.length > 500) {
-            return { toolCalls: toolCalls.slice(toolCalls.length - 500) };
-          }
-          return { toolCalls };
+          const trimmed = toolCalls.length > 500 ? toolCalls.slice(toolCalls.length - 500) : toolCalls;
+          return syncHeavyField('toolCalls', trimmed)(state);
         }),
 
       updateToolCall: (id, updates) =>
-        set((state) => ({
-          toolCalls: state.toolCalls.map((call) =>
-            call.id === id ? { ...call, ...updates } : call
-          ),
-        })),
+        set((state) => {
+          const tcs = state.toolCalls;
+          for (let i = tcs.length - 1; i >= 0; i--) {
+            if (tcs[i].id === id) {
+              const copy = [...tcs];
+              copy[i] = { ...copy[i], ...updates };
+              return syncHeavyField('toolCalls', copy)(state);
+            }
+          }
+          return {};
+        }),
 
       addPendingConfirmation: (confirmation) =>
-        set((state) => ({
-          pendingConfirmations: [...state.pendingConfirmations, confirmation],
-        })),
+        set((state) => syncHeavyField('pendingConfirmations',
+          [...state.pendingConfirmations, confirmation])(state)),
 
       removePendingConfirmation: (id) =>
-        set((state) => ({
-          pendingConfirmations: state.pendingConfirmations.filter((c) => c.id !== id),
-        })),
+        set((state) => syncHeavyField('pendingConfirmations',
+          state.pendingConfirmations.filter((c) => c.id !== id))(state)),
 
       addDiff: (diff) =>
         set((state) => {
           const diffs = [...state.diffs, diff];
-          if (diffs.length > 300) {
-            return { diffs: diffs.slice(diffs.length - 300) };
-          }
-          return { diffs };
+          const trimmed = diffs.length > 300 ? diffs.slice(diffs.length - 300) : diffs;
+          return syncHeavyField('diffs', trimmed)(state);
         }),
 
-      setSandboxBackend: (backend) => set({ sandboxBackend: backend }),
-      setPendingChanges: (count) => set({ pendingChanges: count }),
-      setSandboxChangesData: (data) => set({ sandboxChangesData: data }),
+      // ── Global actions (not per-connection) ──
 
       setCurrentPath: (path) => set({ currentPath: path }),
       setFileList: (files) => set({ fileList: files }),
-      setSessionInfo: (info) => set({ sessionInfo: info }),
-      setSessionList: (list) => set({ sessionList: list }),
-      removeSessionFromList: (id) => set((state) => ({
-        sessionList: state.sessionList.filter(s => s.id !== id),
-      })),
 
-      setSessionRestoreAvailable: (info) => set({ sessionRestoreAvailable: info }),
-
-      setConfig: (config) =>
-        set((state) => ({ config: { ...state.config, ...config } })),
-
-      addPreset: (preset) => {
-        // Validate required fields
-        if (!preset.name?.trim() || !preset.serverUrl?.trim()) return;
-        try { new URL(preset.serverUrl.replace(/^ws/, 'http')); } catch { return; }
-        const newPreset: ConfigPreset = {
-          ...preset,
-          id: Date.now().toString(),
-          createdAt: Date.now(),
-        };
-        set((state) => ({ presets: [...state.presets, newPreset] }));
-      },
-
-      updatePreset: (id, updates) =>
+      removeSessionFromList: (id) =>
         set((state) => ({
-          presets: state.presets.map(p => p.id === id ? { ...p, ...updates } : p),
+          sessionList: state.sessionList.filter((s) => s.id !== id),
+        })),
+
+      setConfig: (partial) =>
+        set((state) => ({ config: { ...state.config, ...partial } })),
+
+      addPreset: (preset) =>
+        set((state) => ({
+          presets: [
+            ...state.presets,
+            {
+              ...preset,
+              id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              createdAt: Date.now(),
+            },
+          ],
+        })),
+
+      updatePreset: (id, preset) =>
+        set((state) => ({
+          presets: state.presets.map((p) =>
+            p.id === id ? { ...p, ...preset } : p
+          ),
         })),
 
       deletePreset: (id) =>
         set((state) => ({
-          presets: state.presets.filter(p => p.id !== id),
+          presets: state.presets.filter((p) => p.id !== id),
         })),
 
       applyPreset: (id) => {
         const state = get();
-        const preset = state.presets.find(p => p.id === id);
-        if (preset) {
-          set({
-            serverUrl: preset.serverUrl,
-            workdir: preset.workdir,
-            config: {
-              ...state.config,
-              serverUrl: preset.serverUrl,
-              workdir: preset.workdir,
-              ...(preset.model !== undefined && preset.model !== '' ? { model: preset.model } : {}),
-              autoApprove: preset.autoApprove,
-              agentMode: preset.agentMode,
-              isolation: preset.isolation || 'container',
-            },
-          });
-        }
+        const preset = state.presets.find((p) => p.id === id);
+        if (!preset) return;
+        const updates: any = {
+          serverUrl: preset.serverUrl,
+          workdir: preset.workdir,
+          config: {
+            ...state.config,
+            model: preset.model ?? state.config.model,
+            autoApprove: preset.autoApprove,
+            agentMode: preset.agentMode,
+            isolation: preset.isolation ?? state.config.isolation,
+            newSessionOnConnect: preset.newSessionOnConnect ?? state.config.newSessionOnConnect,
+          },
+        };
+        set(syncActiveSlot(updates));
       },
 
-      setNodeList: (nodes) => set({ nodeList: nodes }),
-      setClusterToken: (token) => set({ clusterToken: token }),
-      setConnectedWorkdir: (workdir) => set({ connectedWorkdir: workdir }),
-
-      setTokenUsage: (usage) => set({ tokenUsage: usage }),
-
-      addConnectionHistory: (serverUrl, workdir) => {
-        const now = Date.now();
+      clearSession: () =>
         set((state) => {
-          const existingIndex = state.connectionHistory.findIndex(
-            h => h.serverUrl === serverUrl && h.workdir === workdir
-          );
-          if (existingIndex >= 0) {
-            const updatedHistory = [...state.connectionHistory];
-            updatedHistory[existingIndex] = {
-              ...updatedHistory[existingIndex],
-              lastConnectedAt: now,
-              connectionCount: updatedHistory[existingIndex].connectionCount + 1
+          const slotId = state.activeConnectionId;
+          const result: any = {
+            messages: [],
+            toolCalls: [],
+            pendingConfirmations: [],
+            diffs: [],
+            isProcessing: false,
+            streamingMessageId: null,
+            thinkingMessageId: null,
+            currentMessage: '',
+            sessionInfo: null,
+            sessionList: [],
+            sessionRestoreAvailable: null,
+          };
+          if (slotId && state.connections[slotId]) {
+            result.connections = {
+              ...state.connections,
+              [slotId]: {
+                ...state.connections[slotId],
+                messages: [],
+                toolCalls: [],
+                pendingConfirmations: [],
+                diffs: [],
+                isProcessing: false,
+                streamingMessageId: null,
+                thinkingMessageId: null,
+                currentMessage: '',
+                sessionInfo: null,
+                sessionList: [],
+                sessionRestoreAvailable: null,
+              },
             };
-            return { connectionHistory: updatedHistory };
-          } else {
-            const newHistory: ConnectionHistory = {
-              id: Date.now().toString(),
-              serverUrl,
-              workdir,
-              connectedAt: now,
-              lastConnectedAt: now,
-              connectionCount: 1
-            };
-            return { connectionHistory: [newHistory, ...state.connectionHistory].slice(0, 20) };
           }
-        });
-      },
+          return result;
+        }),
+
+      setClusterToken: (token) => set({ clusterToken: token }),
+
+      addConnectionHistory: (serverUrl, workdir) =>
+        set((state) => {
+          const existing = state.connectionHistory.find(
+            (h) => h.serverUrl === serverUrl && h.workdir === workdir
+          );
+          if (existing) {
+            return {
+              connectionHistory: state.connectionHistory.map((h) =>
+                h.id === existing.id
+                  ? { ...h, lastConnectedAt: Date.now(), connectionCount: h.connectionCount + 1 }
+                  : h
+              ),
+            };
+          }
+          return {
+            connectionHistory: [
+              ...state.connectionHistory,
+              {
+                id: `hist_${Date.now()}`,
+                serverUrl,
+                workdir,
+                connectedAt: Date.now(),
+                lastConnectedAt: Date.now(),
+                connectionCount: 1,
+              },
+            ],
+          };
+        }),
 
       removeConnectionHistory: (id) =>
         set((state) => ({
-          connectionHistory: state.connectionHistory.filter(h => h.id !== id),
+          connectionHistory: state.connectionHistory.filter((h) => h.id !== id),
         })),
 
       clearConnectionHistory: () => set({ connectionHistory: [] }),
 
-      setPlugins: (plugins) => set({ plugins }),
-
-      clearSession: () => set({
-        messages: [],
-        toolCalls: [],
-        pendingConfirmations: [],
-        diffs: [],
-        isProcessing: false,
-        streamingMessageId: null,
-        thinkingMessageId: null,
-        currentMessage: '',
-        tokenUsage: null,
-        sessionRestoreAvailable: null,
-      }),
-
-      reset: () => set((state) => ({
-        connectionStatus: 'disconnected',
-        connectedWorkdir: null,
-        messages: [],
-        toolCalls: [],
-        pendingConfirmations: [],
-        diffs: [],
-        isProcessing: false,
-        streamingMessageId: null,
-        thinkingMessageId: null,
-        currentMessage: '',
-        sessionInfo: null,
-        sessionRestoreAvailable: null,
-        tokenUsage: null,
-      })),
-    }),
+      reset: () =>
+        set((state) => ({
+          connectionStatus: 'disconnected',
+          messages: [],
+          toolCalls: [],
+          pendingConfirmations: [],
+          diffs: [],
+          isProcessing: false,
+          streamingMessageId: null,
+          thinkingMessageId: null,
+          currentMessage: '',
+          sessionInfo: null,
+          sessionList: [],
+          sessionRestoreAvailable: null,
+          connectedWorkdir: null,
+          sandboxBackend: 'disabled',
+          pendingChanges: 0,
+          sandboxChangesData: null,
+          nodeList: [],
+          tokenUsage: null,
+          plugins: [],
+        })),
+      };
+    },
     {
-      name: 'rust-agent-config',
-      partialize: (state) => {
-        // Persist settings only; connection slots are ephemeral (recreated each session)
-        return {
-          serverUrl: state.serverUrl,
-          workdir: state.workdir,
-          clusterToken: state.clusterToken,
-          config: state.config,
-          presets: state.presets,
-          nodeList: state.nodeList,
-          connectionHistory: state.connectionHistory,
-        };
-      },
+      name: 'rust-agent-connections',
+      version: 3,
+      partialize: (state) => ({
+        connections: state.connections,
+        activeConnectionId: state.activeConnectionId,
+        serverUrl: state.serverUrl,
+        workdir: state.workdir,
+        config: state.config,
+        presets: state.presets,
+        connectionHistory: state.connectionHistory,
+        clusterToken: state.clusterToken,
+      }),
+      merge: (persisted: any, current) => ({
+        ...current,
+        ...persisted,
+        // Ensure connections map is properly hydrated with full slot objects
+        connections: persisted.connections
+          ? Object.fromEntries(
+              Object.entries(persisted.connections as Record<string, any>).map(([k, v]: [string, any]) => {
+                const empty = createEmptySlot(k, v.label ?? '', v.serverUrl ?? '', v.workdir);
+                return [k, { ...empty, ...v }];
+              })
+            )
+          : current.connections,
+      }),
     }
-  )
-  )
+  ))
 );

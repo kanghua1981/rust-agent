@@ -649,6 +649,7 @@ export interface ConnectionSlot {
   tokenUsage: TokenUsage | null;
   nodeList: VirtualNodeInfo[];
   plugins: PluginInfo[];
+  sessionRestoreAvailable: { message_count: number } | null;
 }
 
 export interface PendingConfirmation {

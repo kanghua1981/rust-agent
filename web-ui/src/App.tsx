@@ -27,10 +27,12 @@ function App() {
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
+  // Per-tab rendering: only the active ChatArea is mounted
+  const activeConnectionId = useAgentStore(s => s.activeConnectionId);
+
   const handleConnect = useCallback(() => {
     const st = useAgentStore.getState();
-    // Save current active slot state (flat proxy → connections map)
-    st._saveActiveSlot();
+    // setActiveConnection + createConnectionSlot handle state saving internally
 
     // Read the target URL/workdir from the flat proxy (set by ConnectModal/applyPreset)
     const targetUrl = st.serverUrl;
@@ -181,13 +183,17 @@ function App() {
           <ErrorBoundary key={activeTab}>
           {activeTab === 'chat' && (
             <>
-              <ChatArea
-                onConfirm={confirmToolCall}
-                onAnswer={(id, answer) => { answerQuestion(answer); useAgentStore.getState().removePendingConfirmation(id); }}
-                onReviewPlan={(id, approved, feedback) => { reviewPlan(approved, feedback); useAgentStore.getState().removePendingConfirmation(id); }}
-                onRestoreSession={() => loadSession()}
-                onDismissRestore={() => useAgentStore.getState().setSessionRestoreAvailable(null)}
-              />
+              {/* Only the active ChatArea is mounted — inactive slots update via _updateSlot in the background. */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <ChatArea
+                  slotId={activeConnectionId ?? 'default'}
+                  onConfirm={confirmToolCall}
+                  onAnswer={(id, answer) => { answerQuestion(answer); useAgentStore.getState().removePendingConfirmation(id); }}
+                  onReviewPlan={(id, approved, feedback) => { reviewPlan(approved, feedback); useAgentStore.getState().removePendingConfirmation(id); }}
+                  onRestoreSession={() => loadSession()}
+                  onDismissRestore={() => useAgentStore.getState().setSessionRestoreAvailable(null)}
+                />
+              </div>
               <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} onUpload={handleUpload} />
             </>
           )}

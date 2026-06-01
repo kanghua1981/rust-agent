@@ -1,5 +1,5 @@
-import React, { useCallback } from 'react';
-import { Virtuoso } from 'react-virtuoso';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useAgentStore } from '../stores/agentStore';
 import { MessageItem } from './MessageItem';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -30,6 +30,58 @@ export const VirtualMessageList: React.FC<Props> = ({
   onAnswer,
   onReviewPlan,
 }) => {
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const userScrolledUpRef = useRef(false);
+  const prevMsgCountRef = useRef(messages.length);
+  const prevProcessingRef = useRef(isProcessing);
+
+  // Reset scroll-lock when user manually scrolls to the very bottom
+  const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
+    if (atBottom) {
+      userScrolledUpRef.current = false;
+    }
+  }, []);
+
+  // Force-scroll to bottom when the user sends a new message
+  // or when a new message is appended (user msg / assistant msg)
+  // or when processing finishes (done/error/cancelled)
+  useEffect(() => {
+    const msgCount = messages.length;
+    const processingJustStarted = isProcessing && !prevProcessingRef.current;
+    const processingJustEnded = prevProcessingRef.current && !isProcessing;
+    const newMsgAdded = msgCount > prevMsgCountRef.current;
+
+    if (processingJustStarted) {
+      // User sent a new message — always scroll to bottom and reset scroll lock
+      userScrolledUpRef.current = false;
+      virtuosoRef.current?.scrollToIndex({
+        index: msgCount - 1,
+        behavior: 'smooth',
+        align: 'end',
+      });
+    } else if (processingJustEnded) {
+      // Conversation finished — scroll to bottom so user sees final messages
+      userScrolledUpRef.current = false;
+      if (msgCount > 0) {
+        virtuosoRef.current?.scrollToIndex({
+          index: msgCount - 1,
+          behavior: 'auto',
+          align: 'end',
+        });
+      }
+    } else if (newMsgAdded && !userScrolledUpRef.current) {
+      // New message appended while user hasn't scrolled away — ensure visible
+      virtuosoRef.current?.scrollToIndex({
+        index: msgCount - 1,
+        behavior: 'smooth',
+        align: 'end',
+      });
+    }
+
+    prevMsgCountRef.current = msgCount;
+    prevProcessingRef.current = isProcessing;
+  }, [messages.length, isProcessing]);
+
   const renderItem = useCallback(
     (_index: number, msg: (typeof messages)[number]) => {
       const data = messageDataMap.get(msg.id);
@@ -106,10 +158,13 @@ export const VirtualMessageList: React.FC<Props> = ({
 
   return (
     <Virtuoso
+      ref={virtuosoRef}
       style={{ flex: 1 }}
       data={messages}
       itemContent={renderItem}
       followOutput={'smooth'}
+      atBottomThreshold={200}
+      atBottomStateChange={handleAtBottomStateChange}
       initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : undefined}
       components={{
         Footer,

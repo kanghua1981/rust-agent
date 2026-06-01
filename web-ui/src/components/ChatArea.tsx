@@ -6,6 +6,7 @@ import type { ToolCall } from '../types/agent';
 import type { DiffEntry as StoreDiffEntry } from '../stores/agentStore';
 
 interface Props {
+  slotId: string;
   onConfirm: (id: string, approved: boolean) => void;
   onAnswer: (id: string, answer: string) => void;
   onReviewPlan: (id: string, approved: boolean, feedback?: string) => void;
@@ -13,23 +14,24 @@ interface Props {
   onDismissRestore: () => void;
 }
 
-export const ChatArea: React.FC<Props> = ({ onConfirm, onAnswer, onReviewPlan, onRestoreSession, onDismissRestore }) => {
-  // 高频变化 — 独立订阅（驱 messageDataMap 的 useMemo 重算）
-  const messages = useAgentStore(s => s.messages ?? []);
-  const toolCalls = useAgentStore(s => s.toolCalls ?? []);
-  const diffs = useAgentStore(s => s.diffs ?? []);
+/** Get a slot by id, returning a safe fallback for missing slots. */
+const emptySlot = { messages: [] as any[], toolCalls: [] as any[], diffs: [] as any[], pendingConfirmations: [] as any[], connectionStatus: 'disconnected' as const, isProcessing: false, streamingMessageId: null as string | null, thinkingMessageId: null as string | null, sessionRestoreAvailable: null as any };
 
-  // 低频变化 — 合并为一次 shallow 比较订阅
-  const { streamingMessageId, connectionStatus, isProcessing, thinkingMessageId, pendingConfirmations, sessionRestoreAvailable } = useAgentStore(
-    useShallow(s => ({
-      streamingMessageId: s.streamingMessageId,
-      connectionStatus: s.connectionStatus,
-      isProcessing: s.isProcessing,
-      thinkingMessageId: s.thinkingMessageId,
-      pendingConfirmations: s.pendingConfirmations,
-      sessionRestoreAvailable: s.sessionRestoreAvailable,
-    })),
-  );
+const useSlot = (id: string) => useAgentStore(
+  useShallow((s) => s.connections[id] ?? emptySlot)
+);
+
+export const ChatArea: React.FC<Props> = ({ slotId, onConfirm, onAnswer, onReviewPlan, onRestoreSession, onDismissRestore }) => {
+  const slot = useSlot(slotId);
+  const messages: any[] = slot.messages ?? [];
+  const toolCalls: any[] = slot.toolCalls ?? [];
+  const diffs: any[] = slot.diffs ?? [];
+  const connectionStatus: string = slot.connectionStatus;
+  const isProcessing: boolean = slot.isProcessing;
+  const streamingMessageId: string | null = slot.streamingMessageId;
+  const thinkingMessageId: string | null = slot.thinkingMessageId;
+  const pendingConfirmations: any[] = slot.pendingConfirmations ?? [];
+  const sessionRestoreAvailable = slot.sessionRestoreAvailable;
 
   // ── Stable-reference cache: reuse arrays whose contents haven't changed ──
   // Without this, useMemo creates new arrays every time → React.memo on
