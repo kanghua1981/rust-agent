@@ -1,8 +1,12 @@
 //! Model management: persistent multi-model configuration via `models.toml`.
 //!
 //! Configuration lives at `~/.config/rust_agent/models.toml` (user-level).
-//! Each model entry has an alias, provider, model name, and optional overrides
-//! for `base_url` and `api_key`.
+//!
+//! Two styles are supported:
+//! 1. **Flat** (legacy): each `[models.<alias>]` carries its own provider/base_url/api_key.
+//! 2. **Endpoint-referenced** (new): `[endpoints.<name>]` defines shared connection
+//!    parameters; model entries only need `endpoint = "<name>"` + `model`.
+//!    Model-level fields (base_url, api_key, provider) override endpoint values.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,6 +24,11 @@ pub struct ModelsConfig {
     /// Alias of the default model (e.g. "sonnet").
     #[serde(default)]
     pub default: Option<String>,
+
+    /// Named endpoint definitions (shared base_url + api_key).
+    /// Models can reference these via `endpoint = "<name>"` to avoid repetition.
+    #[serde(default)]
+    pub endpoints: BTreeMap<String, EndpointEntry>,
 
     /// Named model entries keyed by alias.
     #[serde(default)]
@@ -47,6 +56,19 @@ pub struct ModelsConfig {
     /// Configured sub-agents to start (alias, port, role).
     #[serde(default)]
     pub sub_agents: BTreeMap<String, crate::config::SubAgentConfig>,
+}
+
+/// A named endpoint that models can reference to avoid repeating
+/// base_url / api_key / provider across many model entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointEntry {
+    /// Provider: "anthropic", "openai", or "compatible".
+    pub provider: String,
+    /// Base URL of the API (e.g. "https://api.openai.com/v1").
+    pub base_url: String,
+    /// API key for this endpoint (optional — falls back to env vars).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 /// Configuration for a single named role.
@@ -130,8 +152,16 @@ impl PipelineConfig {
 /// A single model entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
+    /// Provider name. Can be empty when `endpoint` is set (inherited from endpoint).
+    #[serde(default)]
     pub provider: String,
+    /// Model identifier (e.g. "gpt-4o", "deepseek-v4-flash").
     pub model: String,
+    /// Reference to a named endpoint in `[endpoints]`. When set, provider / base_url
+    /// / api_key are inherited from the endpoint, with model-level values taking
+    /// precedence for per-field overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,20 +243,54 @@ pub fn save(cfg: &ModelsConfig) -> Result<()> {
 
 impl ModelsConfig {
     /// Resolve an alias to a full `ResolvedModel`.
+    /// Merges model-level fields with endpoint defaults when `endpoint` is set.
     pub fn resolve(&self, alias: &str) -> Option<ResolvedModel> {
         let entry = self.models.get(alias)?;
-        let provider = parse_provider(&entry.provider);
+        let ep = entry.endpoint.as_deref().and_then(|n| self.endpoints.get(n));
+
+        // provider: model > endpoint > fallback "compatible"
+        let provider_str = if entry.provider.is_empty() {
+            ep.map(|e| e.provider.as_str()).unwrap_or("compatible")
+        } else {
+            &entry.provider
+        };
+
+        // base_url: model > endpoint
+        let base_url = entry
+            .base_url
+            .clone()
+            .or_else(|| ep.map(|e| e.base_url.clone()));
+
+        // api_key: model > endpoint
+        let api_key = entry
+            .api_key
+            .clone()
+            .or_else(|| ep.and_then(|e| e.api_key.clone()));
+
         Some(ResolvedModel {
             alias: alias.to_string(),
-            provider,
+            provider: parse_provider(provider_str),
             model: entry.model.clone(),
-            base_url: entry.base_url.clone(),
-            api_key: entry.api_key.clone(),
+            base_url,
+            api_key,
             max_tokens: entry.max_tokens,
             thinking_enabled: entry.thinking_enabled,
             reasoning_effort: entry.reasoning_effort.clone(),
             temperature: entry.temperature,
         })
+    }
+
+    /// Return the resolved (effective) base_url for a model entry,
+    /// merging with its endpoint if one is referenced.
+    pub fn effective_base_url(&self, entry: &ModelEntry) -> Option<String> {
+        if let Some(ref url) = entry.base_url {
+            return Some(url.clone());
+        }
+        entry
+            .endpoint
+            .as_deref()
+            .and_then(|n| self.endpoints.get(n))
+            .map(|e| e.base_url.clone())
     }
 
     /// Resolve the default model, if one is configured.
@@ -245,6 +309,22 @@ impl ModelsConfig {
         self.models.insert(alias, entry);
     }
 
+    /// Check whether an alias already exists.
+    pub fn has_alias(&self, alias: &str) -> bool {
+        self.models.contains_key(alias)
+    }
+
+    /// Find aliases that reference the same model at the same (resolved) base_url.
+    pub fn find_duplicates(&self, model: &str, base_url: &str) -> Vec<String> {
+        self.models
+            .iter()
+            .filter(|(_, e)| {
+                e.model == model && self.effective_base_url(e).as_deref() == Some(base_url)
+            })
+            .map(|(a, _)| a.clone())
+            .collect()
+    }
+
     /// Remove a model entry. Returns `true` if it existed.
     pub fn remove(&mut self, alias: &str) -> bool {
         let existed = self.models.remove(alias).is_some();
@@ -261,7 +341,129 @@ impl ModelsConfig {
     }
 }
 
+// ── Model fetching (OpenAI-compatible / Ollama) ─────────────────────
+
+/// Result of fetching available models from a remote API.
+#[derive(Debug, Clone)]
+pub struct FetchedModels {
+    pub models: Vec<String>,
+    /// Which API format was detected: "openai-compatible" or "ollama".
+    pub source: String,
+}
+
+/// Fetch the list of available models from an OpenAI-compatible or Ollama endpoint.
+///
+/// Tries `GET /v1/models` (OpenAI format) first; on failure falls back to
+/// `GET /api/tags` (Ollama format).  Returns all discovered model IDs.
+pub async fn fetch_models(base_url: &str, api_key: Option<&str>) -> Result<FetchedModels> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("Failed to build HTTP client")?;
+
+    let base = base_url.trim_end_matches('/');
+
+    // ── Attempt 1: OpenAI-compatible /v1/models ──────────────────────
+    let mut req = client.get(format!("{}/v1/models", base));
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+
+    let mut tried_endpoints: Vec<&str> = vec![];
+
+    if let Ok(resp) = req.send().await {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.text().await {
+                match parse_openai_model_list(&body) {
+                    Ok(models) if !models.is_empty() => {
+                        return Ok(FetchedModels {
+                            models,
+                            source: "openai-compatible".into(),
+                        });
+                    }
+                    Ok(_) => tried_endpoints.push("openai-compatible (empty list)"),
+                    Err(_) => tried_endpoints.push("openai-compatible"),
+                }
+            }
+        }
+    }
+
+    // ── Attempt 2: Ollama /api/tags ─────────────────────────────────
+    if let Ok(resp) = client.get(format!("{}/api/tags", base)).send().await {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.text().await {
+                match parse_ollama_model_list(&body) {
+                    Ok(models) if !models.is_empty() => {
+                        return Ok(FetchedModels {
+                            models,
+                            source: "ollama".into(),
+                        });
+                    }
+                    Ok(_) => {
+                        anyhow::bail!(
+                            "Ollama endpoint at '{}' responded but has no models installed.\n\
+                             Pull a model first, e.g.: ollama pull llama3.2",
+                            base_url
+                        );
+                    }
+                    Err(_) => tried_endpoints.push("ollama"),
+                }
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "Unable to fetch model list from '{}'. Tried: {}.",
+        base_url,
+        if tried_endpoints.is_empty() { "(no successful response)".into() }
+        else { tried_endpoints.join(", ") }
+    )
+}
+
+fn parse_openai_model_list(body: &str) -> Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct OpenAIModelsResponse {
+        data: Vec<OpenAIModelEntry>,
+    }
+    #[derive(Deserialize)]
+    struct OpenAIModelEntry {
+        id: String,
+    }
+    let resp: OpenAIModelsResponse = serde_json::from_str(body)?;
+    Ok(resp.data.into_iter().map(|m| m.id).collect())
+}
+
+fn parse_ollama_model_list(body: &str) -> Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct OllamaModelsResponse {
+        models: Vec<OllamaModelEntry>,
+    }
+    #[derive(Deserialize)]
+    struct OllamaModelEntry {
+        name: String,
+    }
+    let resp: OllamaModelsResponse = serde_json::from_str(body)?;
+    Ok(resp.models.into_iter().map(|m| m.name).collect())
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/// Sanitize a model name into a valid alias: lowercase, replace
+/// non-alphanumeric chars with underscores, collapse runs.
+pub fn sanitize_alias(model_name: &str) -> String {
+    let mut out = String::with_capacity(model_name.len());
+    let mut last_was_sep = false;
+    for ch in model_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+    out.trim_matches('_').to_string()
+}
 
 fn parse_provider(s: &str) -> Provider {
     match s.to_lowercase().as_str() {

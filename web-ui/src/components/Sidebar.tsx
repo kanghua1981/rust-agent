@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ConfigPreset } from '../types/agent';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models';
 
 interface SidebarProps {
   activeTab: Tab;
@@ -269,6 +269,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
           <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} onClick={() => onTabChange('sessions')} />
           <NavItem icon="🔒" label="沙盒" active={activeTab === 'sandbox'} badge={pendingChanges || undefined} onClick={() => onTabChange('sandbox')} />
           <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} onClick={() => onTabChange('plugins')} />
+          <NavItem icon="🧠" label="模型" active={activeTab === 'models'} onClick={() => onTabChange('models')} />
           <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} onClick={() => onTabChange('settings')} />
         </div>
 

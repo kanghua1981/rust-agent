@@ -365,11 +365,7 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             SlashResult::Continue
         }
         _ if input == "/model" || input.starts_with("/model ") => {
-            // Model switching not implemented in this branch
-            println!(
-                "\n{}  Model switching is not available in this branch.",
-                "⚠️"
-            );
+            handle_model_command(input, agent);
             SlashResult::Continue
         }
         "/skills" => {
@@ -452,6 +448,10 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             handle_mode_command(input, agent);
             SlashResult::Continue
         }
+        _ if input == "/endpoint" || input.starts_with("/endpoint ") => {
+            handle_endpoint_command(input);
+            SlashResult::Continue
+        }
         _ => SlashResult::NotACommand,
     }
 }
@@ -531,6 +531,524 @@ fn handle_mode_command(input: &str, agent: &mut Agent) {
             );
         }
     }
+}
+
+/// Handle `/model [subcommand]` — list, switch, remove, set default.
+///
+/// - `/model`              — show current model + list all configured aliases
+/// - `/model <alias>`      — switch to the named alias
+/// - `/model rm <alias>`   — remove an alias from models.toml
+/// - `/model default <alias>` — set the default model alias
+fn handle_model_command(input: &str, agent: &mut Agent) {
+    let sub = input.strip_prefix("/model").unwrap_or("").trim();
+
+    match sub {
+        "" => {
+            // Show current model
+            let current_alias = agent.config.model_alias.as_deref().unwrap_or("<none>");
+            let current_model = &agent.config.model;
+            println!("\n{}  Current model: {} ({})",
+                "🤖",
+                current_alias.bright_green(),
+                current_model.bright_white()
+            );
+
+            // List all configured aliases
+            let cfg = crate::model_manager::load();
+            if cfg.models.is_empty() {
+                println!("  No extra models configured. Use {} to add one.",
+                    "/model fetch <url>".bright_cyan());
+                println!("  Or edit {}  manually.",
+                    crate::model_manager::config_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "~/.config/rust_agent/models.toml".into())
+                        .bright_yellow()
+                );
+            } else {
+                let default = cfg.default.as_deref();
+                println!("  {}", "Configured models:".bright_cyan());
+                for alias in cfg.models.keys() {
+                    let marker = if Some(alias.as_str()) == default {
+                        " [default]".bright_yellow().to_string()
+                    } else if Some(alias.as_str()) == agent.config.model_alias.as_deref() {
+                        " [active]".bright_green().to_string()
+                    } else {
+                        String::new()
+                    };
+                    let entry = &cfg.models[alias];
+                    println!("    {} — {}{}",
+                        alias.bright_white(),
+                        entry.model.dimmed(),
+                        marker
+                    );
+                }
+                println!();
+                println!("  Switch:  {} <alias>", "/model".bright_cyan());
+                println!("  Default: {} <alias>", "/model default".bright_cyan());
+                println!("  Remove:  {} <alias>", "/model rm".bright_cyan());
+                println!("  Fetch:   {} <url>", "/model fetch".bright_cyan());
+            }
+        }
+
+        // /model rm <alias>
+        sub if sub.starts_with("rm ") => {
+            let alias = sub.strip_prefix("rm ").unwrap_or("").trim();
+            if alias.is_empty() {
+                println!("\n{}  Usage: /model rm <alias>", "⚠️");
+                return;
+            }
+            let mut cfg = crate::model_manager::load();
+            if cfg.remove(alias) {
+                match crate::model_manager::save(&cfg) {
+                    Ok(()) => println!("\n{}  Removed model alias '{}'.", "🗑️", alias.bright_yellow()),
+                    Err(e) => println!("\n{}  Failed to save models.toml: {}", "❌", e),
+                }
+            } else {
+                println!("\n{}  Alias '{}' not found.", "⚠️", alias);
+            }
+        }
+
+        // /model default <alias>
+        sub if sub.starts_with("default ") => {
+            let alias = sub.strip_prefix("default ").unwrap_or("").trim();
+            if alias.is_empty() {
+                println!("\n{}  Usage: /model default <alias>", "⚠️");
+                return;
+            }
+            let mut cfg = crate::model_manager::load();
+            if cfg.models.contains_key(alias) {
+                cfg.set_default(alias.to_string());
+                match crate::model_manager::save(&cfg) {
+                    Ok(()) => println!("\n{}  Default model set to '{}'.", "⭐", alias.bright_green()),
+                    Err(e) => println!("\n{}  Failed to save models.toml: {}", "❌", e),
+                }
+            } else {
+                println!("\n{}  Alias '{}' not found.", "⚠️", alias);
+            }
+        }
+
+        // /model fetch <url> — handled as async in the REPL loop
+        sub if sub.starts_with("fetch ") || sub == "fetch" => {
+            println!("\n{}  Use /model fetch <url> from the main prompt (handled externally).", "💡");
+        }
+
+        // /model <alias> — switch to alias
+        _ => {
+            let alias = sub;
+            let cfg = crate::model_manager::load();
+            if let Some(resolved) = cfg.resolve(alias) {
+                agent.switch_model(&resolved);
+                println!("\n{}  Switched to model: {} ({})",
+                    "✅",
+                    alias.bright_green(),
+                    resolved.model.bright_white()
+                );
+            } else {
+                println!("\n{}  Unknown alias '{}'. Use {} to see available models.",
+                    "❌",
+                    alias.bright_red(),
+                    "/model".bright_cyan()
+                );
+            }
+        }
+    }
+}
+
+/// Handle `/endpoint [subcommand]` — manage endpoint definitions in models.toml.
+///
+/// - `/endpoint`                   — list all endpoints
+/// - `/endpoint rm <name>`         — remove an endpoint
+/// - `/endpoint add <name> <url> [--key <key>] [--provider <p>]` — add manually
+fn handle_endpoint_command(input: &str) {
+    let sub = input.strip_prefix("/endpoint").unwrap_or("").trim();
+
+    match sub {
+        "" => {
+            let cfg = crate::model_manager::load();
+            if cfg.endpoints.is_empty() {
+                println!("\n🔗  No endpoints configured.");
+                println!("  Endpoints are created automatically by {} or manually with",
+                    "/model fetch".bright_cyan());
+                println!("  {} add <name> <url> [--key <key>] [--provider <p>]",
+                    "/endpoint".bright_cyan());
+            } else {
+                println!("\n🔗  {} endpoint(s) configured:\n", cfg.endpoints.len());
+                for (name, ep) in &cfg.endpoints {
+                    let models_using: Vec<&str> = cfg.models.iter()
+                        .filter(|(_, m)| m.endpoint.as_deref() == Some(name.as_str()))
+                        .map(|(a, _)| a.as_str())
+                        .collect();
+                    println!("  {} {} — {}", 
+                        "•".bright_cyan(),
+                        name.bright_white(),
+                        ep.base_url.dimmed());
+                    println!("    provider: {}, key: {}", 
+                        ep.provider.bright_white(),
+                        if ep.api_key.is_some() { "set".green() } else { "not set".yellow() }
+                    );
+                    if !models_using.is_empty() {
+                        println!("    models: {}", models_using.join(", ").bright_white());
+                    } else {
+                        println!("    models: {}", "(none)".dimmed());
+                    }
+                }
+                println!();
+                println!("  Remove: {} rm <name>", "/endpoint".bright_cyan());
+                println!("  Add:    {} add <name> <url> [--key <k>] [--provider <p>]", "/endpoint".bright_cyan());
+            }
+        }
+
+        // /endpoint rm <name>
+        sub if sub.starts_with("rm ") => {
+            let name = sub.strip_prefix("rm ").unwrap_or("").trim();
+            if name.is_empty() {
+                println!("\n{}  Usage: /endpoint rm <name>", "⚠️");
+                return;
+            }
+            let mut cfg = crate::model_manager::load();
+            if !cfg.endpoints.contains_key(name) {
+                println!("\n{}  Endpoint '{}' not found.", "⚠️", name);
+                return;
+            }
+
+            // Check for models referencing this endpoint
+            let using: Vec<String> = cfg.models.iter()
+                .filter(|(_, m)| m.endpoint.as_deref() == Some(name))
+                .map(|(a, _)| a.clone())
+                .collect();
+            if !using.is_empty() {
+                println!(
+                    "\n{}  Endpoint '{}' is referenced by model(s): {}",
+                    "⚠️",
+                    name.bright_yellow(),
+                    using.join(", ").bright_white()
+                );
+                println!("  Remove these models first with {} or they will become unresolvable.",
+                    "/model rm <alias>".bright_cyan());
+                return;
+            }
+
+            cfg.endpoints.remove(name);
+            match crate::model_manager::save(&cfg) {
+                Ok(()) => println!("\n{}  Removed endpoint '{}'.", "🗑️", name.bright_yellow()),
+                Err(e) => println!("\n{}  Failed to save models.toml: {}", "❌", e),
+            }
+        }
+
+        // /endpoint add <name> <url> [--key <key>] [--provider <p>]
+        sub if sub.starts_with("add ") => {
+            let args = sub.strip_prefix("add ").unwrap_or("").trim();
+            let parts: Vec<&str> = args.split_whitespace().collect();
+            if parts.len() < 2 {
+                println!("\n{}  Usage: /endpoint add <name> <url> [--key <k>] [--provider <p>]", "⚠️");
+                println!("  Example: /endpoint add deepseek https://api.deepseek.com/anthropic --provider anthropic");
+                return;
+            }
+            let name = parts[0];
+            let url = parts[1];
+
+            let api_key = parts.iter().position(|&p| p == "--key")
+                .and_then(|i| parts.get(i + 1).map(|k| k.to_string()));
+            let provider = parts.iter().position(|&p| p == "--provider")
+                .and_then(|i| parts.get(i + 1).map(|p| p.to_string()))
+                .unwrap_or_else(|| "openai".to_string());
+
+            let mut cfg = crate::model_manager::load();
+            if cfg.endpoints.contains_key(name) {
+                println!(
+                    "\n{}  Endpoint '{}' already exists. Use {} first.",
+                    "⚠️", name,
+                    "/endpoint rm".bright_cyan()
+                );
+                return;
+            }
+
+            cfg.endpoints.insert(name.to_string(), crate::model_manager::EndpointEntry {
+                provider,
+                base_url: url.to_string(),
+                api_key,
+            });
+
+            match crate::model_manager::save(&cfg) {
+                Ok(()) => println!("\n{}  Endpoint '{}' added ({})", "✅", name.bright_green(), url.dimmed()),
+                Err(e) => println!("\n{}  Failed to save models.toml: {}", "❌", e),
+            }
+        }
+
+        // /endpoint fetch <url> — just a hint
+        sub if sub.starts_with("fetch") => {
+            println!("\n{}  Use {} to fetch models and auto-create an endpoint.",
+                "💡", "/model fetch <url>".bright_cyan());
+        }
+
+        _ => {
+            println!("\n{}  Unknown subcommand. Valid: list, rm, add", "⚠️");
+        }
+    }
+}
+
+/// Handle `/model fetch <url> [--key <api_key>]` — fetch model list from a remote API.
+async fn handle_model_fetch_command(args: &str) {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+
+    if parts.is_empty() {
+        println!("\n📡  Usage: /model fetch <url> [--key <api_key>]");
+        println!("   Fetches available models from an OpenAI-compatible or Ollama endpoint.");
+        println!("   Examples:");
+        println!("     /model fetch http://localhost:11434");
+        println!("     /model fetch https://api.openai.com/v1 --key sk-...");
+        println!("     /model fetch https://dashscope.aliyuncs.com/compatible-mode/v1 --key sk-...");
+        return;
+    }
+
+    let url = parts[0];
+
+    // Parse optional --key flag
+    let api_key = if let Some(pos) = parts.iter().position(|&p| p == "--key") {
+        parts.get(pos + 1).map(|k| k.to_string())
+    } else {
+        // Fall back to LLM_API_KEY env
+        std::env::var("LLM_API_KEY").ok()
+    };
+
+    println!("\n📡  Fetching models from {} ...", url.bright_cyan());
+
+    match crate::model_manager::fetch_models(url, api_key.as_deref()).await {
+        Ok(fetched) => {
+            let source_label = match fetched.source.as_str() {
+                "ollama" => "Ollama",
+                _ => "OpenAI-compatible",
+            };
+            println!("\n{}  Found {} model(s) via {}:\n",
+                "✅",
+                fetched.models.len().to_string().bright_white(),
+                source_label.bright_cyan()
+            );
+
+            // Print numbered list
+            for (i, model) in fetched.models.iter().enumerate() {
+                println!("  {:>3}. {}", (i + 1).to_string().bright_yellow(), model);
+            }
+
+            // Interactive selection
+            println!();
+            println!("  Enter a number to select (1-{}), or press Enter to cancel:",
+                fetched.models.len()
+            );
+
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                return;
+            }
+            let line = line.trim().to_string();
+            if line.is_empty() {
+                println!("  Cancelled.");
+                return;
+            }
+
+            let idx: usize = match line.parse::<usize>() {
+                Ok(n) if n >= 1 && n <= fetched.models.len() => n - 1,
+                _ => {
+                    println!("\n{}  Invalid selection.", "❌");
+                    return;
+                }
+            };
+
+            let model_name = &fetched.models[idx];
+
+            // Auto-suggest an alias from the model name
+            let suggested_alias = crate::model_manager::sanitize_alias(model_name);
+            println!("\n  Selected: {}", model_name.bright_green());
+
+            // Determine provider
+            let provider = match fetched.source.as_str() {
+                "ollama" => "openai",
+                _ => "openai",
+            };
+
+            // Determine base_url: strip trailing /v1 etc.
+            let base_url = if fetched.source == "ollama" {
+                url.to_string()
+            } else {
+                url.trim_end_matches('/')
+                    .trim_end_matches("/v1/models")
+                    .trim_end_matches("/v1")
+                    .to_string()
+            };
+
+            // ── Auto-create or reuse endpoint ─────────────────────
+            let cfg = crate::model_manager::load();
+            let endpoint_name = auto_endpoint_name(&base_url, &fetched.source);
+
+            // Check if an endpoint with this name already exists
+            let endpoint_name = if cfg.endpoints.contains_key(&endpoint_name) {
+                let existing = &cfg.endpoints[&endpoint_name];
+                if existing.base_url == base_url {
+                    // Same name + same URL → reuse
+                    println!(
+                        "  Reusing existing endpoint '{}' ({})",
+                        endpoint_name.bright_cyan(),
+                        base_url.dimmed()
+                    );
+                    endpoint_name
+                } else {
+                    // Name collision → generate a unique one
+                    let alt = format!("{}_{}", endpoint_name, cfg.endpoints.len() + 1);
+                    println!(
+                        "  Endpoint name '{}' taken, using '{}' instead",
+                        endpoint_name.dimmed(),
+                        alt.bright_cyan()
+                    );
+                    alt
+                }
+            } else {
+                endpoint_name
+            };
+
+            // ── Conflict check: same model+base_url already configured? ──
+            let dup_aliases = cfg.find_duplicates(model_name, &base_url);
+            if !dup_aliases.is_empty() {
+                println!(
+                    "\n{}  This model+endpoint is already configured under: {}",
+                    "⚠️",
+                    dup_aliases.join(", ").bright_yellow()
+                );
+                println!("  Adding a duplicate alias is allowed but usually unnecessary.");
+            }
+
+            // ── Interactive alias prompt with conflict detection ────
+            let alias = loop {
+                println!(
+                    "  Enter an alias name (suggested: {}), or press Enter to cancel:",
+                    suggested_alias.bright_cyan()
+                );
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_err() {
+                    return;
+                }
+                let input = input.trim().to_string();
+
+                // Empty → cancel
+                if input.is_empty() {
+                    println!("  Cancelled.");
+                    return;
+                }
+
+                // Check if alias already exists
+                let cfg = crate::model_manager::load();
+                if cfg.has_alias(&input) {
+                    let existing = &cfg.models[&input];
+                    println!(
+                        "\n{}  Alias '{}' already exists (model: {}, provider: {}).",
+                        "⚠️",
+                        input.bright_red(),
+                        existing.model.bright_white(),
+                        existing.provider.dimmed()
+                    );
+                    println!("  Overwrite? [y/N] ");
+                    let mut confirm = String::new();
+                    if std::io::stdin().read_line(&mut confirm).is_err() {
+                        return;
+                    }
+                    let confirm = confirm.trim().to_lowercase();
+                    if confirm == "y" || confirm == "yes" {
+                        break input;
+                    }
+                    println!("  Enter a different alias name:");
+                    continue;
+                }
+
+                break input;
+            };
+
+            // ── Build model entry (endpoint-referenced style) ─────
+            let entry = crate::model_manager::ModelEntry {
+                provider: String::new(),   // inherited from endpoint
+                model: model_name.clone(),
+                endpoint: Some(endpoint_name.clone()),
+                base_url: None,            // inherited from endpoint
+                api_key: None,             // inherited from endpoint
+                max_tokens: None,
+                thinking_enabled: None,
+                reasoning_effort: None,
+                temperature: None,
+            };
+
+            let mut cfg = crate::model_manager::load();
+            let overwriting = cfg.has_alias(&alias);
+
+            // Ensure endpoint exists
+            if !cfg.endpoints.contains_key(&endpoint_name) {
+                cfg.endpoints.insert(endpoint_name.clone(), crate::model_manager::EndpointEntry {
+                    provider: provider.to_string(),
+                    base_url: base_url.clone(),
+                    api_key: api_key.clone(),
+                });
+            }
+
+            cfg.add(alias.clone(), entry);
+
+            match crate::model_manager::save(&cfg) {
+                Ok(()) => {
+                    let verb = if overwriting { "Updated" } else { "Saved" };
+                    println!("\n{}  {} model '{}' as alias '{}' in models.toml",
+                        "✅",
+                        verb,
+                        model_name.bright_white(),
+                        alias.bright_green()
+                    );
+                    println!("  Switch to it with: {} {}", "/model".bright_cyan(), alias.bright_white());
+                }
+                Err(e) => {
+                    println!("\n{}  Failed to save models.toml: {}", "❌", e);
+                }
+            }
+        }
+        Err(e) => {
+            println!("\n{}  Failed to fetch models: {}", "❌", e);
+        }
+    }
+}
+
+/// Generate a readable endpoint name from a URL.
+/// e.g. "https://api.deepseek.com/anthropic" → "deepseek"
+///      "http://localhost:11434" → "local"
+///      "https://dashscope.aliyuncs.com/compatible-mode/v1" → "dashscope"
+fn auto_endpoint_name(base_url: &str, source: &str) -> String {
+    if source == "ollama" {
+        return "local_ollama".to_string();
+    }
+    // Extract hostname (strip scheme, port, and path)
+    let host = base_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .split(':')          // strip port
+        .next()
+        .unwrap_or("unknown");
+
+    // Special-case localhost
+    if host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" {
+        return "local".to_string();
+    }
+
+    // e.g. "api.deepseek.com" → "deepseek"
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() >= 2 {
+        let name = parts[parts.len() - 2]; // second-level domain
+        if name.len() >= 3 && name != "api" && name != "com" && name != "org" && name != "net" {
+            return name.to_string();
+        }
+        // Fallback: first meaningful subdomain
+        for part in &parts[..parts.len() - 1] {
+            if *part != "api" && *part != "www" && part.len() >= 3 {
+                return part.to_string();
+            }
+        }
+    }
+    host.replace('.', "_")
 }
 
 /// Save the current terminal (termios) state so it can be restored later.
@@ -918,6 +1436,12 @@ pub async fn run(
                     if input.starts_with("/upload") {
                         let args = input.strip_prefix("/upload").map(|s| s.trim()).unwrap_or("");
                         handle_upload_command(args, &agent).await;
+                        continue;
+                    }
+                    // Model fetch: /model fetch <url> [--key <key>]
+                    if input.starts_with("/model fetch") || input == "/model fetch" {
+                        let args = input.strip_prefix("/model fetch").map(|s| s.trim()).unwrap_or("");
+                        handle_model_fetch_command(args).await;
                         continue;
                     }
                     

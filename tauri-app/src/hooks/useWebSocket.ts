@@ -232,6 +232,31 @@ export const useWebSocket = () => {
     sendRaw({ type: 'set_model', data: { model } });
   }, [sendRaw]);
 
+  // ── Model & endpoint management ────────────────────────────────────
+  const fetchModels = useCallback((url: string, apiKey?: string) => {
+    sendRaw({ type: 'fetch_models', data: { url, api_key: apiKey } });
+  }, [sendRaw]);
+
+  const addModel = useCallback((alias: string, model: string, endpoint: string) => {
+    sendRaw({ type: 'add_model', data: { alias, model, endpoint } });
+  }, [sendRaw]);
+
+  const deleteModel = useCallback((alias: string) => {
+    sendRaw({ type: 'delete_model', data: { alias } });
+  }, [sendRaw]);
+
+  const listEndpoints = useCallback(() => {
+    sendRaw({ type: 'list_endpoints', data: {} });
+  }, [sendRaw]);
+
+  const addEndpoint = useCallback((name: string, provider: string, baseUrl: string, apiKey?: string) => {
+    sendRaw({ type: 'add_endpoint', data: { name, provider, base_url: baseUrl, api_key: apiKey } });
+  }, [sendRaw]);
+
+  const deleteEndpoint = useCallback((name: string) => {
+    sendRaw({ type: 'delete_endpoint', data: { name } });
+  }, [sendRaw]);
+
   const loadSession = useCallback(() => {
     sendRaw({ type: 'load_session', data: {} });
   }, [sendRaw]);
@@ -575,6 +600,35 @@ export const useWebSocket = () => {
 
       case 'model_changed':
         setActiveModel(event.data.alias);
+        break;
+
+      // ── Model & endpoint state sync ──────────────────────────────
+      case 'model_state': {
+        const st = useAgentStore.getState();
+        if (event.data.models) st._updateSlot(st.activeConnectionId ?? 'default', (s) => ({ ...s, availableModels: event.data.models }));
+        if (event.data.endpoints) st._updateSlot(st.activeConnectionId ?? 'default', (s) => ({ ...s, endpoints: event.data.endpoints }));
+        if (event.data.default) st.setActiveModel(event.data.default as string);
+        break;
+      }
+
+      case 'endpoints_list': {
+        const st = useAgentStore.getState();
+        st._updateSlot(st.activeConnectionId ?? 'default', (s) => ({ ...s, endpoints: event.data.endpoints }));
+        break;
+      }
+
+      case 'models_fetched': {
+        // Pass to the ModelsPanel via a global callback (avoids complex state wiring)
+        const cb = (window as any).__onModelsFetched;
+        if (cb) cb(event.data.models, event.data.source, event.data.url);
+        break;
+      }
+
+      case 'model_added':
+      case 'model_deleted':
+      case 'endpoint_added':
+      case 'endpoint_deleted':
+        // model_state will follow with full sync — no per-event UI update needed
         break;
 
       case 'session_available': {
@@ -1067,6 +1121,12 @@ export const useWebSocket = () => {
     sandboxRollback,
     setWorkdirRemote,
     setModelRemote,
+    fetchModels,
+    addModel,
+    deleteModel,
+    listEndpoints,
+    addEndpoint,
+    deleteEndpoint,
     loadSession,
     newSession,
     listSessions,

@@ -23,7 +23,13 @@ export type ClientMessage =
   | UploadFileMessage
   | ListPluginsMessage
   | EnablePluginMessage
-  | DisablePluginMessage;
+  | DisablePluginMessage
+  | FetchModelsMessage
+  | AddModelMessage
+  | DeleteModelMessage
+  | ListEndpointsMessage
+  | AddEndpointMessage
+  | DeleteEndpointMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
@@ -108,7 +114,14 @@ export type ServerEvent =
   | UploadFileResultEvent
   | AgentEvent
   | PluginsListEvent
-  | ModelChangedEvent;
+  | ModelChangedEvent
+  | ModelStateEvent
+  | EndpointsListEvent
+  | ModelsFetchedEvent
+  | ModelAddedEvent
+  | ModelDeletedEvent
+  | EndpointAddedEvent
+  | EndpointDeletedEvent;
 
 export interface SessionMeta {
   id: string;
@@ -468,8 +481,16 @@ export interface ModelInfo {
   provider: string;
   model: string;
   base_url?: string | null;
+  endpoint?: string | null;
   thinking_enabled?: boolean | null;
   reasoning_effort?: string | null;
+}
+
+export interface EndpointInfo {
+  name: string;
+  provider: string;
+  base_url: string;
+  has_api_key: boolean;
 }
 
 export interface NodeCapabilities {
@@ -557,6 +578,36 @@ export interface DisablePluginMessage extends BaseMessage {
   data: { id: string };
 }
 
+export interface FetchModelsMessage extends BaseMessage {
+  type: 'fetch_models';
+  data: { url: string; api_key?: string };
+}
+
+export interface AddModelMessage extends BaseMessage {
+  type: 'add_model';
+  data: { alias: string; model: string; endpoint: string };
+}
+
+export interface DeleteModelMessage extends BaseMessage {
+  type: 'delete_model';
+  data: { alias: string };
+}
+
+export interface ListEndpointsMessage extends BaseMessage {
+  type: 'list_endpoints';
+  data: {};
+}
+
+export interface AddEndpointMessage extends BaseMessage {
+  type: 'add_endpoint';
+  data: { name: string; provider: string; base_url: string; api_key?: string };
+}
+
+export interface DeleteEndpointMessage extends BaseMessage {
+  type: 'delete_endpoint';
+  data: { name: string };
+}
+
 export interface PluginsListEvent extends BaseMessage {
   type: 'plugins_list';
   data: { plugins: PluginInfo[] };
@@ -568,7 +619,51 @@ export interface ModelChangedEvent extends BaseMessage {
     alias: string;
     model: string;
     provider: string;
+    endpoint?: string | null;
   };
+}
+
+export interface ModelStateEvent extends BaseMessage {
+  type: 'model_state';
+  data: {
+    models: ModelInfo[];
+    endpoints: EndpointInfo[];
+    default: string | null;
+  };
+}
+
+export interface EndpointsListEvent extends BaseMessage {
+  type: 'endpoints_list';
+  data: { endpoints: EndpointInfo[] };
+}
+
+export interface ModelsFetchedEvent extends BaseMessage {
+  type: 'models_fetched';
+  data: {
+    models: string[];
+    source: string;
+    url: string;
+  };
+}
+
+export interface ModelAddedEvent extends BaseMessage {
+  type: 'model_added';
+  data: { alias: string; model: string; endpoint: string };
+}
+
+export interface ModelDeletedEvent extends BaseMessage {
+  type: 'model_deleted';
+  data: { alias: string };
+}
+
+export interface EndpointAddedEvent extends BaseMessage {
+  type: 'endpoint_added';
+  data: { name: string; base_url: string };
+}
+
+export interface EndpointDeletedEvent extends BaseMessage {
+  type: 'endpoint_deleted';
+  data: { name: string };
 }
 
 // 工具类型定义
@@ -673,6 +768,7 @@ export interface ConnectionSlot {
   sessionRestoreAvailable: { message_count: number } | null;
   availableModels: ModelInfo[];
   activeModel: string | null;
+  endpoints: EndpointInfo[];
 }
 
 export interface PendingConfirmation {

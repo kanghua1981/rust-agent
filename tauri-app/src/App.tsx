@@ -17,13 +17,15 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
 import { useAgentPool } from './hooks/useAgentPool';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins';
+import { ModelsPanel } from './components/ModelsPanel';
+
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [showConnect, setShowConnect] = useState(false);
 
-  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote } = useWebSocket();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -196,6 +198,7 @@ function App() {
           {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} isConnected={connectionStatus === 'connected'} onListSessions={listSessions} onDeleteSession={deleteSession} onLoadSessionById={loadSessionById} />}
           {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />}
           {activeTab === 'plugins' && <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />}
+          {activeTab === 'models' && <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />}
           {activeTab === 'sandbox' && (
             <SandboxPanel
               onSandboxListChanges={sandboxListChanges}

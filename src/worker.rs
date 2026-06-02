@@ -359,6 +359,7 @@ async fn run_async(
             "provider": entry.provider,
             "model": entry.model,
             "base_url": entry.base_url,
+            "endpoint": entry.endpoint,
             "thinking_enabled": entry.thinking_enabled,
             "reasoning_effort": entry.reasoning_effort,
         })
@@ -530,6 +531,18 @@ enum ControlCmd {
     /// 上传文件到 workspace 的 uploads/ 目录。
     /// (文件名, base64内容, 可选MIME类型)
     UploadFile(String, Vec<u8>, Option<String>),
+    /// 列出所有端点。
+    ListEndpoints,
+    /// 从远程 API 拉取模型列表。
+    FetchModels { url: String, api_key: Option<String> },
+    /// 添加模型条目。
+    AddModel { alias: String, model: String, endpoint_name: String },
+    /// 删除模型条目。
+    DeleteModel(String),
+    /// 添加端点定义。
+    AddEndpoint { name: String, provider: String, base_url: String, api_key: Option<String> },
+    /// 删除端点定义。
+    DeleteEndpoint(String),
 }
 
 async fn handle_control_cmd(
@@ -540,11 +553,14 @@ async fn handle_control_cmd(
     match ctrl {
         ControlCmd::SetModel(alias) => {
             if let Some(resolved) = agent.models_cfg.resolve(&alias) {
+                let endpoint_name = agent.models_cfg.models.get(&alias)
+                    .and_then(|e| e.endpoint.clone());
                 agent.switch_model(&resolved);
                 ws_output.emit_public("model_changed", serde_json::json!({
                     "alias": alias,
                     "model": resolved.model,
                     "provider": resolved.provider.to_string(),
+                    "endpoint": endpoint_name,
                 }));
             } else {
                 ws_output.emit_public("warning", serde_json::json!({
@@ -778,6 +794,145 @@ async fn handle_control_cmd(
                 }
             } else {
                 ws_output.emit_public("error", serde_json::json!({ "message": "Plugin system not available" }));
+            }
+        }
+
+        // ── Model & endpoint management ────────────────────────────────
+
+        ControlCmd::ListEndpoints => {
+            let cfg = crate::model_manager::load();
+            let eps: Vec<serde_json::Value> = cfg.endpoints.iter().map(|(name, ep)| {
+                serde_json::json!({
+                    "name": name,
+                    "provider": ep.provider,
+                    "base_url": ep.base_url,
+                    "has_api_key": ep.api_key.is_some(),
+                })
+            }).collect();
+            ws_output.emit_public("endpoints_list", serde_json::json!({ "endpoints": eps }));
+        }
+
+        ControlCmd::FetchModels { url, api_key } => {
+            match crate::model_manager::fetch_models(&url, api_key.as_deref()).await {
+                Ok(fetched) => {
+                    ws_output.emit_public("models_fetched", serde_json::json!({
+                        "models": fetched.models,
+                        "source": fetched.source,
+                        "url": url,
+                    }));
+                }
+                Err(e) => {
+                    ws_output.emit_public("error", serde_json::json!({
+                        "message": format!("Failed to fetch models: {:#}", e),
+                    }));
+                }
+            }
+        }
+
+        ControlCmd::AddModel { alias, model, endpoint_name } => {
+            let mut cfg = crate::model_manager::load();
+            if !cfg.endpoints.contains_key(&endpoint_name) {
+                ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("Endpoint '{}' not found", endpoint_name),
+                }));
+            } else {
+                cfg.models.insert(alias.clone(), crate::model_manager::ModelEntry {
+                    provider: String::new(),
+                    model: model.clone(),
+                    endpoint: Some(endpoint_name.clone()),
+                    base_url: None,
+                    api_key: None,
+                    max_tokens: None,
+                    thinking_enabled: None,
+                    reasoning_effort: None,
+                    temperature: None,
+                });
+                match crate::model_manager::save(&cfg) {
+                    Ok(()) => {
+                        agent.models_cfg = cfg;
+                        emit_model_state(ws_output, &agent.models_cfg);
+                        ws_output.emit_public("model_added", serde_json::json!({
+                            "alias": alias, "model": model, "endpoint": endpoint_name,
+                        }));
+                    }
+                    Err(e) => ws_output.emit_public("error", serde_json::json!({
+                        "message": format!("Failed to save: {:#}", e),
+                    })),
+                }
+            }
+        }
+
+        ControlCmd::DeleteModel(alias) => {
+            let mut cfg = crate::model_manager::load();
+            if cfg.remove(&alias) {
+                // If the deleted model was active, clear the alias
+                if agent.config.model_alias.as_deref() == Some(&alias) {
+                    agent.config.model_alias = None;
+                }
+                match crate::model_manager::save(&cfg) {
+                    Ok(()) => {
+                        agent.models_cfg = cfg;
+                        emit_model_state(ws_output, &agent.models_cfg);
+                        ws_output.emit_public("model_deleted", serde_json::json!({ "alias": alias }));
+                    }
+                    Err(e) => ws_output.emit_public("error", serde_json::json!({
+                        "message": format!("Failed to save: {:#}", e),
+                    })),
+                }
+            } else {
+                ws_output.emit_public("warning", serde_json::json!({
+                    "message": format!("Model alias '{}' not found", alias),
+                }));
+            }
+        }
+
+        ControlCmd::AddEndpoint { name, provider, base_url, api_key } => {
+            let mut cfg = crate::model_manager::load();
+            cfg.endpoints.insert(name.clone(), crate::model_manager::EndpointEntry {
+                provider,
+                base_url: base_url.clone(),
+                api_key,
+            });
+            match crate::model_manager::save(&cfg) {
+                Ok(()) => {
+                    agent.models_cfg = cfg;
+                    emit_model_state(ws_output, &agent.models_cfg);
+                    ws_output.emit_public("endpoint_added", serde_json::json!({
+                        "name": name, "base_url": base_url,
+                    }));
+                }
+                Err(e) => ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("Failed to save: {:#}", e),
+                })),
+            }
+        }
+
+        ControlCmd::DeleteEndpoint(name) => {
+            let mut cfg = crate::model_manager::load();
+            // Check for models referencing this endpoint
+            let using: Vec<String> = cfg.models.iter()
+                .filter(|(_, m)| m.endpoint.as_deref() == Some(&name))
+                .map(|(a, _)| a.clone())
+                .collect();
+            if !using.is_empty() {
+                ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("Endpoint '{}' is referenced by: {}. Delete those models first.", name, using.join(", ")),
+                }));
+            } else if cfg.endpoints.remove(&name).is_some() {
+                match crate::model_manager::save(&cfg) {
+                    Ok(()) => {
+                        agent.models_cfg = cfg;
+                        emit_model_state(ws_output, &agent.models_cfg);
+                        ws_output.emit_public("endpoint_deleted", serde_json::json!({ "name": name }));
+                    }
+                    Err(e) => ws_output.emit_public("error", serde_json::json!({
+                        "message": format!("Failed to save: {:#}", e),
+                    })),
+                }
+            } else {
+                ws_output.emit_public("warning", serde_json::json!({
+                    "message": format!("Endpoint '{}' not found", name),
+                }));
             }
         }
 
@@ -1085,6 +1240,74 @@ fn dispatch_ws_message(
             let _ = ctrl_tx.send(ControlCmd::UploadFile(name, data, mime_type));
         }
 
+        // ── Model & endpoint management ────────────────────────────────────
+        "list_endpoints" => {
+            let _ = ctrl_tx.send(ControlCmd::ListEndpoints);
+        }
+        "fetch_models" => {
+            let url = msg.get("data").and_then(|d| d.get("url"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let api_key = msg.get("data").and_then(|d| d.get("api_key"))
+                .and_then(|v| v.as_str()).map(|s| s.to_string());
+            if url.is_empty() {
+                output.emit_public("error", serde_json::json!({
+                    "message": "fetch_models: missing 'data.url'"
+                }));
+            } else {
+                let _ = ctrl_tx.send(ControlCmd::FetchModels { url, api_key });
+            }
+        }
+        "add_model" => {
+            let alias = msg.get("data").and_then(|d| d.get("alias"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let model = msg.get("data").and_then(|d| d.get("model"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let endpoint_name = msg.get("data").and_then(|d| d.get("endpoint"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if alias.is_empty() || model.is_empty() || endpoint_name.is_empty() {
+                output.emit_public("error", serde_json::json!({
+                    "message": "add_model: missing alias/model/endpoint"
+                }));
+            } else {
+                let _ = ctrl_tx.send(ControlCmd::AddModel { alias, model, endpoint_name });
+            }
+        }
+        "delete_model" => {
+            if let Some(alias) = msg.get("data").and_then(|d| d.get("alias")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::DeleteModel(alias.to_string()));
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "delete_model: missing 'data.alias'"
+                }));
+            }
+        }
+        "add_endpoint" => {
+            let name = msg.get("data").and_then(|d| d.get("name"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let provider = msg.get("data").and_then(|d| d.get("provider"))
+                .and_then(|v| v.as_str()).unwrap_or("openai").to_string();
+            let base_url = msg.get("data").and_then(|d| d.get("base_url"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let api_key = msg.get("data").and_then(|d| d.get("api_key"))
+                .and_then(|v| v.as_str()).map(|s| s.to_string());
+            if name.is_empty() || base_url.is_empty() {
+                output.emit_public("error", serde_json::json!({
+                    "message": "add_endpoint: missing name/base_url"
+                }));
+            } else {
+                let _ = ctrl_tx.send(ControlCmd::AddEndpoint { name, provider, base_url, api_key });
+            }
+        }
+        "delete_endpoint" => {
+            if let Some(name) = msg.get("data").and_then(|d| d.get("name")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::DeleteEndpoint(name.to_string()));
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "delete_endpoint: missing 'data.name'"
+                }));
+            }
+        }
+
         other => {
             tracing::debug!("Ignoring unknown WS message type: '{}'", other);
         }
@@ -1106,6 +1329,34 @@ fn session_info_json(workdir: &Path) -> serde_json::Value {
         }),
         _ => serde_json::json!({ "exists": false }),
     }
+}
+
+/// Emit the current model + endpoint state so the frontend stays in sync.
+fn emit_model_state(ws_output: &Arc<WsOutput>, cfg: &crate::model_manager::ModelsConfig) {
+    let models: Vec<serde_json::Value> = cfg.models.iter().map(|(alias, entry)| {
+        serde_json::json!({
+            "alias": alias,
+            "provider": entry.provider,
+            "model": entry.model,
+            "base_url": entry.base_url,
+            "endpoint": entry.endpoint,
+            "thinking_enabled": entry.thinking_enabled,
+            "reasoning_effort": entry.reasoning_effort,
+        })
+    }).collect();
+    let endpoints: Vec<serde_json::Value> = cfg.endpoints.iter().map(|(name, ep)| {
+        serde_json::json!({
+            "name": name,
+            "provider": ep.provider,
+            "base_url": ep.base_url,
+            "has_api_key": ep.api_key.is_some(),
+        })
+    }).collect();
+    ws_output.emit_public("model_state", serde_json::json!({
+        "models": models,
+        "endpoints": endpoints,
+        "default": cfg.default,
+    }));
 }
 
 fn messages_to_json(messages: &[crate::conversation::Message]) -> Vec<serde_json::Value> {

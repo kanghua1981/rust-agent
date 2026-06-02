@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface SandboxFileChange {
@@ -51,6 +51,7 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
     sessionRestoreAvailable: null,
     availableModels: [],
     activeModel: null,
+    endpoints: [],
   };
 }
 
@@ -96,6 +97,7 @@ interface AgentState {
 
   availableModels: ModelInfo[];
   activeModel: string | null;
+  endpoints: EndpointInfo[];
 
   // ── Global shared state (not per-connection) ──
   clusterToken: string;
@@ -231,6 +233,7 @@ const initialState = {
 
   availableModels: [] as ModelInfo[],
   activeModel: null as string | null,
+  endpoints: [] as import('../types/agent').EndpointInfo[],
 
   // ── Global shared ──
   clusterToken: '',
@@ -448,6 +451,7 @@ export const useAgentStore = create<AgentState>()(
               plugins: [],
               availableModels: [],
               activeModel: null,
+              endpoints: [],
             });
           }
         } else {
@@ -824,6 +828,7 @@ export const useAgentStore = create<AgentState>()(
           plugins: [],
           availableModels: [],
           activeModel: null,
+          endpoints: [],
         })),
       };
     },
