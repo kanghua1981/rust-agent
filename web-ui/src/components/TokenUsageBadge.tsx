@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useAgentStore } from '../stores/agentStore';
+import type { TokenUsage } from '../types/agent';
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -7,8 +7,7 @@ function formatTokens(n: number): string {
   return n.toLocaleString();
 }
 
-export const TokenUsageBadge: React.FC = () => {
-  const tokenUsage = useAgentStore(s => s.tokenUsage);
+export const TokenUsageBadge: React.FC<{ tokenUsage: TokenUsage | null }> = ({ tokenUsage }) => {
   const [showTooltip, setShowTooltip] = useState(false);
 
   if (!tokenUsage || typeof tokenUsage.input_tokens !== 'number' || typeof tokenUsage.output_tokens !== 'number') {

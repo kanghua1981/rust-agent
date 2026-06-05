@@ -152,6 +152,7 @@ function App() {
     }}>
       <ErrorBoundary>
         <Header
+          activeConnectionId={activeConnectionId}
           onOpenConnect={() => setShowConnect(true)}
           onDisconnect={handleDisconnect}
           onNewSession={newSession}

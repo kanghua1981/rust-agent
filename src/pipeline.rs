@@ -19,6 +19,13 @@ use anyhow::Result;
 use crate::agent::Agent;
 use crate::output::PlanReview;
 
+/// Outcome of the interactive plan review step.
+struct PlanReviewOutcome {
+    /// Optional user-provided context (ground truth) that should be prepended
+    /// to the task for the executor.
+    user_context: String,
+}
+
 pub struct PipelineRunner;
 
 impl PipelineRunner {
@@ -29,54 +36,13 @@ impl PipelineRunner {
 
         // ── Stage 1: Planner (with interactive refinement) ─────────────────
         let mut plan = agent.generate_plan(task).await?;
+        let outcome = Self::review_plan_interactively(agent, task, &mut plan, pipeline_cfg.as_ref()).await?;
 
-        // ── Interactive plan review ──────────────────────────────────────────
-        let require_confirm = pipeline_cfg
-            .as_ref()
-            .map(|p| p.confirm_plan())
-            .unwrap_or(true);
-
-        let mut user_context = String::new();
-
-        if require_confirm {
-            const MAX_REFINE_ROUNDS: usize = 5;
-            for round in 0..MAX_REFINE_ROUNDS {
-                let review = agent.output_arc().review_plan(&plan);
-                match review {
-                    PlanReview::Approve => break,
-                    PlanReview::ApproveWithContext(ctx) => {
-                        user_context = ctx;
-                        break;
-                    }
-                    PlanReview::Reject => {
-                        agent.output_arc().on_warning("Pipeline cancelled by user.");
-                        return Ok("Pipeline cancelled.".to_string());
-                    }
-                    PlanReview::Refine(feedback) => {
-                        if round + 1 >= MAX_REFINE_ROUNDS {
-                            agent.output_arc().on_warning(
-                                "⚠️  Max plan refinement rounds reached. Proceeding with current plan.",
-                            );
-                            break;
-                        }
-                        agent.output_arc().on_warning(&format!(
-                            "🔄 Refining plan (round {}/{}) based on your feedback…",
-                            round + 1,
-                            MAX_REFINE_ROUNDS
-                        ));
-                        // Re-generate plan with user feedback injected
-                        let refined_task = format!(
-                            "{}\n\n--- USER FEEDBACK ON PREVIOUS PLAN ---\n{}\n--- END FEEDBACK ---\n\n\
-                             Please revise the plan based on this feedback.",
-                            task, feedback
-                        );
-                        plan = agent.generate_plan(&refined_task).await?;
-                    }
-                }
-            }
+        if outcome.is_none() {
+            return Ok("Pipeline cancelled.".to_string());
         }
+        let user_context = outcome.unwrap().user_context;
 
-        // Build effective task string: prepend user context if provided at review time.
         let effective_task = if user_context.is_empty() {
             task.to_string()
         } else {
@@ -154,54 +120,16 @@ impl PipelineRunner {
     /// Suitable for medium-complexity tasks where verification overhead
     /// is not justified (e.g. multi-file refactors within a single module).
     pub async fn run_plan_and_execute(agent: &mut Agent, task: &str) -> Result<String> {
+        let pipeline_cfg = agent.pipeline_config().cloned();
+
         // ── Stage 1: Planner (with interactive refinement) ────────────────
         let mut plan = agent.generate_plan(task).await?;
+        let outcome = Self::review_plan_interactively(agent, task, &mut plan, pipeline_cfg.as_ref()).await?;
 
-        // ── Interactive plan review ──────────────────────────────────────
-        let pipeline_cfg = agent.pipeline_config().cloned();
-        let require_confirm = pipeline_cfg
-            .as_ref()
-            .map(|p| p.confirm_plan())
-            .unwrap_or(true);
-
-        let mut user_context = String::new();
-
-        if require_confirm {
-            const MAX_REFINE_ROUNDS: usize = 5;
-            for round in 0..MAX_REFINE_ROUNDS {
-                let review = agent.output_arc().review_plan(&plan);
-                match review {
-                    PlanReview::Approve => break,
-                    PlanReview::ApproveWithContext(ctx) => {
-                        user_context = ctx;
-                        break;
-                    }
-                    PlanReview::Reject => {
-                        agent.output_arc().on_warning("Plan+Execute cancelled by user.");
-                        return Ok("Pipeline cancelled.".to_string());
-                    }
-                    PlanReview::Refine(feedback) => {
-                        if round + 1 >= MAX_REFINE_ROUNDS {
-                            agent.output_arc().on_warning(
-                                "⚠️  Max plan refinement rounds reached. Proceeding with current plan.",
-                            );
-                            break;
-                        }
-                        agent.output_arc().on_warning(&format!(
-                            "🔄 Refining plan (round {}/{}) based on your feedback…",
-                            round + 1,
-                            MAX_REFINE_ROUNDS
-                        ));
-                        let refined_task = format!(
-                            "{}\n\n--- USER FEEDBACK ON PREVIOUS PLAN ---\n{}\n--- END FEEDBACK ---\n\n\
-                             Please revise the plan based on this feedback.",
-                            task, feedback
-                        );
-                        plan = agent.generate_plan(&refined_task).await?;
-                    }
-                }
-            }
+        if outcome.is_none() {
+            return Ok("Pipeline cancelled.".to_string());
         }
+        let user_context = outcome.unwrap().user_context;
 
         let effective_task = if user_context.is_empty() {
             task.to_string()
@@ -237,6 +165,75 @@ impl PipelineRunner {
             ));
         }
         Ok(result)
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Interactive plan review loop shared by `run()` and `run_plan_and_execute()`.
+    ///
+    /// Returns `Ok(None)` if the user rejected the plan, `Ok(Some(outcome))` on
+    /// approve (with optional user context).
+    async fn review_plan_interactively(
+        agent: &mut Agent,
+        task: &str,
+        plan: &mut String,
+        pipeline_cfg: Option<&crate::model_manager::PipelineConfig>,
+    ) -> Result<Option<PlanReviewOutcome>> {
+        let require_confirm = pipeline_cfg
+            .map(|p| p.confirm_plan())
+            .unwrap_or(false); // default: no confirmation needed in headless/CLI mode
+
+        if !require_confirm {
+            return Ok(Some(PlanReviewOutcome {
+                user_context: String::new(),
+            }));
+        }
+
+        const MAX_REFINE_ROUNDS: usize = 5;
+        for round in 0..MAX_REFINE_ROUNDS {
+            let review = agent.output_arc().review_plan(plan);
+            match review {
+                PlanReview::Approve => {
+                    return Ok(Some(PlanReviewOutcome {
+                        user_context: String::new(),
+                    }));
+                }
+                PlanReview::ApproveWithContext(ctx) => {
+                    return Ok(Some(PlanReviewOutcome {
+                        user_context: ctx,
+                    }));
+                }
+                PlanReview::Reject => {
+                    agent.output_arc().on_warning("Pipeline cancelled by user.");
+                    return Ok(None);
+                }
+                PlanReview::Refine(feedback) => {
+                    if round + 1 >= MAX_REFINE_ROUNDS {
+                        agent.output_arc().on_warning(
+                            "⚠️  Max plan refinement rounds reached. Proceeding with current plan.",
+                        );
+                        return Ok(Some(PlanReviewOutcome {
+                            user_context: String::new(),
+                        }));
+                    }
+                    agent.output_arc().on_warning(&format!(
+                        "🔄 Refining plan (round {}/{}) based on your feedback…",
+                        round + 1,
+                        MAX_REFINE_ROUNDS
+                    ));
+                    let refined_task = format!(
+                        "{}\n\n--- USER FEEDBACK ON PREVIOUS PLAN ---\n{}\n--- END FEEDBACK ---\n\n\
+                         Please revise the plan based on this feedback.",
+                        task, feedback
+                    );
+                    *plan = agent.generate_plan(&refined_task).await?;
+                }
+            }
+        }
+        // Unreachable (loop always returns), but satisfy the compiler:
+        Ok(Some(PlanReviewOutcome {
+            user_context: String::new(),
+        }))
     }
 }
 

@@ -166,6 +166,41 @@ const COMPLEX_RULES: &[HeuristicRule] = &[
 /// (score is within the ambiguity zone).
 pub fn classify_heuristic(input: &str) -> Option<TaskComplexity> {
     let lower = input.to_lowercase();
+
+    // ── Quick question detection ───────────────────────────────────────────
+    // If the input looks like a pure question (starts with a question word
+    // or ends with "?" and is short), it's almost certainly Simple.
+    // This prevents false keyword matches like "explain how to implement X"
+    // from being misclassified as Medium/Complex.
+    let is_likely_question = input.trim().ends_with('?')
+        || lower.starts_with("what ")
+        || lower.starts_with("how ")
+        || lower.starts_with("why ")
+        || lower.starts_with("can you ")
+        || lower.starts_with("could you ")
+        || lower.starts_with("explain ")
+        || lower.starts_with("tell me ")
+        || lower.starts_with("show me ")
+        || lower.starts_with("is ")
+        || lower.starts_with("are ")
+        || lower.starts_with("does ")
+        || lower.starts_with("do ")
+        || lower.starts_with("what's ")
+        || lower.starts_with("请")
+        || lower.starts_with("什么是")
+        || lower.starts_with("为什么")
+        || lower.starts_with("怎么")
+        || lower.starts_with("如何");
+
+    if is_likely_question {
+        let char_count = input.chars().count();
+        // Short questions are definitely Simple
+        if char_count <= 200 {
+            return Some(TaskComplexity::Simple);
+        }
+        // Longer questions might still be Simple, but bias the score downward
+    }
+
     let mut score: i32 = 0;
 
     // Apply simple rules

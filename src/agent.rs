@@ -159,6 +159,27 @@ pub struct Agent {
     pub context_engine: Box<dyn context::ContextEngine>,
 }
 
+/// Feature flags controlling the unified tool loop.
+///
+/// The same `run_tool_loop()` powers `process_message` (BasicLoop),
+/// `run_pipeline_stage` (Executor / Checker), and `generate_plan` (Planner).
+/// Each caller picks the subset of features it needs.
+#[derive(Clone)]
+struct ToolLoopOptions {
+    /// Role name for LLM calls and token tracking ("agent", "planner", "executor", "checker").
+    pub role: String,
+    /// Enable loop-detection guardrails (tool-hash + mutation tracking).
+    pub enable_guardrails: bool,
+    /// Check for Ctrl-\ guidance injection between iterations.
+    pub enable_guidance: bool,
+    /// Emit `on_file_created` notifications after write/edit/multi_edit (only meaningful
+    /// for the main conversation).
+    pub notify_file_created: bool,
+    /// Handle `upload_image` tool results by injecting base64 image blocks into the
+    /// conversation.
+    pub handle_upload_image: bool,
+}
+
 impl Agent {
     /// Enable or disable sandbox mode dynamically
     pub fn set_sandbox_enabled(&mut self, enabled: bool) {
@@ -545,67 +566,6 @@ impl Agent {
             || lower.contains("overloaded")
     }
 
-    /// Call the LLM with automatic retry for transient network errors
-    /// (DNS failures, connection resets, timeouts, 5xx server errors, etc.).
-    /// Uses exponential backoff: 2s, 4s, 8s between retries.
-    async fn call_llm_with_retry(
-        &self,
-        conversation: &Conversation,
-        tools: &[crate::tools::ToolDefinition],
-    ) -> Result<crate::llm::LlmResponse> {
-        // Show which model is handling this turn
-        let model_name = self.config.model_alias.as_deref().unwrap_or(&self.config.model).to_string();
-        self.output.on_role_header("🤖 Agent", &model_name);
-        self.output.on_thinking();
-
-        let mut last_err = None;
-        for attempt in 0..=Self::LLM_MAX_RETRIES {
-            let result = match self.config.provider {
-                Provider::Anthropic => {
-                    streaming::stream_anthropic_response(
-                        &self.config,
-                        conversation,
-                        tools,
-                        &*self.output,
-                    )
-                    .await
-                }
-                Provider::OpenAI | Provider::Compatible => {
-                    streaming::stream_openai_response(
-                        &self.config,
-                        conversation,
-                        tools,
-                        &*self.output,
-                    )
-                    .await
-                }
-            };
-
-            match result {
-                Ok(response) => return Ok(response),
-                Err(e) => {
-                    let err_msg = format!("{}", e);
-                    let is_transient = Self::is_transient_error(&err_msg);
-                    if is_transient && attempt < Self::LLM_MAX_RETRIES {
-                        let delay = 2u64.pow(attempt + 1);
-                        self.output.on_warning(&format!(
-                            "API request failed (attempt {}/{}): {}. Retrying in {}s...",
-                            attempt + 1,
-                            Self::LLM_MAX_RETRIES + 1,
-                            err_msg,
-                            delay
-                        ));
-                        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-                        last_err = Some(e);
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM request failed after retries")))
-    }
-
     /// Call the LLM using the config for a specific role.
     ///
     /// Falls back to `self.config` when the role is not configured.
@@ -624,6 +584,7 @@ impl Agent {
             "checker"    => "🔍 Checker",
             "router"     => "🔀 Router",
             "summarizer" => "📝 Summarizer",
+            "agent"      => "🤖 Agent",
             other        => other,
         };
         // Show role banner (visible even when pipeline uses a different model)
@@ -820,21 +781,7 @@ impl Agent {
         defs
     }
 
-    /// Inject a pipeline execution summary into the main conversation so
-    /// follow-up messages can reference what was just done.
-    fn inject_pipeline_context(&mut self, task: &str, result: &str) {
-        let truncated_result = crate::ui::truncate_str(result, 2000);
-        let summary = format!(
-            "[Pipeline completed] Task: {}\n\nResult summary:\n{}",
-            crate::ui::truncate_str(task, 500),
-            truncated_result
-        );
-        // Add as a user→assistant exchange so the conversation has context
-        self.conversation.add_message(Message::user(task));
-        self.conversation.add_message(Message::assistant(vec![
-            ContentBlock::Text { text: summary },
-        ]));
-    }
+
 
     /// 发射 `router.decision` intercepting hook，允许插件覆盖路由模式。
     /// 脚本失败/超时均回退为原模式，不阻断主流程。
@@ -938,7 +885,7 @@ impl Agent {
                 .to_string();
         explain_conv.add_message(Message::user(&prompt));
 
-        match self.call_llm_with_retry(&explain_conv, &[]).await {
+        match self.call_llm_as_role("agent", &explain_conv, &[]).await {
             Ok(response) => {
                 let text: String = response
                     .content
@@ -1010,6 +957,354 @@ impl Agent {
         }
     }
 
+    // ── Unified tool loop ─────────────────────────────────────────────────
+
+    /// Single unified tool loop that powers `process_message` (BasicLoop),
+    /// `run_pipeline_stage` (Executor / Checker), and `generate_plan` (Planner).
+    ///
+    /// Each caller selects the subset of features via `opts` while the core
+    /// LLM→tools→results→context cycle is shared.
+    async fn run_tool_loop(
+        &mut self,
+        conversation: &mut Conversation,
+        tools: &[crate::tools::ToolDefinition],
+        opts: &ToolLoopOptions,
+    ) -> Result<String> {
+        let max_iterations = self.config.max_tool_iterations;
+        let mut final_text = String::new();
+        let mut iterations = 0;
+
+        loop {
+            // ── 1. Interrupt check ────────────────────────────────────────
+            if self.is_interrupted() {
+                self.output.on_warning("Interrupted by user.");
+                break;
+            }
+
+            // ── 2. Guardrails (optional) ─────────────────────────────────
+            if opts.enable_guardrails {
+                self.check_loop_guardrails(iterations);
+            }
+
+            // ── 3. Service event drain ───────────────────────────────────
+            self.drain_service_events();
+
+            // ── 4. Iteration guard ───────────────────────────────────────
+            iterations += 1;
+            if iterations > max_iterations {
+                self.output.on_warning(&format!(
+                    "Reached maximum tool iterations ({}). Stopping.",
+                    max_iterations
+                ));
+                break;
+            }
+
+            // ── 5. Guidance injection (optional, Ctrl-\) ─────────────────
+            if opts.enable_guidance && is_guidance_requested() {
+                clear_guidance();
+                if let Some(text) = self.output.inject_guidance() {
+                    conversation.system_prompt.push_str(&format!(
+                        "\n\n[⚡ USER GUIDANCE]: {}",
+                        text
+                    ));
+                    self.output
+                        .on_warning("💡 Guidance injected into executor context.");
+                }
+            }
+
+            // ── 6. Tool pair integrity ───────────────────────────────────
+            context::ensure_tool_pair_integrity(&mut conversation.messages);
+
+            // ── 7. LLM call ──────────────────────────────────────────────
+            let response =
+                self.call_llm_as_role(&opts.role, conversation, tools).await?;
+
+            // ── 8. Token tracking ────────────────────────────────────────
+            if let Some(ref usage) = response.usage {
+                self.track_tokens(&opts.role, usage);
+            }
+
+            // ── 9. Post-streaming interrupt ──────────────────────────────
+            if self.is_interrupted() {
+                let partial: Vec<ContentBlock> = response
+                    .content
+                    .into_iter()
+                    .filter(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()))
+                    .collect();
+                if !partial.is_empty() {
+                    conversation.add_message(Message::assistant(partial));
+                }
+                break;
+            }
+
+            // ── 10. Collect text & detect tool use ───────────────────────
+            let has_tool_use = response
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+
+            for block in &response.content {
+                if let ContentBlock::Text { text } = block {
+                    if !text.is_empty() {
+                        final_text = text.clone();
+                        let role_cfg = self
+                            .role_configs
+                            .get(&opts.role)
+                            .unwrap_or(&self.config);
+                        if role_cfg.provider != Provider::Anthropic {
+                            self.output.on_assistant_text(text);
+                        }
+                    }
+                }
+            }
+
+            // ── 11. Add assistant message ────────────────────────────────
+            conversation.add_message(Message::assistant(response.content.clone()));
+
+            if !has_tool_use {
+                break;
+            }
+
+            // ── 12. Extract tool uses ────────────────────────────────────
+            let tool_uses: Vec<_> = response
+                .content
+                .iter()
+                .filter_map(|block| {
+                    if let ContentBlock::ToolUse { id, name, input } = block {
+                        Some((id.clone(), name.clone(), input.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // ── call_node parallel pre-execution ─────────────────────────
+            let parallel_call_nodes: Vec<_> = tool_uses
+                .iter()
+                .filter(|(_, name, _)| name == "call_node")
+                .collect();
+            let mut call_node_cache: HashMap<String, crate::tools::ToolResult> =
+                HashMap::new();
+            if parallel_call_nodes.len() > 1 {
+                self.output.on_warning(&format!(
+                    "[call_node] Running {} nodes in parallel…",
+                    parallel_call_nodes.len()
+                ));
+                let futs = parallel_call_nodes.iter().map(|(id, name, input)| {
+                    let id = id.clone();
+                    let exec = self.tool_executor.execute(name, input);
+                    async move { (id, exec.await) }
+                });
+                let paired = futures::future::join_all(futs).await;
+                for (id, result) in paired {
+                    call_node_cache.insert(id, result);
+                }
+            }
+
+            // ── 13. Execute each tool ────────────────────────────────────
+            for (tool_id, tool_name, tool_input) in tool_uses {
+                self.output
+                    .on_tool_use(&tool_name, &tool_input, &tool_id);
+
+                // Virtual tool: ask_user
+                if tool_name == "ask_user" {
+                    let question = tool_input
+                        .get("question")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Could you clarify?");
+                    let answer = self.output.ask_user(question);
+                    conversation.add_message(Message::tool_result(
+                        &tool_id,
+                        &format!("User's answer: {}", answer),
+                        false,
+                    ));
+                    continue;
+                }
+
+                // Confirmation for dangerous tools
+                let confirm_level = needs_confirmation(&tool_name, &tool_input);
+                if confirm_level != ConfirmationLevel::None {
+                    if confirm_level == ConfirmationLevel::HighRisk {
+                        self.output.on_warning(&format!(
+                            "⚠️ HIGH RISK: '{}' targets a protected path or dangerous command pattern.",
+                            tool_name
+                        ));
+                    }
+                    let hook_decision =
+                        self.check_confirm_via_hook(&tool_name, &tool_input).await;
+                    let approved = match hook_decision {
+                        Some(decision) => decision,
+                        None => {
+                            let action =
+                                build_confirm_action(&tool_name, &tool_input);
+                            let mut ui_approved = false;
+                            loop {
+                                let result = self.output.confirm(&action);
+                                match result {
+                                    crate::confirm::ConfirmResult::Yes
+                                    | crate::confirm::ConfirmResult::AlwaysYes => {
+                                        ui_approved = true;
+                                        break;
+                                    }
+                                    crate::confirm::ConfirmResult::No => break,
+                                    crate::confirm::ConfirmResult::Clarify(question) => {
+                                        let explanation = self
+                                            .explain_tool_action(
+                                                &tool_name,
+                                                &tool_input,
+                                                &question,
+                                            )
+                                            .await;
+                                        self.output.on_assistant_text(&explanation);
+                                    }
+                                }
+                            }
+                            ui_approved
+                        }
+                    };
+                    if !approved {
+                        conversation.add_message(Message::tool_result(
+                            &tool_id,
+                            "User declined to execute this operation.",
+                            true,
+                        ));
+                        continue;
+                    }
+                }
+
+                // Execute (with cached call_node result or diff preview)
+                let result = if let Some(cached) = call_node_cache.remove(&tool_id) {
+                    cached
+                } else if matches!(
+                    tool_name.as_str(),
+                    "edit_file" | "multi_edit_file" | "write_file"
+                ) {
+                    self.execute_with_diff(&tool_name, &tool_input).await
+                } else {
+                    self.tool_executor.execute(&tool_name, &tool_input).await
+                };
+
+                self.output.on_tool_result(&tool_name, &result);
+
+                // file_created notification (optional)
+                if opts.notify_file_created
+                    && !result.is_error
+                    && matches!(
+                        tool_name.as_str(),
+                        "write_file" | "edit_file" | "multi_edit_file"
+                    )
+                {
+                    if let Some(path_str) =
+                        tool_input.get("path").and_then(|v| v.as_str())
+                    {
+                        let abs_path = self.project_dir.join(path_str);
+                        self.output
+                            .on_file_created(&abs_path.to_string_lossy());
+                    }
+                }
+
+                // Guardrail tracking (optional)
+                if opts.enable_guardrails {
+                    let args_hash =
+                        Self::hash_tool_args(&tool_name, &tool_input);
+                    let entry = self
+                        .turn_tool_call_hashes
+                        .entry((tool_name.clone(), args_hash))
+                        .or_insert(0);
+                    *entry += 1;
+
+                    let is_mutation = !result.is_error
+                        && matches!(
+                            tool_name.as_str(),
+                            "write_file" | "edit_file" | "multi_edit_file"
+                        );
+                    if is_mutation {
+                        self.turns_without_mutation = 0;
+                    }
+                }
+
+                // Persistent memory recording
+                self.record_tool_to_memory(&tool_name, &tool_input, &result);
+
+                // upload_image handling (optional)
+                if opts.handle_upload_image
+                    && tool_name == "upload_image"
+                    && !result.is_error
+                {
+                    if let Some(path_value) = tool_input.get("path") {
+                        if let Some(path_str) = path_value.as_str() {
+                            let path = if path_str.starts_with('/') {
+                                std::path::Path::new(path_str).to_path_buf()
+                            } else {
+                                self.project_dir.join(path_str)
+                            };
+                            if let Ok((mime_type, base64_data)) =
+                                self.read_image_to_base64(&path)
+                            {
+                                let image_block = ContentBlock::Image {
+                                    source: ImageSource::Base64 {
+                                        media_type: mime_type,
+                                        data: base64_data,
+                                    },
+                                    mime_type: None,
+                                };
+                                let image_message = Message {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: Role::User,
+                                    content: vec![image_block],
+                                };
+                                conversation.add_message(image_message);
+                            }
+                        }
+                    }
+                }
+
+                // Add tool result to conversation
+                conversation.add_message(Message::tool_result(
+                    &tool_id,
+                    &result.output,
+                    result.is_error,
+                ));
+            }
+
+            // ── 14. Per-iteration loop-detection update (optional) ────────
+            if opts.enable_guardrails {
+                let current_hashes =
+                    std::mem::take(&mut self.turn_tool_call_hashes);
+                let is_identical_to_prev = !current_hashes.is_empty()
+                    && current_hashes == self.prev_turn_hashes;
+                if is_identical_to_prev {
+                    self.identical_tool_turns += 1;
+                } else if !current_hashes.is_empty() {
+                    self.identical_tool_turns = 0;
+                }
+                self.prev_turn_hashes = current_hashes;
+
+                self.turns_without_mutation += 1;
+            }
+
+            // ── 15. Context management ───────────────────────────────────
+            let status =
+                context::check_context(conversation, &self.config.model);
+            if status.needs_truncation {
+                context::truncate_conversation(
+                    conversation,
+                    &self.config.model,
+                    self.memory.as_ref(),
+                );
+            }
+
+            // ── 16. Stop reason ──────────────────────────────────────────
+            if let Some(ref reason) = response.stop_reason {
+                if reason == "end_turn" && !has_tool_use {
+                    break;
+                }
+            }
+        }
+
+        Ok(final_text)
+    }
+
     /// Process a user message and return the final text response.
     /// This handles the full agent loop: send message → receive response →
     /// if tool use → execute tools → send results → repeat until done.
@@ -1019,16 +1314,25 @@ impl Agent {
         // 允许插件 hook 拦截并覆盖路由决策（intercepting）
         let mode = self.apply_router_hook(mode, user_input).await;
 
+        // Prepend relevant memory context — used by all execution modes.
+        let recall = self.memory.recall_relevant(user_input);
+        let enriched_input = if recall.is_empty() {
+            user_input.to_string()
+        } else {
+            format!("{}\n\n{}", recall, user_input)
+        };
+
         match mode {
             crate::router::ExecutionMode::FullPipeline => {
-                let result = crate::pipeline::PipelineRunner::run(self, user_input).await?;
-                self.inject_pipeline_context(user_input, &result);
-                return Ok(result);
+                // Pipeline stages now write directly to self.conversation.
+                // The full execution history stays in the conversation so
+                // follow-up messages have complete context.
+                self.conversation.add_message(Message::user(&enriched_input));
+                return crate::pipeline::PipelineRunner::run(self, &enriched_input).await;
             }
             crate::router::ExecutionMode::PlanAndExecute => {
-                let result = crate::pipeline::PipelineRunner::run_plan_and_execute(self, user_input).await?;
-                self.inject_pipeline_context(user_input, &result);
-                return Ok(result);
+                self.conversation.add_message(Message::user(&enriched_input));
+                return crate::pipeline::PipelineRunner::run_plan_and_execute(self, &enriched_input).await;
             }
             crate::router::ExecutionMode::BasicLoop => {
                 // Fall through to the basic loop below
@@ -1061,342 +1365,66 @@ impl Agent {
             &self.config.model,
         );
 
-        // Prepend relevant memory context to this turn (file-map + session-log scored
-        // by keyword overlap with the user message). This keeps the system prompt lean
-        // while still surfacing relevant history at each turn.
-        let recall = self.memory.recall_relevant(user_input);
-        let enriched_input = if recall.is_empty() {
-            user_input.to_string()
-        } else {
-            format!("{}\n\n{}", recall, user_input)
-        };
-
-        // Add user message
+        // Add (already enriched) user message
         self.conversation.add_message(Message::user(&enriched_input));
 
         // Check context window before sending
         self.check_and_manage_context().await;
 
         let tool_defs = Self::with_ask_user(self.tool_executor.definitions());
-        let mut iterations = 0;
-        let max_iterations = self.config.max_tool_iterations;
 
         // Per-turn tracking for record_interaction (zero extra LLM calls)
+        let turn_start_tokens = self.total_input_tokens + self.total_output_tokens;
+        let msg_count_before = self.conversation.messages.len();
+
+        let opts = ToolLoopOptions {
+            role: "agent".to_string(),
+            enable_guardrails: true,
+            enable_guidance: false,
+            notify_file_created: true,
+            handle_upload_image: true,
+        };
+
+        // Temporarily take ownership of the conversation so we can pass
+        // a `&mut Conversation` to `run_tool_loop` without conflicting with
+        // the `&mut self` borrow also required by that method.
+        let mut conversation =
+            std::mem::replace(&mut self.conversation, Conversation::new(&self.project_dir));
+        let mut final_text = self
+            .run_tool_loop(&mut conversation, &tool_defs, &opts)
+            .await?;
+        self.conversation = conversation;
+
+        // If run_tool_loop returned empty (e.g. loop exhausted), fall back to
+        // scanning the conversation for the last assistant text.
+        if final_text.is_empty() {
+            final_text = self
+                .conversation
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == crate::conversation::Role::Assistant)
+                .map(|m| m.text_content())
+                .unwrap_or_default();
+        }
+
+        // Derive turn_tools_used and turn_had_errors from the messages added
+        // during this turn (scanned from the conversation).
+        let new_msgs = &self.conversation.messages[msg_count_before..];
         let mut turn_tools_used: Vec<String> = Vec::new();
         let mut turn_had_errors = false;
-        let turn_start_tokens = self.total_input_tokens + self.total_output_tokens;
-
-        loop {
-            // Check for Ctrl-C interrupt between iterations
-            if self.is_interrupted() {
-                self.output.on_warning("Interrupted by user.");
-                break;
-            }
-
-            // ── Loop detection guardrails ─────────────────────────────────
-            // Check for signs the agent is stuck in a loop.
-            self.check_loop_guardrails(iterations);
-
-            // Drain any pending service push notifications so they are displayed
-            // at a safe point (not mid-streaming).
-            self.drain_service_events();
-
-            iterations += 1;
-            if iterations > max_iterations {
-                self.output.on_warning(&format!(
-                    "Reached maximum tool iterations ({}). Stopping.",
-                    max_iterations
-                ));
-                break;
-            }
-
-            // Safety net: fix any orphaned tool_use/tool_result blocks
-            // before calling the API.  Truncation or panics can leave the
-            // conversation in a state that violates Anthropic's requirement
-            // that every tool_use is followed by a tool_result.
-            context::ensure_tool_pair_integrity(&mut self.conversation.messages);
-
-            // Send to LLM with automatic retry for transient errors
-            let response = self.call_llm_with_retry(&self.conversation, &tool_defs).await?;
-
-            // Track token usage
-            if let Some(ref usage) = response.usage {
-                self.track_tokens("agent", usage);
-            }
-
-            // If the user pressed Ctrl-C during streaming, save any partial
-            // text that was already printed and stop immediately.
-            if self.is_interrupted() {
-                let partial: Vec<ContentBlock> = response
-                    .content
-                    .into_iter()
-                    .filter(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()))
-                    .collect();
-                if !partial.is_empty() {
-                    self.conversation.add_message(Message::assistant(partial));
+        for msg in new_msgs {
+            for block in &msg.content {
+                if let ContentBlock::ToolUse { name, .. } = block {
+                    turn_tools_used.push(name.clone());
                 }
-                break;
-            }
-
-            // Process the response
-            let has_tool_use = response
-                .content
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolUse { .. }));
-
-            // Add assistant message to conversation
-            let assistant_msg = Message::assistant(response.content.clone());
-            self.conversation.add_message(assistant_msg);
-
-            // If no tool use, we're done
-            if !has_tool_use {
-                break;
-            }
-
-            // Execute tools (with confirmation for dangerous operations)
-            let tool_uses: Vec<_> = response
-                .content
-                .iter()
-                .filter_map(|block| {
-                    if let ContentBlock::ToolUse { id, name, input } = block {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    } else {
-                        None
+                if let ContentBlock::ToolResult { is_error, .. } = block {
+                    if is_error.unwrap_or(false) {
+                        turn_had_errors = true;
                     }
-                })
-                .collect();
-
-            // ── Parallel call_node pre-execution ─────────────────────────────
-            // If the LLM issued multiple call_node in one turn they are
-            // independent by definition — run them concurrently and cache
-            // the results so the sequential for-loop below can pick them up.
-            let parallel_call_nodes: Vec<_> = tool_uses
-                .iter()
-                .filter(|(_, name, _)| name == "call_node")
-                .collect();
-            let mut call_node_cache: std::collections::HashMap<String, crate::tools::ToolResult> =
-                std::collections::HashMap::new();
-            if parallel_call_nodes.len() > 1 {
-                self.output.on_warning(&format!(
-                    "[call_node] Running {} nodes in parallel…",
-                    parallel_call_nodes.len()
-                ));
-                let futs = parallel_call_nodes.iter().map(|(id, name, input)| {
-                    let id   = id.clone();
-                    let exec = self.tool_executor.execute(name, input);
-                    async move { (id, exec.await) }
-                });
-                let paired = futures::future::join_all(futs).await;
-                for (id, result) in paired {
-                    call_node_cache.insert(id, result);
-                }
-            }
-
-            for (tool_id, tool_name, tool_input) in tool_uses {
-                self.output.on_tool_use(&tool_name, &tool_input, &tool_id);
-
-                // ── Virtual tool: ask_user ────────────────────────────────
-                if tool_name == "ask_user" {
-                    let question = tool_input
-                        .get("question")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Could you clarify?");
-                    let answer = self.output.ask_user(question);
-                    self.conversation.add_message(Message::tool_result(
-                        &tool_id,
-                        &format!("User's answer: {}", answer),
-                        false,
-                    ));
-                    continue;
-                }
-
-                // Check if this tool needs confirmation
-                let confirm_level = needs_confirmation(&tool_name, &tool_input);
-                if confirm_level != ConfirmationLevel::None {
-                    // For high-risk operations, show an extra warning
-                    if confirm_level == ConfirmationLevel::HighRisk {
-                        self.output.on_warning(&format!(
-                            "⚠️ HIGH RISK: '{}' targets a protected path or dangerous command pattern.",
-                            tool_name
-                        ));
-                    }
-                    // 1. Ask hook system first — a plugin can auto-approve or deny.
-                    let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
-                    let approved = match hook_decision {
-                        Some(decision) => decision,
-                        None => {
-                            // 2. No hook verdict — fall through to normal UI.
-                            let action = build_confirm_action(&tool_name, &tool_input);
-                            let mut ui_approved = false;
-                            loop {
-                                let result = self.output.confirm(&action);
-                                match result {
-                                    crate::confirm::ConfirmResult::Yes
-                                    | crate::confirm::ConfirmResult::AlwaysYes => {
-                                        ui_approved = true;
-                                        break;
-                                    }
-                                    crate::confirm::ConfirmResult::No => break,
-                                    crate::confirm::ConfirmResult::Clarify(question) => {
-                                        // User wants an explanation — ask the LLM
-                                        let explanation = self
-                                            .explain_tool_action(&tool_name, &tool_input, &question)
-                                            .await;
-                                        self.output.on_assistant_text(&explanation);
-                                        // Loop back to re-prompt
-                                    }
-                                }
-                            }
-                            ui_approved
-                        }
-                    };
-                    if !approved {
-                        self.conversation.add_message(Message::tool_result(
-                            &tool_id,
-                            "User declined to execute this operation.",
-                            true,
-                        ));
-                        continue;
-                    }
-                }
-
-                // For file-modifying tools, show diff preview
-                let result = if let Some(cached) = call_node_cache.remove(&tool_id) {
-                    // Already executed in the parallel pre-computation above.
-                    cached
-                } else if matches!(tool_name.as_str(), "edit_file" | "multi_edit_file" | "write_file") {
-                    self.execute_with_diff(&tool_name, &tool_input).await
-                } else {
-                    self.tool_executor.execute(&tool_name, &tool_input).await
-                };
-
-                self.output.on_tool_result(&tool_name, &result);
-
-                // Notify output backends (e.g. WeChat Bridge) when a file was created/modified
-                if !result.is_error
-                    && matches!(
-                        tool_name.as_str(),
-                        "write_file" | "edit_file" | "multi_edit_file"
-                    )
-                {
-                    if let Some(path_str) =
-                        tool_input.get("path").and_then(|v| v.as_str())
-                    {
-                        let abs_path = self.project_dir.join(path_str);
-                        self.output
-                            .on_file_created(&abs_path.to_string_lossy());
-                    }
-                }
-
-                // Track tool name and error status for this turn's episode record
-                turn_tools_used.push(tool_name.clone());
-                if result.is_error { turn_had_errors = true; }
-
-                // ── Loop-detection: track tool call hashes ───────────────
-                let args_hash = Self::hash_tool_args(&tool_name, &tool_input);
-                let entry = self.turn_tool_call_hashes
-                    .entry((tool_name.clone(), args_hash))
-                    .or_insert(0);
-                *entry += 1;
-
-                // Track whether this turn produced a file mutation
-                let is_mutation = !result.is_error
-                    && matches!(
-                        tool_name.as_str(),
-                        "write_file" | "edit_file" | "multi_edit_file"
-                    );
-                if is_mutation {
-                    self.turns_without_mutation = 0;
-                }
-
-                // Record to persistent memory
-                self.record_tool_to_memory(&tool_name, &tool_input, &result);
-
-                // Special handling for upload_image tool
-                if tool_name == "upload_image" && !result.is_error {
-                    // Try to extract image path from tool input
-                    if let Some(path_value) = tool_input.get("path") {
-                        if let Some(path_str) = path_value.as_str() {
-                            // Resolve path relative to project directory
-                            let path = if path_str.starts_with('/') {
-                                std::path::Path::new(path_str).to_path_buf()
-                            } else {
-                                self.project_dir.join(path_str)
-                            };
-                            
-                            // Try to read and encode the image
-                            if let Ok((mime_type, base64_data)) = self.read_image_to_base64(&path) {
-                                // Create an Image content block
-                                let image_block = ContentBlock::Image {
-                                    source: ImageSource::Base64 {
-                                        media_type: mime_type,
-                                        data: base64_data,
-                                    },
-                                    mime_type: None,
-                                };
-                                
-                                // Create a message with the image
-                                let image_message = Message {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    role: Role::User,
-                                    content: vec![image_block],
-                                };
-                                
-                                // Add the image message to conversation
-                                self.conversation.add_message(image_message);
-                            }
-                        }
-                    }
-                }
-
-                // Add tool result to conversation
-                self.conversation.add_message(Message::tool_result(
-                    &tool_id,
-                    &result.output,
-                    result.is_error,
-                ));
-
-            }
-
-            // ── Per-iteration loop-detection update ──────────────────────
-            // Compare this iteration's tool call hashes with the previous
-            // iteration's. If they are identical (same tools, same args),
-            // the agent is likely stuck in a loop.
-            let current_hashes = std::mem::take(&mut self.turn_tool_call_hashes);
-            let is_identical_to_prev = !current_hashes.is_empty()
-                && current_hashes == self.prev_turn_hashes;
-            if is_identical_to_prev {
-                self.identical_tool_turns += 1;
-            } else if !current_hashes.is_empty() {
-                // Different pattern — reset the counter
-                self.identical_tool_turns = 0;
-            }
-            // Store current hashes as prev for next iteration comparison
-            self.prev_turn_hashes = current_hashes;
-
-            // Increment mutation-free counter (reset on actual mutation above)
-            self.turns_without_mutation += 1;
-
-            // Check context window after tool results
-            self.check_and_manage_context().await;
-
-            // Check stop reason
-            if let Some(ref reason) = response.stop_reason {
-                if reason == "end_turn" && !has_tool_use {
-                    break;
                 }
             }
         }
-
-        // Return the final text response
-        let final_text = self
-            .conversation
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == crate::conversation::Role::Assistant)
-            .map(|m| m.text_content())
-            .unwrap_or_default();
 
         // Periodic knowledge extraction: every 5 turns, silently distill facts.
         self.knowledge_extract_turns += 1;
@@ -1907,6 +1935,12 @@ Summary:"#,
     /// the codebase but cannot modify anything.  The resulting plan text is
     /// stored in `self.pending_plan` and returned.
     pub async fn generate_plan(&mut self, task: &str) -> Result<String> {
+        // ── Sync global interrupt to per-session flag ─────────────────────
+        if is_interrupted() {
+            self.request_interrupt();
+            clear_interrupt();
+        }
+
         // ── Build context sections to inject ─────────────────────────────
         // 1. Project summary (from .agent/summary.md)
         let summary_section = crate::summary::load(&self.project_dir)
@@ -1930,42 +1964,16 @@ Summary:"#,
             }
         }
 
-        // 3. Recent conversation history (last 6 turns = 3 user+assistant pairs)
-        //    Gives planner context on what has already been discussed / done.
-        let history_section = {
-            let msgs = &self.conversation.messages;
-            let recent: Vec<_> = msgs.iter().rev().take(6).collect();
-            if recent.is_empty() {
-                String::new()
-            } else {
-                let mut buf = String::from("\n\n## Recent Conversation History (most recent first)");
-                for msg in recent {
-                    let role = match msg.role {
-                        crate::conversation::Role::User      => "User",
-                        crate::conversation::Role::Assistant => "Assistant",
-                        crate::conversation::Role::System    => continue,
-                    };
-                    // Only include Text blocks to keep this concise
-                    let text: String = msg.content.iter()
-                        .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    if !text.trim().is_empty() {
-                        let preview = crate::ui::truncate_str(&text, 400);
-                        buf.push_str(&format!("\n[{}]: {}", role, preview.trim()));
-                    }
-                }
-                buf
-            }
-        };
+        // Planner now sees the full conversation history automatically because
+        // we write to self.conversation.  No more manual history_section extraction.
 
         let planning_prompt = format!(
             r#"The user wants to accomplish the following task:
 
 {}
-{}{}{}
+{}{}
 
-Please analyze the task carefully in the context above. You may use the read-only tools available to explore the codebase and gather any additional information you need.
+Please analyze the task carefully using the conversation context above and the read-only tools available. You may use the read-only tools to explore the codebase and gather any additional information you need.
 You also have access to `run_command` — use it ONLY for read-only exploration commands such as:
   git status, git log, git diff, git show, git branch, git remote -v,
   find, cat, ls, wc, head, tail, cargo metadata, etc.
@@ -1980,113 +1988,49 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
 4. Any dependencies on other steps
 
 ⚠️  Do NOT execute any modifications — only produce the plan."#,
-            task, summary_section, memory_section, history_section
+            task, summary_section, memory_section
         );
 
-        // Use a separate conversation branch for planning so the main
-        // conversation is not polluted.
-        let mut plan_conversation = Conversation::new(&self.project_dir);
-        plan_conversation.system_prompt = format!(
-            "{}\n\nYou are in PLANNING MODE. \
-             You can use the provided read-only tools to explore the project, \
-             and the `ask_user` tool to ask clarifying questions. \
-             You also have access to `run_command`, but you MUST only use it for \
-             purely read-only shell / git commands that do not mutate any state, \
-             such as: git status, git log, git diff, git show, git branch, \
-             git remote -v, find, cat, ls, wc, head, tail, echo, env, cargo metadata. \
-             NEVER run commands that write files, make commits, push, install packages, \
-             build, or modify any state. \
-             Your final output MUST be a clear numbered plan. \
-             Do NOT execute any modifications.",
-            self.conversation.system_prompt
-        );
-        plan_conversation.add_message(Message::user(&planning_prompt));
+        // Write directly to self.conversation so the planner sees the full
+        // conversation history and follow-up turns keep planner context.
+        self.conversation.add_message(Message::user(&planning_prompt));
 
         let readonly_tools = Self::with_ask_user(self.tool_executor.readonly_definitions());
 
-        // Use the same iteration budget as the main loop so planning never gets
-        // silently truncated on complex projects.
-        let max_iters = self.config.max_tool_iterations;
-        let mut plan_text = String::new();
-        let mut exhausted = true;
+        let opts = ToolLoopOptions {
+            role: "planner".to_string(),
+            enable_guardrails: false,
+            enable_guidance: false,
+            notify_file_created: false,
+            handle_upload_image: false,
+        };
 
-        for _ in 0..max_iters {
-            // Use the planner role model if configured
-            let response = self.call_llm_as_role("planner", &plan_conversation, &readonly_tools).await?;
-
-            // Track tokens
-            if let Some(ref usage) = response.usage {
-                self.track_tokens("planner", usage);
-            }
-
-            let has_tool_use = response.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-
-            plan_conversation.add_message(Message::assistant(response.content.clone()));
-
-            if !has_tool_use {
-                // LLM finished naturally — collect the plan text.
-                for block in &response.content {
-                    if let ContentBlock::Text { text } = block {
-                        plan_text.push_str(text);
-                    }
-                }
-                exhausted = false;
-                break;
-            }
-
-            // Execute only the read-only tools
-            let tool_uses: Vec<_> = response
-                .content
-                .iter()
-                .filter_map(|block| {
-                    if let ContentBlock::ToolUse { id, name, input } = block {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for (tool_id, tool_name, tool_input) in tool_uses {
-                self.output.on_tool_use(&tool_name, &tool_input, &tool_id);
-
-                // ── Virtual tool: ask_user ────────────────────────────
-                if tool_name == "ask_user" {
-                    let question = tool_input
-                        .get("question")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Could you clarify?");
-                    let answer = self.output.ask_user(question);
-                    plan_conversation.add_message(Message::tool_result(
-                        &tool_id,
-                        &format!("User's answer: {}", answer),
-                        false,
-                    ));
-                    continue;
-                }
-
-                let result = self.tool_executor.execute(&tool_name, &tool_input).await;
-                self.output.on_tool_result(&tool_name, &result);
-                plan_conversation.add_message(Message::tool_result(
-                    &tool_id,
-                    &result.output,
-                    result.is_error,
-                ));
-            }
-        }
+        // Take ownership temporarily to satisfy the borrow checker.
+        let mut conv = std::mem::replace(
+            &mut self.conversation,
+            Conversation::new(&self.project_dir),
+        );
+        let mut plan_text = self.run_tool_loop(&mut conv, &readonly_tools, &opts).await?;
+        self.conversation = conv;
 
         // If the loop exhausted all iterations without the LLM stopping naturally,
         // force one final call with no tools available so it has to write the plan.
-        if exhausted {
+        if plan_text.is_empty() {
             self.output.on_assistant_text(
                 "\n[Exploration limit reached — consolidating findings into a plan…]\n"
             );
-            plan_conversation.add_message(Message::user(
+            self.conversation.add_message(Message::user(
                 "You have finished exploring. Now write the complete, detailed, numbered \
                  step-by-step plan based on everything you have discovered. \
                  Do not call any more tools — output only the plan text."
             ));
-            let final_response = self.call_llm_as_role("planner", &plan_conversation, &[]).await?;
+            let mut conv = std::mem::replace(
+                &mut self.conversation,
+                Conversation::new(&self.project_dir),
+            );
+            let final_response = self.call_llm_as_role("planner", &conv, &[]).await?;
+            conv.add_message(Message::assistant(final_response.content.clone()));
+            self.conversation = conv;
             if let Some(ref usage) = final_response.usage {
                 self.track_tokens("planner", usage);
             }
@@ -2108,9 +2052,7 @@ Then output a detailed, numbered step-by-step plan describing exactly what chang
 
     /// Execute a previously generated plan.
     ///
-    /// The plan is injected into the main conversation as context, and the full
-    /// set of tools is made available so the LLM can carry out each step.
-    /// Uses the "executor" role model if configured in models.toml.
+    /// Runs the executor tool loop directly (no router re-entry).
     pub async fn execute_plan(&mut self, plan: &str) -> Result<String> {
         let exec_prompt = format!(
             r#"You previously created the following plan. Now execute it step by step.
@@ -2126,20 +2068,31 @@ Begin execution now."#,
         );
 
         self.pending_plan = None;
+        self.conversation.add_message(Message::user(&exec_prompt));
 
-        // Phase 3 (pipeline.rs) will run a dedicated executor loop with its own config.
-        // For now, process_message will show the active model via on_role_header.
-        self.process_message(&exec_prompt).await
+        let tools = Self::with_ask_user(self.tool_executor.definitions());
+        let opts = ToolLoopOptions {
+            role: "executor".to_string(),
+            enable_guardrails: false,
+            enable_guidance: true,
+            notify_file_created: false,
+            handle_upload_image: false,
+        };
+
+        let mut conv = std::mem::replace(
+            &mut self.conversation,
+            Conversation::new(&self.project_dir),
+        );
+        let result = self.run_tool_loop(&mut conv, &tools, &opts).await;
+        self.conversation = conv;
+        result
     }
 
-    /// Run a single pipeline stage with a role-specific model.
+    /// Run a single pipeline stage, appending all messages to `self.conversation`
+    /// so follow-up turns have full context of what happened during the pipeline.
     ///
-    /// Creates a fresh `Conversation` (does not touch `self.conversation`),
-    /// uses `call_llm_as_role` so the role's model is shown in the UI,
-    /// and runs the full tool loop until the LLM stops requesting tools.
-    ///
-    /// `readonly_only` restricts the available tools to read-only operations
-    /// (used for the Checker stage).
+    /// Role-specific behaviour comes from `call_llm_as_role` (model selection +
+    /// role-header UI).  The `initial_message` is added as a user message.
     pub async fn run_pipeline_stage(
         &mut self,
         role: &str,
@@ -2152,9 +2105,7 @@ Begin execution now."#,
             clear_interrupt();
         }
 
-        let mut stage_conv = Conversation::new(&self.project_dir);
-        stage_conv.system_prompt = self.conversation.system_prompt.clone();
-        stage_conv.add_message(Message::user(initial_message));
+        self.conversation.add_message(Message::user(initial_message));
 
         let tool_defs = if readonly_only {
             Self::with_ask_user(self.tool_executor.readonly_definitions())
@@ -2162,172 +2113,23 @@ Begin execution now."#,
             Self::with_ask_user(self.tool_executor.definitions())
         };
 
-        let max_iterations = self.config.max_tool_iterations;
-        let mut final_text = String::new();
+        let opts = ToolLoopOptions {
+            role: role.to_string(),
+            enable_guardrails: false,
+            enable_guidance: true,
+            notify_file_created: false,
+            handle_upload_image: false,
+        };
 
-        for _ in 0..max_iterations {
-            if self.is_interrupted() {
-                self.output.on_warning("Interrupted by user.");
-                break;
-            }
-
-            self.drain_service_events();
-
-            // ── Mid-execution guidance (Ctrl-\) ──────────────────────────────
-            // Append user guidance to the system prompt so the LLM sees it on
-            // the next call without violating the message turn structure.
-            if is_guidance_requested() {
-                clear_guidance();
-                if let Some(text) = self.output.inject_guidance() {
-                    stage_conv.system_prompt.push_str(&format!(
-                        "\n\n[⚡ USER GUIDANCE]: {}",
-                        text
-                    ));
-                    self.output.on_warning(&format!("💡 Guidance injected into executor context."));
-                }
-            }
-
-            context::ensure_tool_pair_integrity(&mut stage_conv.messages);
-
-            let response = self.call_llm_as_role(role, &stage_conv, &tool_defs).await?;
-
-            if let Some(ref usage) = response.usage {
-                self.track_tokens(role, usage);
-            }
-
-            // If the user pressed Ctrl-C during streaming, stop immediately.
-            if self.is_interrupted() {
-                break;
-            }
-
-            // Collect final text; print for non-streaming providers
-            for block in &response.content {
-                if let ContentBlock::Text { text } = block {
-                    if !text.is_empty() {
-                        final_text = text.clone();
-                        let role_cfg = self.role_configs.get(role).unwrap_or(&self.config);
-                        if role_cfg.provider != Provider::Anthropic {
-                            self.output.on_assistant_text(text);
-                        }
-                    }
-                }
-            }
-
-            let has_tool_use = response
-                .content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-            stage_conv.add_message(Message::assistant(response.content.clone()));
-
-            if !has_tool_use {
-                break;
-            }
-
-            let tool_uses: Vec<_> = response
-                .content
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::ToolUse { id, name, input } = b {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for (tool_id, tool_name, tool_input) in tool_uses {
-                self.output.on_tool_use(&tool_name, &tool_input, &tool_id);
-
-                // ── Virtual tool: ask_user ────────────────────────────
-                if tool_name == "ask_user" {
-                    let question = tool_input
-                        .get("question")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Could you clarify?");
-                    let answer = self.output.ask_user(question);
-                    stage_conv.add_message(Message::tool_result(
-                        &tool_id,
-                        &format!("User's answer: {}", answer),
-                        false,
-                    ));
-                    continue;
-                }
-
-                let confirm_level = needs_confirmation(&tool_name, &tool_input);
-                if !readonly_only && confirm_level != ConfirmationLevel::None {
-                    // High-risk warning
-                    if confirm_level == ConfirmationLevel::HighRisk {
-                        self.output.on_warning(&format!(
-                            "⚠️ HIGH RISK: '{}' targets a protected path or dangerous command pattern.",
-                            tool_name
-                        ));
-                    }
-                    // 1. Ask hook system first — a plugin can auto-approve or deny.
-                    let hook_decision = self.check_confirm_via_hook(&tool_name, &tool_input).await;
-                    let approved = match hook_decision {
-                        Some(decision) => decision,
-                        None => {
-                            // 2. No hook verdict — fall through to normal UI.
-                            let action = build_confirm_action(&tool_name, &tool_input);
-                            let mut ui_approved = false;
-                            loop {
-                                let result = self.output.confirm(&action);
-                                match result {
-                                    crate::confirm::ConfirmResult::Yes
-                                    | crate::confirm::ConfirmResult::AlwaysYes => {
-                                        ui_approved = true;
-                                        break;
-                                    }
-                                    crate::confirm::ConfirmResult::No => break,
-                                    crate::confirm::ConfirmResult::Clarify(question) => {
-                                        let explanation = self
-                                            .explain_tool_action(&tool_name, &tool_input, &question)
-                                            .await;
-                                        self.output.on_assistant_text(&explanation);
-                                    }
-                                }
-                            }
-                            ui_approved
-                        }
-                    };
-                    if !approved {
-                        stage_conv.add_message(Message::tool_result(
-                            &tool_id,
-                            "User declined to execute this operation.",
-                            true,
-                        ));
-                        continue;
-                    }
-                }
-
-                let result = if matches!(
-                    tool_name.as_str(),
-                    "edit_file" | "multi_edit_file" | "write_file"
-                ) {
-                    self.execute_with_diff(&tool_name, &tool_input).await
-                } else {
-                    self.tool_executor.execute(&tool_name, &tool_input).await
-                };
-
-                self.output.on_tool_result(&tool_name, &result);
-                self.record_tool_to_memory(&tool_name, &tool_input, &result);
-                stage_conv.add_message(Message::tool_result(
-                    &tool_id,
-                    &result.output,
-                    result.is_error,
-                ));
-            }
-
-            // Manage context for the stage conversation so large tool
-            // outputs (e.g. reading 470-line files) don't push us over
-            // the window limit and cause premature loop termination.
-            let status = context::check_context(&stage_conv, &self.config.model);
-            if status.needs_truncation {
-                context::truncate_conversation(&mut stage_conv, &self.config.model, self.memory.as_ref());
-            }
-        }
-
-        Ok(final_text)
+        // Temporarily take ownership so we can borrow &mut self and
+        // &mut Conversation simultaneously.
+        let mut conv = std::mem::replace(
+            &mut self.conversation,
+            Conversation::new(&self.project_dir),
+        );
+        let result = self.run_tool_loop(&mut conv, &tool_defs, &opts).await;
+        self.conversation = conv;
+        result
     }
 
     /// Scan the project directory and use the LLM to generate a project summary.
@@ -2416,7 +2218,7 @@ Directory tree:
                 .to_string();
         summary_conversation.add_message(Message::user(&prompt));
 
-        let response = self.call_llm_with_retry(&summary_conversation, &[]).await?;
+        let response = self.call_llm_as_role("agent", &summary_conversation, &[]).await?;
 
         // Track token usage
         if let Some(ref usage) = response.usage {

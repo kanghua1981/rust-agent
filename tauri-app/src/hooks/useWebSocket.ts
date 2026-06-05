@@ -717,15 +717,13 @@ export const useWebSocket = () => {
     });
   }, []);
 
-  /** Process all queued events for an inactive slot with ONE store swap. */
+  /** Process all queued events for an inactive slot with ONE store swap.
+   *  Called when the user switches to a previously inactive tab. */
   const flushInactiveBatch = useCallback((slotId: string) => {
     const queue = inactiveQueuesRef.current.get(slotId);
     if (!queue || queue.length === 0) return;
     inactiveQueuesRef.current.delete(slotId);
-    // Clear the debounce timer so it doesn't fire after we've already flushed
-    const timer = inactiveTimersRef.current.get(slotId);
-    if (timer) { clearTimeout(timer); }
-    inactiveTimersRef.current.delete(slotId);
+    inactiveTimersRef.current.delete(slotId);  // defensive cleanup
 
     const st = useAgentStore.getState();
     // Don't swap if the slot became active while we were waiting
@@ -759,7 +757,10 @@ export const useWebSocket = () => {
     }
   }, [handleServerEvent]);
 
-  /** Schedule a deferred batch flush for an inactive slot. */
+  /** Accumulate events for an inactive slot — NO timer, no background processing.
+   *  Events are flushed only when the user switches to the tab, eliminating the
+   *  constant setActiveConnection swaps that were causing UI thrash on every
+   *  200ms batch interval. */
   const scheduleInactiveBatch = useCallback((slotId: string, event: ServerEvent) => {
     const conn = connMapRef.current.get(slotId);
     if (!conn || conn.inactiveTerminated) return;
@@ -769,13 +770,10 @@ export const useWebSocket = () => {
       queue = [];
       inactiveQueuesRef.current.set(slotId, queue);
     }
+    // Cap to prevent unbounded growth if user never switches to this tab
+    if (queue.length >= 500) queue.splice(0, 50);  // drop oldest events
     queue.push(event);
-
-    // Debounce: clear existing timer, set new one
-    const existing = inactiveTimersRef.current.get(slotId);
-    if (existing) clearTimeout(existing);
-    inactiveTimersRef.current.set(slotId, setTimeout(() => flushInactiveBatch(slotId), 200));
-  }, [flushInactiveBatch]);
+  }, []);
 
   // ── Process an event for a specific slot ──
   // Active slot: process directly. Inactive slot: batch/accumulate WITHOUT store swap.

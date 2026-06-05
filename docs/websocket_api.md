@@ -1,8 +1,4 @@
-Now I have a thorough understanding of the entire WebSocket protocol. Here's the document:
-
----
-
-## Rust Agent WebSocket 接口文档
+# Rust Agent WebSocket 协议文档
 
 ### 1. 连接建立
 
@@ -467,3 +463,137 @@ Worker 收到 WebSocket Ping 帧时自动回复 `pong` 事件：
 - 服务器启动时并发探测所有配置的 `[[peer]]` 节点
 - 每 30s 重试离线 peer，每 120s 心跳检测在线 peer
 - Peer 的子节点以 `{node_name}@{peer_name}` 格式注册到路由表
+
+---
+
+### 13. 外部桥接集成指南
+
+> 本节给想要编写外部平台桥接（微信、Telegram、钉钉等）的开发者。
+
+#### 13.1 核心原则：零依赖，零侵入
+
+桥接程序是一个**独立进程**，不依赖 agent 源码，不需要编译 Rust。只需要：
+
+1. 通过 WebSocket 连接到 Agent Server（`ws://host:9527/agent`）
+2. 发送 `user_message`，接收 `streaming_token` / `tool_use` / `done` 等事件
+3. 将事件翻译为目标平台的格式
+
+```
+外部平台 API  ←→  [你的桥接进程]  ←→  ws://agent-host:9527/agent
+                     (任意语言)
+```
+
+#### 13.2 最小交互循环
+
+一个最简桥接只需处理 **4 种事件**：
+
+```
+连接 → 收到 ready → 发送 user_message → 循环接收：
+  ├─ streaming_token  → 翻译后发给用户
+  ├─ confirm_request  → 向用户请求确认 → 发送 confirm_response
+  ├─ ask_user         → 向用户提问 → 发送 ask_user_response
+  └─ done             → 本轮结束，发送最终回复，等待下一条用户消息
+```
+
+#### 13.3 完整会话时序
+
+```
+外部平台        桥接进程                    Agent Server
+   │              │                            │
+   │ 用户发消息    │                            │
+   │─────────────▶│                            │
+   │              │── WS Connect ─────────────▶│
+   │              │◀── ready ──────────────────│  ← 含 workdir/caps/virtual_nodes
+   │              │── user_message ───────────▶│
+   │              │                            │   Agent 处理中...
+   │              │◀── streaming_token ────────│
+   │              │◀── streaming_token ────────│
+   │  (流式输出)   │                            │
+   │◀─────────────│                            │
+   │              │◀── tool_use ───────────────│  ← 可选
+   │              │◀── tool_result ────────────│  ← 可选
+   │              │◀── confirm_request ────────│  ← 可选：阻塞，等待回复
+   │  请求确认     │                            │
+   │◀─────────────│                            │
+   │  用户批准     │                            │
+   │─────────────▶│                            │
+   │              │── confirm_response ────────▶│
+   │              │◀── done ───────────────────│  ← 含 text/pending_changes/token_usage
+   │  最终回复     │                            │
+   │◀─────────────│                            │
+```
+
+#### 13.4 多用户会话管理
+
+需要同时服务多个用户时，每个用户维护独立 Agent 连接：
+
+```python
+# 伪代码示例 (Python + websockets)
+sessions: dict[str, WebSocket] = {}
+
+async def handle_message(user_id: str, text: str):
+    # 懒创建：首次消息时建立连接
+    if user_id not in sessions:
+        ws = await connect("ws://localhost:9527/agent")
+        await ws.recv()  # 消费 ready 事件
+        sessions[user_id] = ws
+
+    ws = sessions[user_id]
+    await ws.send(json.dumps({"type": "user_message", "data": {"text": text}}))
+
+    while True:
+        raw = await ws.recv()
+        event = json.loads(raw)
+
+        match event["type"]:
+            case "streaming_token":
+                await send_to_user(user_id, event["data"]["token"])
+            case "done":
+                await send_to_user(user_id, event["data"]["text"])
+                break
+            case "confirm_request":
+                approved = await ask_user_confirm(user_id, event["data"])
+                await ws.send(json.dumps({
+                    "type": "confirm_response",
+                    "data": {"approved": approved}
+                }))
+```
+
+**注意事项：**
+- 空闲连接应超时关闭（建议 10 分钟无活动）
+- Agent Server 默认无认证；如需认证，参考第 1.2 节的 `token` 参数
+- `confirm_request` 是**阻塞式**的：Agent 暂停等待 `confirm_response` 后才继续执行
+
+#### 13.5 非流式平台处理
+
+对于不支持流式输出的平台（如部分微信网关），累积 token 后批量发送：
+
+```python
+buffer = ""
+while True:
+    event = json.loads(await ws.recv())
+    match event["type"]:
+        case "streaming_token":
+            buffer += event["data"]["token"]
+            if len(buffer) >= 200:      # 每 200 字符发送一次
+                await send_to_user(user_id, buffer)
+                buffer = ""
+        case "done":
+            if buffer:
+                await send_to_user(user_id, buffer)
+            await send_to_user(user_id, event["data"]["text"])
+            break
+```
+
+#### 13.6 部署建议
+
+桥接进程独立于 Agent Server 运行。推荐方式：
+
+| 方式 | 适用场景 |
+|------|---------|
+| systemd service | 生产环境，需自动重启 |
+| docker-compose | 与 Agent Server 一起编排 |
+| tmux / screen | 开发调试 |
+| 手动 `nohup` | 临时测试 |
+
+> Agent Server 的 `[[channels]]` 配置（plugin.toml）可以自动 spawn 桥接进程，但**不是必需的**——你可以完全独立地启动和管理它。

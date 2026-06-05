@@ -1,13 +1,48 @@
 import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { useShallow } from 'zustand/react/shallow';
 import { TokenUsageBadge } from './TokenUsageBadge';
+import type { TokenUsage } from '../types/agent';
 
 interface HeaderProps {
+  activeConnectionId: string | null;
   onOpenConnect: () => void;
   onDisconnect: () => void;
   onNewSession?: () => void;
   onSetModelRemote?: (alias: string) => void;
 }
+
+// Slot snapshot interface: all header-relevant fields, guaranteed non-null.
+interface SlotSnapshot {
+  connectionStatus: string;
+  serverUrl: string;
+  workdir: string | undefined;
+  isProcessing: boolean;
+  sandboxBackend: string;
+  pendingChanges: number;
+  msgCount: number;
+  toolCallCount: number;
+  pendingConfCount: number;
+  availableModels: Array<{ alias: string; model: string; provider: string }>;
+  activeModel: string | null;
+  tokenUsage: TokenUsage | null;
+}
+
+// Fallback for missing/invalid slot — same pattern as ChatArea
+const emptySlot: SlotSnapshot = {
+  connectionStatus: 'disconnected',
+  serverUrl: '',
+  workdir: undefined,
+  isProcessing: false,
+  sandboxBackend: 'disabled',
+  pendingChanges: 0,
+  msgCount: 0,
+  toolCallCount: 0,
+  pendingConfCount: 0,
+  availableModels: [],
+  activeModel: null,
+  tokenUsage: null,
+};
 
 const statusConfig = {
   disconnected: { color: '#6b7280', label: '未连接', dot: '#374151' },
@@ -16,21 +51,43 @@ const statusConfig = {
   error:        { color: '#ef4444', label: '连接错误', dot: '#ef4444' },
 };
 
-export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
-  const connectionStatus = useAgentStore(s => s.connectionStatus);
-  const serverUrl = useAgentStore(s => s.serverUrl);
-  const workdir = useAgentStore(s => s.workdir);
-  const isProcessing = useAgentStore(s => s.isProcessing);
-  const sandboxBackend = useAgentStore(s => s.sandboxBackend);
-  const pendingChanges = useAgentStore(s => s.pendingChanges);
+export const Header: React.FC<HeaderProps> = ({ activeConnectionId, onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
+  // ✅  Read directly from the ACTIVE slot (same pattern as ChatArea).
+  //     No flat-proxy subscriptions → immune to setActiveConnection swaps
+  //     during inactive-tab event processing.
+  const slot = useAgentStore(
+    useShallow((s) => {
+      const id = activeConnectionId;
+      if (!id || !s.connections[id]) return emptySlot;
+      const c = s.connections[id];
+      return {
+        connectionStatus: c.connectionStatus,
+        serverUrl: c.serverUrl,
+        workdir: c.workdir,
+        isProcessing: c.isProcessing,
+        sandboxBackend: c.sandboxBackend,
+        pendingChanges: c.pendingChanges,
+        msgCount: c.messages?.length ?? 0,
+        toolCallCount: c.toolCalls?.length ?? 0,
+        pendingConfCount: c.pendingConfirmations?.length ?? 0,
+        availableModels: c.availableModels,
+        activeModel: c.activeModel,
+        tokenUsage: c.tokenUsage ?? null,
+      };
+    })
+  );
+
+  // config is GLOBAL (not per-slot) — keep flat-proxy subscription
   const config = useAgentStore(s => s.config);
-  // 只订阅 .length — 频率从 ~20次/秒 降到仅长度变化时触发
-  const msgCount = useAgentStore(s => s.messages.length);
-  const toolCallCount = useAgentStore(s => s.toolCalls.length);
-  const pendingConfCount = useAgentStore(s => s.pendingConfirmations.length);
-  const availableModels = useAgentStore(s => s.availableModels);
-  const activeModel = useAgentStore(s => s.activeModel);
-  const cfg = statusConfig[connectionStatus];
+
+  const {
+    connectionStatus, serverUrl, workdir, isProcessing,
+    sandboxBackend, pendingChanges,
+    msgCount, toolCallCount, pendingConfCount,
+    availableModels, activeModel, tokenUsage,
+  } = slot;
+
+  const cfg = statusConfig[connectionStatus as keyof typeof statusConfig] ?? statusConfig.disconnected;
   const isolation = config.isolation ?? 'container';
 
   return (
@@ -184,7 +241,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenConnect, onDisconnect, onN
           </div>
 
           {/* Token 用量徽章 */}
-          <TokenUsageBadge />
+          <TokenUsageBadge tokenUsage={tokenUsage} />
           
           {/* 待确认徽章（只在有确认时显示） */}
           {pendingConfCount > 0 && (

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { useShallow } from 'zustand/react/shallow';
 
 interface ConnectionTabsProps {
   onNewConnection: () => void;
@@ -26,12 +27,32 @@ export const ConnectionTabs: React.FC<ConnectionTabsProps> = ({
   disconnectSlot,
   connectSlot,
 }) => {
-  const connections = useAgentStore(s => s.connections ?? {});
+  // ── Subscriptions ──────────────────────────────────────────────────────
+  // ❌  OLD: subscribing to full connections map caused re-renders on EVERY
+  //          inactive-slot update (streaming token flush every 80ms, event
+  //          batch every 200ms).
+  // ✅  NEW: subscribe to a single summary string that only changes when
+  //          tab-display-relevant fields change.
   const activeConnectionId = useAgentStore(s => s.activeConnectionId);
+  const tabSummary = useAgentStore(
+    useShallow(s => {
+      const entries = Object.values(s.connections ?? {})
+        .filter(c => c.id !== 'default')
+        .sort((a, b) => a.id.localeCompare(b.id));
+      // Flat string that changes ONLY on tab-relevant mutations
+      return entries.map(c =>
+        `${c.id}|${c.label ?? ''}|${c.serverUrl}|${c.connectionStatus}|${c.isProcessing ? '1' : '0'}`
+      ).join('\n');
+    })
+  );
+  // Read full slot data from state snapshot (does NOT create a subscription)
   const removeConnectionSlot = useAgentStore(s => s.removeConnectionSlot);
 
-  // Filter out the built-in default slot — it exists as a fallback, never shown as a tab
-  const entries = Object.values(connections).filter(s => s.id !== 'default');
+  // Derive entries from summary string lazily — only recomputes on real tab change
+  const entries = React.useMemo(() => {
+    const conns = useAgentStore.getState().connections;
+    return Object.values(conns).filter(s => s.id !== 'default');
+  }, [tabSummary]);  // tabSummary captures all tab-relevant mutations
   const activeId = activeConnectionId;
 
   // Hide tab bar only when there are no visible connections
