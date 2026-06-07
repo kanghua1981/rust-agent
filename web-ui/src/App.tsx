@@ -18,12 +18,14 @@ import { useAgentStore } from './stores/agentStore';
 import { useAgentPool } from './hooks/useAgentPool';
 
 import { ModelsPanel } from './components/ModelsPanel';
+import { CommandPalette, CommandAction } from './components/CommandPalette';
 
 type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [showConnect, setShowConnect] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
 
   const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
@@ -97,10 +99,21 @@ function App() {
         e.preventDefault();
         setShowConnect(true);
       }
-      // Esc 关闭连接模态框
-      if (e.key === 'Escape' && showConnect) {
+      // Ctrl+Shift+P: 命令面板
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p' && !e.metaKey && !e.altKey) {
         e.preventDefault();
-        setShowConnect(false);
+        setShowCommandPalette(true);
+        return;
+      }
+      // Esc 关闭连接模态框 / 命令面板
+      if (e.key === 'Escape') {
+        if (showConnect) {
+          e.preventDefault();
+          setShowConnect(false);
+        } else if (showCommandPalette) {
+          e.preventDefault();
+          setShowCommandPalette(false);
+        }
       }
       // 新增快捷键 - 只在聊天页面生效
       if (activeTab === 'chat') {
@@ -140,7 +153,120 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showConnect, activeTab, config?.agentMode, newSession]);
+  }, [showConnect, showCommandPalette, activeTab, config?.agentMode, newSession]);
+
+  // ── 命令面板 extraActions（依赖 App 级函数）──────────────────────
+  const commandActions = ((): CommandAction[] => {
+    const store = useAgentStore.getState();
+    const connected = store.connectionStatus === 'connected';
+    return [
+      // 连接
+      {
+        id: 'connect.open',
+        label: '连接服务器',
+        description: '打开连接配置面板',
+        category: '连接',
+        keywords: 'connect',
+        action: () => setShowConnect(true),
+      },
+      {
+        id: 'connect.disconnect',
+        label: '断开连接',
+        description: '断开当前 WebSocket 连接',
+        category: '连接',
+        keywords: 'disconnect',
+        enabled: connected,
+        action: () => handleDisconnect(),
+      },
+      // 面板导航
+      ...([
+        ['chat', '对话', '💬'],
+        ['tools', '工具调用', '🔨'],
+        ['nodes', '节点', '🌐'],
+        ['sessions', '会话管理', '📚'],
+        ['sandbox', '沙盒', '🔒'],
+        ['plugins', '插件', '🧩'],
+        ['models', '模型管理', '🧠'],
+        ['settings', '设置', '⚙️'],
+      ] as const).map(([tab, tabLabel]) => ({
+        id: `nav.${tab}`,
+        label: `打开${tabLabel}`,
+        description: `切换到${tabLabel}面板`,
+        category: '面板',
+        keywords: `goto ${tab}`,
+        action: () => setActiveTab(tab as Tab),
+      })),
+      // 会话操作
+      {
+        id: 'session.new',
+        label: '新建会话',
+        description: '开始一个新的对话会话',
+        category: '会话',
+        keywords: 'new session',
+        enabled: connected,
+        action: () => newSession(),
+      },
+      {
+        id: 'session.clear',
+        label: '清空会话',
+        description: '清除当前所有对话消息',
+        category: '会话',
+        keywords: 'clear reset',
+        enabled: connected,
+        action: () => {
+          if (window.confirm('确定要清空当前会话吗？')) newSession();
+        },
+      },
+      // 模型切换（动态）
+      ...store.availableModels.map((m) => ({
+        id: `model.${m.alias}`,
+        label: `切换模型: ${m.alias}`,
+        description: `${m.model} (${m.provider})`,
+        category: '模型',
+        keywords: `model switch ${m.alias}`,
+        enabled: connected,
+        action: () => setModelRemote(m.alias),
+      })),
+      // 运行模式切换
+      ...(['auto', 'simple', 'plan', 'pipeline'] as const).map((m) => ({
+        id: `mode.${m}`,
+        label: `切换为 ${{ auto: '自动', simple: '单层', plan: '计划', pipeline: '流水线' }[m]} 模式`,
+        description:
+          m === 'auto' ? 'Router 自动选择执行策略'
+          : m === 'simple' ? '单层 Agent 循环，速度快'
+          : m === 'plan' ? '先规划再执行'
+          : 'Planner → Executor → Checker 三阶段流水线',
+        category: '运行模式',
+        keywords: `mode ${m}`,
+        enabled: connected,
+        action: () => useAgentStore.getState().setConfig({ agentMode: m }),
+      })),
+      // 自动批准
+      {
+        id: 'op.autoApprove',
+        label: '切换自动批准',
+        description: '切换工具调用自动批准开关',
+        category: '操作',
+        keywords: 'yesall confirm auto-approve',
+        enabled: connected,
+        action: () => {
+          const s = useAgentStore.getState();
+          s.setConfig({ autoApprove: !(s.config.autoApprove) });
+        },
+      },
+      // 取消任务
+      {
+        id: 'op.cancel',
+        label: '取消当前任务',
+        description: '中断正在执行的 Agent 任务',
+        category: '操作',
+        keywords: 'cancel stop abort',
+        enabled: connected && store.isProcessing,
+        action: () => sendCancel(),
+      },
+    ];
+  })();
+
   return (
     <div style={{
       height: '100vh',
@@ -224,6 +350,12 @@ function App() {
           />
         </ErrorBoundary>
       )}
+
+      <CommandPalette
+        open={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        extraActions={commandActions}
+      />
     </div>
   );
 }
