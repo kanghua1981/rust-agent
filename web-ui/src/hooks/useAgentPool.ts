@@ -333,7 +333,7 @@ export function useAgentPool() {
         // Only promote for long-running tools
         const newCall = useAgentStore.getState().toolCalls[newLen - 1];
         if (!newCall) return;
-        const longRunningTools = ['call_node', 'run_command', 'script_tool', 'browser'];
+        const longRunningTools = ['call_node'];
         if (!longRunningTools.includes(newCall.tool)) return;
 
         // Find the user prompt that triggered this session
