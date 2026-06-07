@@ -1,8 +1,28 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { useShallow } from 'zustand/react/shallow';
 import { TokenUsageBadge } from './TokenUsageBadge';
 import type { TokenUsage } from '../types/agent';
+
+// ── Tauri frameless window helpers ───────────────────────────────────
+// Only functional inside a Tauri desktop app; silently ignored in browsers.
+// Uses Tauri v2 IPC internals directly to avoid bundler module resolution.
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+async function tauriWindowAction(action: 'minimize' | 'toggleMaximize' | 'close') {
+  try {
+    const internals = (window as any).__TAURI_INTERNALS__;
+    if (!internals) return;
+    // Tauri v2 window IPC requires a label — default is 'main' if not set in tauri.conf.json
+    const label = internals.metadata?.currentWindow?.label ?? 'main';
+    const cmd: Record<string, string> = {
+      minimize: 'plugin:window|minimize',
+      toggleMaximize: 'plugin:window|toggle_maximize',
+      close: 'plugin:window|close',
+    };
+    await internals.invoke(cmd[action], { label });
+  } catch { /* not in Tauri — no-op */ }
+}
 
 interface HeaderProps {
   activeConnectionId: string | null;
@@ -51,7 +71,28 @@ const statusConfig = {
   error:        { color: '#ef4444', label: '连接错误', dot: '#ef4444' },
 };
 
+// macOS-style window control button styles
+function winCtrlBtnStyle(color: string): React.CSSProperties {
+  return {
+    width: '13px', height: '13px',
+    borderRadius: '50%',
+    background: color,
+    border: 'none',
+    cursor: 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: '7px', fontWeight: 'bold',
+    color: 'rgba(0,0,0,0.42)',
+    padding: 0, lineHeight: 1,
+    transition: 'color 0.12s',
+    WebkitAppRegion: 'no-drag',
+  };
+}
+
 export const Header: React.FC<HeaderProps> = ({ activeConnectionId, onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
+  // ── Tauri window control callbacks (stable refs) ──────────────────
+  const winMinimize = useCallback(() => { tauriWindowAction('minimize'); }, []);
+  const winToggleMax = useCallback(() => { tauriWindowAction('toggleMaximize'); }, []);
+  const winClose = useCallback(() => { tauriWindowAction('close'); }, []);
   // ✅  Read directly from the ACTIVE slot (same pattern as ChatArea).
   //     No flat-proxy subscriptions → immune to setActiveConnection swaps
   //     during inactive-tab event processing.
@@ -91,19 +132,22 @@ export const Header: React.FC<HeaderProps> = ({ activeConnectionId, onOpenConnec
   const isolation = config.isolation ?? 'container';
 
   return (
-    <header style={{
+    <header
+      data-tauri-drag-region={isTauri ? '' : undefined}
+      style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
-      padding: '0 20px',
+      padding: isTauri ? '0 6px 0 20px' : '0 20px',
       height: '52px',
       background: 'var(--bg2)',
       borderBottom: '1px solid var(--border)',
       flexShrink: 0,
       gap: '16px',
+      userSelect: isTauri ? 'none' : undefined,
     }}>
-      {/* Logo + title */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+      {/* Logo + title — Tauri drag region */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', WebkitAppRegion: isTauri ? 'drag' : undefined } as React.CSSProperties}>
         <div style={{
           width: '28px', height: '28px',
           background: 'linear-gradient(135deg, var(--accent), #8b5cf6)',
@@ -410,6 +454,21 @@ export const Header: React.FC<HeaderProps> = ({ activeConnectionId, onOpenConnec
         >
           断开
         </button>
+      )}
+
+      {/* Tauri window controls — macOS-style traffic lights */}
+      {isTauri && (
+        <div
+          className="win-ctrl-group"
+          style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          flexShrink: 0, marginLeft: connectionStatus === 'connected' ? '0' : 'auto',
+          WebkitAppRegion: 'no-drag',
+        } as React.CSSProperties}>
+          <button onClick={winMinimize} title="最小化" style={winCtrlBtnStyle('#f59e0b')}><span style={{position:'relative',top:'-1px'}}>─</span></button>
+          <button onClick={winToggleMax} title="最大化" style={winCtrlBtnStyle('#10b981')}>□</button>
+          <button onClick={winClose} title="关闭" style={winCtrlBtnStyle('#ef4444')}>✕</button>
+        </div>
       )}
     </header>
   );

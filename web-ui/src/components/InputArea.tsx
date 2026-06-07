@@ -69,14 +69,14 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
     <div style={{
       borderTop: '1px solid var(--border)',
       background: 'var(--bg2)',
-      padding: '12px 20px 14px',
+      padding: '8px 20px 10px',
       flexShrink: 0,
     }}>
       <div style={{
         maxWidth: '800px',
         margin: '0 auto',
         display: 'flex',
-        gap: '10px',
+        gap: '8px',
         alignItems: 'flex-end',
       }}>
         <div style={{
@@ -112,16 +112,16 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
             rows={1}
             style={{
               flex: 1,
-              padding: '11px 14px',
+              padding: '8px 12px',
               background: 'transparent',
               color: 'var(--text)',
               border: 'none',
               outline: 'none',
               resize: 'none',
-              minHeight: '44px',
+              minHeight: '36px',
               maxHeight: '200px',
               lineHeight: '1.5',
-              fontSize: '14px',
+              fontSize: '13px',
             }}
           />
         </div>
@@ -132,10 +132,10 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
             disabled={!onCancel}
             title="停止"
             style={{
-              width: '44px', height: '44px',
+              width: '36px', height: '36px',
               background: 'var(--error, #e53e3e)',
               color: '#fff',
-              borderRadius: '11px',
+              borderRadius: '9px',
               fontSize: '16px',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               flexShrink: 0,
@@ -161,12 +161,12 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
                   disabled={uploadDisabled}
                   title="上传文件到 Agent"
                   style={{
-                    width: '44px', height: '44px',
+                    width: '36px', height: '36px',
                     background: uploadDisabled ? 'var(--bg3)' : 'var(--bg3)',
                     color: uploadDisabled ? 'var(--text3)' : 'var(--text2)',
                     border: `1px solid ${uploadDisabled ? 'var(--border)' : 'var(--border2)'}`,
-                    borderRadius: '11px',
-                    fontSize: '18px',
+                    borderRadius: '9px',
+                    fontSize: '16px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     flexShrink: 0,
                     cursor: uploadDisabled ? 'not-allowed' : 'pointer',
@@ -184,12 +184,12 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
                 disabled={dispatchDisabled || !currentMessage.trim()}
                 title="作为后台任务发送（不阻塞主对话）"
                 style={{
-                  width: '44px', height: '44px',
+                  width: '36px', height: '36px',
                   background: dispatchDisabled || !currentMessage.trim() ? 'var(--bg3)' : 'rgba(139,92,246,0.15)',
                   color: dispatchDisabled || !currentMessage.trim() ? 'var(--text3)' : '#8b5cf6',
                   border: `1px solid ${dispatchDisabled || !currentMessage.trim() ? 'var(--border)' : 'rgba(139,92,246,0.4)'}`,
-                  borderRadius: '11px',
-                  fontSize: '16px',
+                  borderRadius: '9px',
+                  fontSize: '14px',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   flexShrink: 0,
                   cursor: dispatchDisabled || !currentMessage.trim() ? 'not-allowed' : 'pointer',
@@ -204,11 +204,11 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
               onClick={handleSend}
               disabled={sendDisabled || !currentMessage.trim()}
               style={{
-                width: '44px', height: '44px',
+                width: '36px', height: '36px',
                 background: sendDisabled || !currentMessage.trim() ? 'var(--bg3)' : 'var(--accent)',
                 color: sendDisabled || !currentMessage.trim() ? 'var(--text3)' : '#fff',
-                borderRadius: '11px',
-                fontSize: '18px',
+                borderRadius: '9px',
+                fontSize: '16px',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 flexShrink: 0,
                 transition: 'background 0.15s, color 0.15s',
@@ -223,7 +223,7 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
 
       <p style={{
         textAlign: 'center', fontSize: '11px', color: 'var(--text3)',
-        marginTop: '6px', maxWidth: '800px', margin: '6px auto 0',
+        maxWidth: '800px', margin: '4px auto 0',
       }}>
         Enter 发送 · Ctrl+Enter 后台执行 · Shift+Enter 换行
       </p>

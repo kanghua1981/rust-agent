@@ -17,13 +17,15 @@ const NavItem: React.FC<{
   label: string;
   active: boolean;
   badge?: number;
+  collapsed?: boolean;
   onClick: () => void;
-}> = ({ icon, label, active, badge, onClick }) => (
+}> = ({ icon, label, active, badge, collapsed, onClick }) => (
   <button
     onClick={onClick}
+    title={collapsed ? label : undefined}
     style={{
-      display: 'flex', alignItems: 'center', gap: '9px',
-      padding: '8px 10px',
+      display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', gap: collapsed ? '0' : '9px',
+      padding: collapsed ? '10px 0' : '8px 10px',
       width: '100%',
       borderRadius: '8px',
       background: active ? 'var(--accent-glow)' : 'transparent',
@@ -32,15 +34,26 @@ const NavItem: React.FC<{
       fontSize: '13px',
       border: active ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent',
       transition: 'all 0.15s',
-      textAlign: 'left',
+      textAlign: collapsed ? 'center' : 'left',
       position: 'relative',
     }}
     onMouseOver={(e) => { if (!active) e.currentTarget.style.background = 'var(--bg3)'; }}
     onMouseOut={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
   >
-    <span style={{ fontSize: '15px', width: '18px', textAlign: 'center', flexShrink: 0 }}>{icon}</span>
-    <span style={{ flex: 1 }}>{label}</span>
-    {badge !== undefined && badge > 0 && (
+    <span style={{ fontSize: '15px', width: collapsed ? 'auto' : '18px', textAlign: 'center', flexShrink: 0, position: 'relative' }}>
+      {icon}
+      {collapsed && badge !== undefined && badge > 0 && (
+        <span style={{
+          position: 'absolute', top: '-4px', right: '-8px',
+          background: 'var(--red)', color: '#fff',
+          borderRadius: '10px', padding: '1px 5px',
+          fontSize: '9px', fontWeight: '600',
+          lineHeight: '14px', minWidth: '16px', textAlign: 'center',
+        }}>{badge}</span>
+      )}
+    </span>
+    {!collapsed && <span style={{ flex: 1 }}>{label}</span>}
+    {!collapsed && badge !== undefined && badge > 0 && (
       <span style={{
         background: 'var(--red)',
         color: '#fff',
@@ -214,6 +227,18 @@ const PresetsSection: React.FC<PresetsSectionProps> = ({
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onNewSession }) => {
+  // Collapse state — persisted in localStorage
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('sidebar-collapsed') === 'true'; } catch { return false; }
+  });
+  const toggleCollapsed = () => {
+    setCollapsed(prev => {
+      const next = !prev;
+      try { localStorage.setItem('sidebar-collapsed', String(next)); } catch {}
+      return next;
+    });
+  };
+
   // Selective subscriptions — subscribe only to what the component renders.
   // Avoids re-rendering on every streaming token / toolCall / message change.
   const connectionStatus = useAgentStore(s => s.connectionStatus);
@@ -248,107 +273,150 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
 
   return (
     <aside style={{
-      width: '220px',
+      width: collapsed ? '48px' : '220px',
       background: 'var(--bg2)',
       borderRight: '1px solid var(--border)',
       display: 'flex',
       flexDirection: 'column',
       flexShrink: 0,
       overflowY: 'auto',
+      overflowX: 'hidden',
       maxHeight: '100vh',
+      transition: 'width 0.2s ease',
     }}>
-      {/* Navigation */}
-      <div style={{ padding: '16px 12px 12px' }}>
-        <p style={{ fontSize: '10px', fontWeight: '600', color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '8px', paddingLeft: '4px' }}>
-          导航
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-          <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingCount || undefined} onClick={() => onTabChange('chat')} />
-          <NavItem icon="🔨" label="工具调用" active={activeTab === 'tools'} badge={runningTools || undefined} onClick={() => onTabChange('tools')} />
-          <NavItem icon="🌐" label="节点" active={activeTab === 'nodes'} badge={nodeList.length || undefined} onClick={() => onTabChange('nodes')} />
-          <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} onClick={() => onTabChange('sessions')} />
-          <NavItem icon="🔒" label="沙盒" active={activeTab === 'sandbox'} badge={pendingChanges || undefined} onClick={() => onTabChange('sandbox')} />
-          <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} onClick={() => onTabChange('plugins')} />
-          <NavItem icon="🧠" label="模型" active={activeTab === 'models'} onClick={() => onTabChange('models')} />
-          <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} onClick={() => onTabChange('settings')} />
-        </div>
-
-
-        
-        {/* 预设配置区域 */}
-        <PresetsSection
-          presets={presets}
-          currentServerUrl={serverUrl}
-          currentWorkdir={workdir}
-          connectionStatus={connectionStatus}
-          onConnect={handleQuickConnect}
-          onOpenSettings={handleOpenSettings}
-        />
-      </div>
-
-      {/* Bottom: connection status - simplified */}
-      <div style={{ 
-        padding: '12px', 
-        borderTop: '1px solid var(--border)',
-        marginTop: 'auto', // 推到底部
-        flexShrink: 0, // 防止压缩
+      {/* Toggle button */}
+      <div style={{
+        display: 'flex', justifyContent: collapsed ? 'center' : 'flex-end',
+        padding: collapsed ? '10px 0 4px' : '8px 10px 4px',
       }}>
-        <div 
-          onClick={onOpenConnect}
+        <button
+          onClick={toggleCollapsed}
+          title={collapsed ? '展开侧边栏' : '收起侧边栏'}
           style={{
-            background: connectionStatus === 'connected' ? 'var(--green-dim)' : 'var(--yellow-dim)',
-            border: connectionStatus === 'connected' ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(245,158,11,0.3)',
-            borderRadius: '8px',
-            padding: '10px',
-            cursor: 'pointer',
+            width: '24px', height: '24px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: '6px',
+            color: 'var(--text3)',
+            fontSize: '12px',
             transition: 'all 0.15s',
           }}
-          onMouseOver={(e) => e.currentTarget.style.opacity = '0.9'}
-          onMouseOut={(e) => e.currentTarget.style.opacity = '1'}
+          onMouseOver={(e) => { e.currentTarget.style.background = 'var(--bg3)'; e.currentTarget.style.color = 'var(--text)'; }}
+          onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text3)'; }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{
-                width: '6px', height: '6px', borderRadius: '50%',
-                background: connectionStatus === 'connected' ? '#10b981' : 
-                          connectionStatus === 'connecting' ? '#f59e0b' : 
-                          connectionStatus === 'error' ? '#ef4444' : '#6b7280',
-                flexShrink: 0,
-              }} />
-              <span style={{ 
-                fontSize: '11px', 
-                fontWeight: '500', 
-                color: connectionStatus === 'connected' ? 'var(--green)' : 
-                      connectionStatus === 'connecting' ? 'var(--yellow)' : 
-                      connectionStatus === 'error' ? 'var(--red)' : 'var(--text3)'
-              }}>
-                {connectionStatus === 'connected' ? '已连接' : 
-                 connectionStatus === 'connecting' ? '连接中…' : 
-                 connectionStatus === 'error' ? '连接错误' : '未连接'}
-              </span>
-            </div>
-            <span style={{ fontSize: '10px', color: 'var(--text3)' }}>点击管理</span>
-          </div>
-          
-          <p className="truncate" style={{ 
-            fontSize: '10px', 
-            color: 'var(--text2)', 
-            fontFamily: 'monospace',
-            marginBottom: '4px'
-          }}>
-            {serverUrl}
+          {collapsed ? '▶' : '◀'}
+        </button>
+      </div>
+
+      {/* Navigation */}
+      <div style={{ padding: collapsed ? '0 6px' : '16px 12px 12px' }}>
+        {!collapsed && (
+          <p style={{ fontSize: '10px', fontWeight: '600', color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '8px', paddingLeft: '4px' }}>
+            导航
           </p>
-          
-          {connectionStatus === 'connected' && workdir && (
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: collapsed ? '2px' : '3px' }}>
+          <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingCount || undefined} collapsed={collapsed} onClick={() => onTabChange('chat')} />
+          <NavItem icon="🔨" label="工具调用" active={activeTab === 'tools'} badge={runningTools || undefined} collapsed={collapsed} onClick={() => onTabChange('tools')} />
+          <NavItem icon="🌐" label="节点" active={activeTab === 'nodes'} badge={nodeList.length || undefined} collapsed={collapsed} onClick={() => onTabChange('nodes')} />
+          <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} collapsed={collapsed} onClick={() => onTabChange('sessions')} />
+          <NavItem icon="🔒" label="沙盒" active={activeTab === 'sandbox'} badge={pendingChanges || undefined} collapsed={collapsed} onClick={() => onTabChange('sandbox')} />
+          <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} collapsed={collapsed} onClick={() => onTabChange('plugins')} />
+          <NavItem icon="🧠" label="模型" active={activeTab === 'models'} collapsed={collapsed} onClick={() => onTabChange('models')} />
+          <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} collapsed={collapsed} onClick={() => onTabChange('settings')} />
+        </div>
+
+        {/* 预设配置区域 — only when expanded */}
+        {!collapsed && (
+          <PresetsSection
+            presets={presets}
+            currentServerUrl={serverUrl}
+            currentWorkdir={workdir}
+            connectionStatus={connectionStatus}
+            onConnect={handleQuickConnect}
+            onOpenSettings={handleOpenSettings}
+          />
+        )}
+      </div>
+
+      {/* Bottom: connection status — dot only when collapsed */}
+      <div style={{ 
+        padding: collapsed ? '8px 0' : '8px 10px', 
+        borderTop: '1px solid var(--border)',
+        marginTop: 'auto',
+        flexShrink: 0,
+        display: 'flex', justifyContent: 'center',
+      }}>
+        {collapsed ? (
+          <span
+            onClick={onOpenConnect}
+            title={connectionStatus === 'connected' ? '已连接' : connectionStatus === 'connecting' ? '连接中…' : '未连接'}
+            style={{
+              width: '8px', height: '8px', borderRadius: '50%',
+              background: connectionStatus === 'connected' ? '#10b981' : 
+                        connectionStatus === 'connecting' ? '#f59e0b' : 
+                        connectionStatus === 'error' ? '#ef4444' : '#6b7280',
+              cursor: 'pointer',
+            }}
+          />
+        ) : (
+          <div 
+            onClick={onOpenConnect}
+            style={{
+              background: connectionStatus === 'connected' ? 'var(--green-dim)' : 'var(--yellow-dim)',
+              border: connectionStatus === 'connected' ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(245,158,11,0.3)',
+              borderRadius: '8px',
+              padding: '8px',
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+              flex: 1,
+            }}
+            onMouseOver={(e) => e.currentTarget.style.opacity = '0.9'}
+            onMouseOut={(e) => e.currentTarget.style.opacity = '1'}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{
+                  width: '6px', height: '6px', borderRadius: '50%',
+                  background: connectionStatus === 'connected' ? '#10b981' : 
+                            connectionStatus === 'connecting' ? '#f59e0b' : 
+                            connectionStatus === 'error' ? '#ef4444' : '#6b7280',
+                  flexShrink: 0,
+                }} />
+                <span style={{ 
+                  fontSize: '11px', 
+                  fontWeight: '500', 
+                  color: connectionStatus === 'connected' ? 'var(--green)' : 
+                        connectionStatus === 'connecting' ? 'var(--yellow)' : 
+                        connectionStatus === 'error' ? 'var(--red)' : 'var(--text3)'
+                }}>
+                  {connectionStatus === 'connected' ? '已连接' : 
+                   connectionStatus === 'connecting' ? '连接中…' : 
+                   connectionStatus === 'error' ? '连接错误' : '未连接'}
+                </span>
+              </div>
+              <span style={{ fontSize: '10px', color: 'var(--text3)' }}>点击管理</span>
+            </div>
+            
             <p className="truncate" style={{ 
               fontSize: '10px', 
-              color: 'var(--text3)', 
-              fontFamily: 'monospace'
+              color: 'var(--text2)', 
+              fontFamily: 'monospace',
+              marginBottom: '2px'
             }}>
-              📂 {workdir}
+              {serverUrl}
             </p>
-          )}
-        </div>
+            
+            {connectionStatus === 'connected' && workdir && (
+              <p className="truncate" style={{ 
+                fontSize: '10px', 
+                color: 'var(--text3)', 
+                fontFamily: 'monospace'
+              }}>
+                📂 {workdir}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </aside>
   );

@@ -157,3 +157,6 @@ pre code { background: none; border: none; padding: 0; }
   border: 1px solid var(--border);
   margin-bottom: 4px;
 }
+
+/* ─── Tauri window controls ─────────────────────────────────── */
+.win-ctrl-group:hover button { color: rgba(0,0,0,0.65); }
