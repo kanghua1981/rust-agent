@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface SandboxFileChange {
@@ -106,6 +106,7 @@ interface AgentState {
   config: AgentConfig;
   presets: ConfigPreset[];
   connectionHistory: ConnectionHistory[];
+  workflows: WorkflowDef[];
 
   // ── Connection lifecycle actions ──
   createConnectionSlot: (id: string, label: string, serverUrl: string, workdir?: string) => void;
@@ -146,7 +147,12 @@ interface AgentState {
   addPreset: (preset: Omit<ConfigPreset, 'id' | 'createdAt'>) => void;
   updatePreset: (id: string, preset: Partial<ConfigPreset>) => void;
   deletePreset: (id: string) => void;
+  setPresets: (presets: ConfigPreset[]) => void;
   applyPreset: (id: string) => void;
+  setWorkflows: (workflows: WorkflowDef[]) => void;
+  addWorkflow: (wf: WorkflowDef) => void;
+  updateWorkflow: (id: string, wf: Partial<WorkflowDef>) => void;
+  deleteWorkflow: (id: string) => void;
   clearSession: () => void;
   setNodeList: (nodes: VirtualNodeInfo[]) => void;
   setClusterToken: (token: string) => void;
@@ -241,6 +247,7 @@ const initialState = {
   fileList: [] as FileInfo[],
   presets: (persistedConfig.presets || []) as ConfigPreset[],
   connectionHistory: [] as ConnectionHistory[],
+  workflows: [] as WorkflowDef[],
   config: {
     serverUrl: defaultUrl,
     autoApprove: persistedConfig.autoApprove ?? false,
@@ -704,6 +711,29 @@ export const useAgentStore = create<AgentState>()(
       deletePreset: (id) =>
         set((state) => ({
           presets: state.presets.filter((p) => p.id !== id),
+        })),
+
+      setPresets: (presets) =>
+        set({ presets }),
+
+      setWorkflows: (workflows) =>
+        set({ workflows }),
+
+      addWorkflow: (wf) =>
+        set((state) => ({
+          workflows: [...state.workflows.filter(w => w.id !== wf.id), wf],
+        })),
+
+      updateWorkflow: (id, partial) =>
+        set((state) => ({
+          workflows: state.workflows.map((w) =>
+            w.id === id ? { ...w, ...partial } : w
+          ),
+        })),
+
+      deleteWorkflow: (id) =>
+        set((state) => ({
+          workflows: state.workflows.filter((w) => w.id !== id),
         })),
 
       applyPreset: (id) => {

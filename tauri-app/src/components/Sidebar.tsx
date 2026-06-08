@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ConfigPreset } from '../types/agent';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows';
 
 interface SidebarProps {
   activeTab: Tab;
@@ -321,6 +321,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
           <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} collapsed={collapsed} onClick={() => onTabChange('sessions')} />
           <NavItem icon="🔒" label="沙盒" active={activeTab === 'sandbox'} badge={pendingChanges || undefined} collapsed={collapsed} onClick={() => onTabChange('sandbox')} />
           <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} collapsed={collapsed} onClick={() => onTabChange('plugins')} />
+          <NavItem icon="⚙️" label="工作流" active={activeTab === 'workflows'} collapsed={collapsed} onClick={() => onTabChange('workflows')} />
           <NavItem icon="🧠" label="模型" active={activeTab === 'models'} collapsed={collapsed} onClick={() => onTabChange('models')} />
           <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} collapsed={collapsed} onClick={() => onTabChange('settings')} />
         </div>

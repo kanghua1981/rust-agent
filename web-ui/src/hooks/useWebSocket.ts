@@ -157,6 +157,11 @@ export const useWebSocket = () => {
     setPlugins,
     setAvailableModels,
     setActiveModel,
+    setPresets,
+    setWorkflows,
+    addWorkflow,
+    updateWorkflow,
+    deleteWorkflow,
     activeConnectionId,
     connections,
     createConnectionSlot,
@@ -278,6 +283,42 @@ export const useWebSocket = () => {
     sendRaw({ type: 'load_session_by_id', data: { id } });
   }, [sendRaw, clearSession]);
 
+  // ── Preset CRUD (global.db) ───────────────────────────────────────
+  const listPresets = useCallback(() => {
+    sendRaw({ type: 'list_presets', data: {} });
+  }, [sendRaw]);
+
+  const savePreset = useCallback((preset: any) => {
+    // Map newSessionOnConnect → newSession for the Rust backend
+    const serverPreset = { ...preset };
+    if (preset.newSessionOnConnect !== undefined) {
+      serverPreset.newSession = preset.newSessionOnConnect;
+      delete serverPreset.newSessionOnConnect;
+    }
+    sendRaw({ type: 'save_preset', data: serverPreset });
+  }, [sendRaw]);
+
+  const deletePreset = useCallback((id: string) => {
+    sendRaw({ type: 'delete_preset', data: { id } });
+  }, [sendRaw]);
+
+  // ── Workflow CRUD (global.db) ─────────────────────────────────────
+  const listWorkflows = useCallback(() => {
+    sendRaw({ type: 'list_workflows', data: {} });
+  }, [sendRaw]);
+
+  const getWorkflow = useCallback((id: string) => {
+    sendRaw({ type: 'get_workflow', data: { id } });
+  }, [sendRaw]);
+
+  const sendSaveWorkflow = useCallback((wf: any) => {
+    sendRaw({ type: 'save_workflow', data: wf });
+  }, [sendRaw]);
+
+  const sendDeleteWorkflow = useCallback((id: string) => {
+    sendRaw({ type: 'delete_workflow', data: { id } });
+  }, [sendRaw]);
+
   const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
     const uploadMsgId = uuidv4();
     addMessage({
@@ -325,6 +366,8 @@ export const useWebSocket = () => {
         if (event.data.active_model) {
           setActiveModel(event.data.active_model);
         }
+        // Fetch presets from global.db
+        sendRaw({ type: 'list_presets', data: {} });
         break;
 
       case 'sandbox_status':
@@ -364,6 +407,81 @@ export const useWebSocket = () => {
           timestamp: Date.now(),
         });
         break;
+
+      // ── Preset events (global.db) ─────────────────────────────────────
+      case 'presets_list': {
+        const presets: any[] = event.data.presets || [];
+        // Map Rust field names → TS ConfigPreset (newSession → newSessionOnConnect)
+        const mapped = presets.map((p: any) => ({
+          ...p,
+          newSessionOnConnect: p.newSession ?? p.newSessionOnConnect ?? false,
+        }));
+        setPresets(mapped);
+        break;
+      }
+
+      case 'preset_saved': {
+        const p = event.data.preset;
+        if (!p) break;
+        const mapped = {
+          ...p,
+          newSessionOnConnect: p.newSession ?? p.newSessionOnConnect ?? false,
+        };
+        const st = useAgentStore.getState();
+        const existing = st.presets.findIndex((x: any) => x.id === mapped.id);
+        if (existing >= 0) {
+          st.updatePreset(mapped.id, mapped);
+        } else {
+          st.addPreset(mapped);
+        }
+        break;
+      }
+
+      case 'preset_deleted': {
+        const st = useAgentStore.getState();
+        st.deletePreset(event.data.id);
+        break;
+      }
+
+      // ── Workflow events (global.db) ────────────────────────────────────
+      case 'workflows_list': {
+        setWorkflows(event.data.workflows || []);
+        break;
+      }
+
+      case 'workflow_loaded': {
+        const wf = event.data.workflow;
+        if (wf) {
+          const st = useAgentStore.getState();
+          const existing = st.workflows.findIndex((w: any) => w.id === wf.id);
+          if (existing >= 0) {
+            st.updateWorkflow(wf.id, wf);
+          } else {
+            st.addWorkflow(wf);
+          }
+        }
+        break;
+      }
+
+      case 'workflow_saved': {
+        const wf = event.data.workflow;
+        if (wf) {
+          const st = useAgentStore.getState();
+          const existing = st.workflows.findIndex((w: any) => w.id === wf.id);
+          if (existing >= 0) {
+            st.updateWorkflow(wf.id, wf);
+          } else {
+            st.addWorkflow(wf);
+          }
+        }
+        break;
+      }
+
+      case 'workflow_deleted': {
+        const st = useAgentStore.getState();
+        st.deleteWorkflow(event.data.id);
+        break;
+      }
 
       case 'upload_file_result':
         if (event.data.success) {
@@ -1130,6 +1248,13 @@ export const useWebSocket = () => {
     listSessions,
     deleteSession,
     loadSessionById,
+    listPresets,
+    savePreset,
+    deletePreset,
+    listWorkflows,
+    getWorkflow,
+    saveWorkflow: sendSaveWorkflow,
+    deleteWorkflow: sendDeleteWorkflow,
     uploadFile,
     listPlugins,
     enablePlugin,

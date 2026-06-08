@@ -3,11 +3,12 @@ mod commands;
 mod config;
 mod confirm;
 mod context;
+mod db;
 mod diff;
 mod llm;
-mod memory;
 mod mcp_client;
 mod mcp_server;
+mod memory;
 mod model_manager;
 mod output;
 mod path_manager;
@@ -219,6 +220,10 @@ async fn main() -> Result<()> {
     // Load config
     let config = config::Config::load(&args)?;
 
+    // Initialize global database (presets, workflows, execution history)
+    let global_db = std::sync::Arc::new(db::GlobalDb::open_or_create()?);
+    tracing::info!("Global DB ready: {}", global_db.path().display());
+
     // Determine project directory
     let project_dir = if let Some(ref workdir) = args.workdir {
         std::path::PathBuf::from(workdir)
@@ -250,7 +255,7 @@ async fn main() -> Result<()> {
             } else {
                 vec![]
             };
-        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![], worker_workspaces).await;
+        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![], worker_workspaces, global_db).await;
     }
 
     // Server mode has its own event loop — launch and return

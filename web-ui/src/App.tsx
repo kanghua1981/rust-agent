@@ -10,6 +10,7 @@ import { SandboxPanel } from './components/SandboxPanel';
 import { NodesPanel } from './components/NodesPanel';
 import { TaskPanelList } from './components/TaskPanelList';
 import { PluginsPanel } from './components/PluginsPanel';
+import { WorkflowPanel } from './components/WorkflowPanel';
 import { ConnectionTabs } from './components/ConnectionTabs';
 import { ConnectModal } from './components/ConnectModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -20,14 +21,14 @@ import { useAgentPool } from './hooks/useAgentPool';
 import { ModelsPanel } from './components/ModelsPanel';
 import { CommandPalette, CommandAction } from './components/CommandPalette';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [showConnect, setShowConnect] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint } = useWebSocket();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listPresets, savePreset: savePresetWs, deletePreset: deletePresetWs, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -323,8 +324,14 @@ function App() {
           {activeTab === 'tools' && <ToolsPanel />}
           {activeTab === 'nodes' && <NodesPanel />}
           {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} isConnected={connectionStatus === 'connected'} onListSessions={listSessions} onDeleteSession={deleteSession} onLoadSessionById={loadSessionById} />}
-          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />}
+          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} savePresetWs={savePresetWs} deletePresetWs={deletePresetWs} />}
           {activeTab === 'plugins' && <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />}
+          {activeTab === 'workflows' && <WorkflowPanel
+            isConnected={connectionStatus === 'connected'}
+            listWorkflowsWs={listWorkflows}
+            saveWorkflowWs={saveWorkflowWs}
+            deleteWorkflowWs={deleteWorkflowWs}
+          />}
           {activeTab === 'models' && <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />}
           {activeTab === 'sandbox' && (
             <SandboxPanel

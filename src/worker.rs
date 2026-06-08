@@ -29,6 +29,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::agent::Agent;
 use crate::config::Config;
 use crate::container::IsolationMode;
+use crate::db::GlobalDb;
 use crate::output::{WsCommand, WsOutput};
 use crate::sandbox::Sandbox;
 use crate::workspaces;
@@ -78,8 +79,9 @@ pub async fn run(
     _worker_id: &str,
     _extra_binds: Vec<BindMount>,
     workspaces: Vec<crate::workspaces::NodeEntry>,
+    global_db: Arc<GlobalDb>,
 ) -> Result<()> {
-    run_async(config, project_dir, isolation, fd, workspaces).await
+    run_async(config, project_dir, isolation, fd, workspaces, global_db).await
 }
 
 
@@ -93,6 +95,7 @@ async fn run_async(
     isolation: IsolationMode,
     fd: i32,
     workspaces: Vec<crate::workspaces::NodeEntry>,
+    global_db: Arc<GlobalDb>,
 ) -> Result<()> {
     // Reconstruct TcpStream from the raw fd inherited from the server process.
     let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
@@ -286,6 +289,7 @@ async fn run_async(
                         &shared_workdir_reader,
                         &shared_mode_reader,
                         &ctrl_tx_reader,
+                        &global_db,
                     );
                 }
                 Message::Close(_) => break,
@@ -971,6 +975,7 @@ fn dispatch_ws_message(
     shared_workdir: &Arc<std::sync::Mutex<Option<PathBuf>>>,
     shared_mode: &Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>,
     ctrl_tx: &mpsc::UnboundedSender<ControlCmd>,
+    global_db: &Arc<GlobalDb>,
 ) {
     let msg: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -1078,6 +1083,128 @@ fn dispatch_ws_message(
                         "message": format!("delete_session failed: {:#}", e)
                     })),
                 }
+            }
+        }
+
+        // ── Preset CRUD (global.db) ────────────────────────────────────────
+        "list_presets" => {
+            match global_db.list_presets() {
+                Ok(presets) => {
+                    output.emit_public("presets_list", serde_json::json!({
+                        "presets": presets,
+                    }));
+                }
+                Err(e) => output.emit_public("error", serde_json::json!({
+                    "message": format!("list_presets failed: {:#}", e)
+                })),
+            }
+        }
+
+        "save_preset" => {
+            match msg.get("data").cloned() {
+                Some(data) => match serde_json::from_value::<crate::db::models::Preset>(data) {
+                    Ok(preset) => match global_db.save_preset(&preset) {
+                        Ok(()) => {
+                            output.emit_public("preset_saved", serde_json::json!({
+                                "preset": preset,
+                            }));
+                        }
+                        Err(e) => output.emit_public("error", serde_json::json!({
+                            "message": format!("save_preset failed: {:#}", e)
+                        })),
+                    },
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("save_preset: invalid preset data: {}", e)
+                    })),
+                },
+                None => output.emit_public("error", serde_json::json!({
+                    "message": "save_preset: missing 'data' field"
+                })),
+            }
+        }
+
+        "delete_preset" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                match global_db.delete_preset(id) {
+                    Ok(()) => output.emit_public("preset_deleted", serde_json::json!({ "id": id })),
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("delete_preset failed: {:#}", e)
+                    })),
+                }
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "delete_preset: missing 'data.id'"
+                }));
+            }
+        }
+
+        // ── Workflow CRUD (global.db) ──────────────────────────────────────
+        "list_workflows" => {
+            match global_db.list_workflows() {
+                Ok(workflows) => {
+                    output.emit_public("workflows_list", serde_json::json!({
+                        "workflows": workflows,
+                    }));
+                }
+                Err(e) => output.emit_public("error", serde_json::json!({
+                    "message": format!("list_workflows failed: {:#}", e)
+                })),
+            }
+        }
+
+        "get_workflow" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                match global_db.get_workflow(id) {
+                    Ok(Some(wf)) => output.emit_public("workflow_loaded", serde_json::json!({ "workflow": wf })),
+                    Ok(None) => output.emit_public("error", serde_json::json!({
+                        "message": format!("workflow not found: {}", id)
+                    })),
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("get_workflow failed: {:#}", e)
+                    })),
+                }
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "get_workflow: missing 'data.id'"
+                }));
+            }
+        }
+
+        "save_workflow" => {
+            match msg.get("data").cloned() {
+                Some(data) => match serde_json::from_value::<crate::db::models::Workflow>(data) {
+                    Ok(wf) => match global_db.save_workflow(&wf) {
+                        Ok(()) => {
+                            output.emit_public("workflow_saved", serde_json::json!({
+                                "workflow": wf,
+                            }));
+                        }
+                        Err(e) => output.emit_public("error", serde_json::json!({
+                            "message": format!("save_workflow failed: {:#}", e)
+                        })),
+                    },
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("save_workflow: invalid workflow data: {}", e)
+                    })),
+                },
+                None => output.emit_public("error", serde_json::json!({
+                    "message": "save_workflow: missing 'data' field"
+                })),
+            }
+        }
+
+        "delete_workflow" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                match global_db.delete_workflow(id) {
+                    Ok(()) => output.emit_public("workflow_deleted", serde_json::json!({ "id": id })),
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("delete_workflow failed: {:#}", e)
+                    })),
+                }
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "delete_workflow: missing 'data.id'"
+                }));
             }
         }
 

@@ -98,6 +98,9 @@ zstd = "0.13"
 # Async utilities
 futures-util = "0.3"
 
+# SQLite global database (bundled = no system dep)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 # Serialization formats
 bson = "2.8"
 ciborium = "0.2"

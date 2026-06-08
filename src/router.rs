@@ -172,8 +172,15 @@ pub fn classify_heuristic(input: &str) -> Option<TaskComplexity> {
     // or ends with "?" and is short), it's almost certainly Simple.
     // This prevents false keyword matches like "explain how to implement X"
     // from being misclassified as Medium/Complex.
-    let is_likely_question = input.trim().ends_with('?')
-        || lower.starts_with("what ")
+    //
+    // IMPORTANT: Chinese prefixes like "请", "怎么", "如何" are NOT reliable
+    // question indicators — they frequently introduce task requests such as
+    // "请帮我实现认证系统" or "如何重构数据库层".  For Chinese we only
+    // short-circuit when the input ALSO ends with a question mark.
+    let ends_with_question_mark = input.trim().ends_with('?')
+        || input.trim().ends_with('？');
+
+    let is_english_question = lower.starts_with("what ")
         || lower.starts_with("how ")
         || lower.starts_with("why ")
         || lower.starts_with("can you ")
@@ -185,12 +192,17 @@ pub fn classify_heuristic(input: &str) -> Option<TaskComplexity> {
         || lower.starts_with("are ")
         || lower.starts_with("does ")
         || lower.starts_with("do ")
-        || lower.starts_with("what's ")
-        || lower.starts_with("请")
+        || lower.starts_with("what's ");
+
+    let is_cn_question = ends_with_question_mark && (
+        lower.starts_with("请")
         || lower.starts_with("什么是")
         || lower.starts_with("为什么")
         || lower.starts_with("怎么")
-        || lower.starts_with("如何");
+        || lower.starts_with("如何")
+    );
+
+    let is_likely_question = ends_with_question_mark || is_english_question || is_cn_question;
 
     if is_likely_question {
         let char_count = input.chars().count();

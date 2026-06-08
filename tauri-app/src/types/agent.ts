@@ -29,7 +29,14 @@ export type ClientMessage =
   | DeleteModelMessage
   | ListEndpointsMessage
   | AddEndpointMessage
-  | DeleteEndpointMessage;
+  | DeleteEndpointMessage
+  | ListPresetsMessage
+  | SavePresetMessage
+  | DeletePresetMessage
+  | ListWorkflowsMessage
+  | GetWorkflowMessage
+  | SaveWorkflowMessage
+  | DeleteWorkflowMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
@@ -121,7 +128,14 @@ export type ServerEvent =
   | ModelAddedEvent
   | ModelDeletedEvent
   | EndpointAddedEvent
-  | EndpointDeletedEvent;
+  | EndpointDeletedEvent
+  | PresetsListEvent
+  | PresetSavedEvent
+  | PresetDeletedEvent
+  | WorkflowsListEvent
+  | WorkflowLoadedEvent
+  | WorkflowSavedEvent
+  | WorkflowDeletedEvent;
 
 export interface SessionMeta {
   id: string;
@@ -608,6 +622,43 @@ export interface DeleteEndpointMessage extends BaseMessage {
   data: { name: string };
 }
 
+// ── Preset CRUD messages ───────────────────────────────────────────
+export interface ListPresetsMessage extends BaseMessage {
+  type: 'list_presets';
+  data: {};
+}
+
+export interface SavePresetMessage extends BaseMessage {
+  type: 'save_preset';
+  data: Record<string, any>;  // Preset fields (camelCase)
+}
+
+export interface DeletePresetMessage extends BaseMessage {
+  type: 'delete_preset';
+  data: { id: string };
+}
+
+// ── Workflow CRUD messages ─────────────────────────────────────────
+export interface ListWorkflowsMessage extends BaseMessage {
+  type: 'list_workflows';
+  data: {};
+}
+
+export interface GetWorkflowMessage extends BaseMessage {
+  type: 'get_workflow';
+  data: { id: string };
+}
+
+export interface SaveWorkflowMessage extends BaseMessage {
+  type: 'save_workflow';
+  data: Record<string, any>;  // Workflow fields
+}
+
+export interface DeleteWorkflowMessage extends BaseMessage {
+  type: 'delete_workflow';
+  data: { id: string };
+}
+
 export interface PluginsListEvent extends BaseMessage {
   type: 'plugins_list';
   data: { plugins: PluginInfo[] };
@@ -664,6 +715,69 @@ export interface EndpointAddedEvent extends BaseMessage {
 export interface EndpointDeletedEvent extends BaseMessage {
   type: 'endpoint_deleted';
   data: { name: string };
+}
+
+// ── Preset events ───────────────────────────────────────────────────
+export interface PresetsListEvent extends BaseMessage {
+  type: 'presets_list';
+  data: { presets: any[] };
+}
+
+export interface PresetSavedEvent extends BaseMessage {
+  type: 'preset_saved';
+  data: { preset: any };
+}
+
+export interface PresetDeletedEvent extends BaseMessage {
+  type: 'preset_deleted';
+  data: { id: string };
+}
+
+// ── Workflow events ─────────────────────────────────────────────────
+export interface WorkflowsListEvent extends BaseMessage {
+  type: 'workflows_list';
+  data: { workflows: any[] };
+}
+
+export interface WorkflowLoadedEvent extends BaseMessage {
+  type: 'workflow_loaded';
+  data: { workflow: any };
+}
+
+export interface WorkflowSavedEvent extends BaseMessage {
+  type: 'workflow_saved';
+  data: { workflow: any };
+}
+
+export interface WorkflowDeletedEvent extends BaseMessage {
+  type: 'workflow_deleted';
+  data: { id: string };
+}
+
+// ── Workflow data types ─────────────────────────────────────────────
+export interface WorkflowStage {
+  id: string;
+  workflowId: string;
+  presetId?: string;
+  stageOrder: number;
+  stageGroup: string;
+  inputTemplate: string;
+  outputKey?: string;
+  condition: string;
+  timeoutSecs: number;
+  retryCount: number;
+  autoApprove: boolean;
+}
+
+export interface WorkflowDef {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  defaultTimeout: number;
+  stages: WorkflowStage[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 // 工具类型定义
@@ -728,7 +842,13 @@ export interface ConfigPreset {
   agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
   isolation?: 'normal' | 'container' | 'sandbox';
   newSessionOnConnect?: boolean;
+  newSession?: boolean;  // from Rust backend (camelCase of new_session)
+  icon?: string;
+  color?: string;
+  tags?: string[];
+  sortOrder?: number;
   createdAt: number;
+  updatedAt?: string;
 }
 
 // 连接历史记录

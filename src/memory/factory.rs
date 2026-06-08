@@ -91,7 +91,10 @@ fn default_cache_ttl() -> u64 { 300 } // 5 minutes
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            backend: MemoryBackend::LocalFile,
+            // Use Intelligent backend by default so that interaction episodes
+            // are automatically persisted to .agent/intelligent.json alongside
+            // the standard .agent/memory.md markdown log.
+            backend: MemoryBackend::Intelligent,
             http: HttpMemoryConfig::default(),
             max_knowledge: default_max_knowledge(),
             max_file_map: default_max_file_map(),
@@ -165,7 +168,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = MemoryConfig::default();
-        assert!(matches!(config.backend, MemoryBackend::LocalFile));
+        assert!(matches!(config.backend, MemoryBackend::Intelligent));
         assert_eq!(config.max_knowledge, 10);
         assert_eq!(config.max_file_map, 20);
         assert_eq!(config.max_session_log, 30);

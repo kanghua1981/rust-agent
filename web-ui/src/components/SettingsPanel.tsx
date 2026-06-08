@@ -6,9 +6,11 @@ import type { ConfigPreset } from '../types/agent';
 interface SettingsPanelProps {
   isConnected: boolean;
   onSetWorkdirRemote: (workdir: string) => void;
+  savePresetWs?: (preset: any) => void;
+  deletePresetWs?: (id: string) => void;
 }
 
-export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote, savePresetWs, deletePresetWs }) => {
   const { 
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset,
     clusterToken, setClusterToken, connectionStatus,
@@ -73,11 +75,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
   const savePreset = () => {
     if (!presetForm.name.trim()) return;
     
+    const now = Date.now();
+    const presetData: any = {
+      ...presetForm,
+      id: editingPreset || `preset_${now}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: now,
+    };
+    
     if (editingPreset) {
-      updatePreset(editingPreset, presetForm);
+      updatePreset(editingPreset, presetData);
       setEditingPreset(null);
     } else {
-      addPreset(presetForm);
+      addPreset(presetData);
+    }
+    
+    // Also send to server for persistence in global.db
+    if (isConnected && savePresetWs) {
+      savePresetWs(presetData);
     }
     
     resetPresetForm();
@@ -384,7 +398,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
                       编辑
                     </button>
                     <button
-                      onClick={() => deletePreset(preset.id)}
+                      onClick={() => {
+                        deletePreset(preset.id);
+                        if (isConnected && deletePresetWs) deletePresetWs(preset.id);
+                      }}
                       style={{
                         padding: '4px 8px', background: 'var(--red-dim)', color: 'var(--red)',
                         borderRadius: '4px', fontSize: '11px',
