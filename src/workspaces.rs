@@ -1,100 +1,14 @@
-//! workspaces.toml — the single topology config file for every agent process.
+//! Workspace topology — hardware probing, virtual node listing, route table, and
+//! NodeRegistry.
 //!
-//! ```toml
-//! [cluster]
-//! token = "shared-secret"
-//!
-//! # [[node]] — a local callable node on THIS machine (workdir required)
-//! [[node]]
-//! name      = "firmware-bk7236"
-//! workdir   = "/home/user/firmware/bk7236"
-//! isolation = "sandbox"   # "normal" | "container" | "sandbox"
-//! tags      = ["embedded", "bk7236"]
-//!
-//! # [[peer]] — a remote agent server on ANOTHER machine.
-//! #   Visible only to the server process during startup probe.
-//! #   LLM never sees this entry; it sees the expanded `name@alias` nodes instead.
-//! [[peer]]
-//! name = "gpu-box"
-//! url  = "ws://192.168.1.20:9527"
-//!
-//! [[peer]]
-//! name = "pi"
-//! url  = "ws://raspberrypi.local:9527"
-//! ```
-//!
-//! Two distinct key types:
-//!   `[[node]]`  — a single callable node; has `workdir`; used by workers & LLM routing.
-//!   `[[peer]]`  — a peer server address; has `url`; consumed only by the server probe loop.
-//!
-//! Search order: `.agent/workspaces.toml` (project-level) →
-//!               `~/.config/rust_agent/workspaces.toml` (global)
+//! All node definitions live in `global.db` (`nodes` table) since workspaces.toml
+//! has been removed.  Peers are loaded from `peers.toml` and will migrate to the
+//! DB in a future version.  The cluster token is taken from the
+//! `AGENT_CLUSTER_TOKEN` environment variable.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-
-// ── Config structs ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct WorkspacesFile {
-    #[serde(default)]
-    pub cluster: ClusterConfig,
-
-    /// `[[node]]` — a local callable node on this machine.
-    #[serde(default, rename = "node")]
-    pub nodes: Vec<NodeEntry>,
-
-    /// `[[peer]]` — a remote agent server to probe on startup.
-    /// Visible to the server process only; never exposed to LLM.
-    #[serde(default, rename = "peer")]
-    pub peers: Vec<PeerEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct ClusterConfig {
-    pub token: Option<String>,
-}
-
-/// A single callable node on this machine.
-/// Corresponds to a `[[node]]` entry in `workspaces.toml`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NodeEntry {
-    pub name: String,
-    /// Local project directory (required).
-    #[serde(default)]
-    pub workdir: Option<PathBuf>,
-    #[serde(default)]
-    pub description: String,
-    /// Preferred: "normal" | "container" | "sandbox".
-    /// When set, takes precedence over the legacy `sandbox` bool.
-    #[serde(default)]
-    pub isolation: Option<String>,
-    /// Legacy shorthand — `sandbox = true` is equivalent to `isolation = "sandbox"`.
-    /// Ignored when `isolation` is set explicitly.
-    #[serde(default)]
-    pub sandbox: bool,
-    /// Default execution mode for this node.
-    /// "simple" | "plan" | "pipeline" | "auto" (= let router decide, the default).
-    #[serde(default)]
-    pub exec_mode: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-/// A peer agent server on another machine.
-/// Corresponds to a `[[peer]]` entry in `workspaces.toml`.
-/// Consumed only by the server's startup probe loop — never exposed to LLM.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PeerEntry {
-    /// Human-readable alias for this server (used as `@alias` suffix in node names).
-    pub name: String,
-    /// WebSocket URL of the remote agent server, e.g. `ws://192.168.1.20:9527`.
-    pub url: String,
-    /// Optional per-peer token override (falls back to `[cluster].token`).
-    #[serde(default)]
-    pub token: Option<String>,
-}
 
 // ── Capability structs (serialised into the ready frame) ──────────────────────
 
@@ -122,12 +36,14 @@ pub struct NodeCapabilities {
 /// tasks to the right virtual node.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VirtualNodeInfo {
+    /// Unique identifier — the DB row id.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub workdir: String,
     #[serde(default)]
     pub description: String,
     /// Isolation mode string: "normal" | "container" | "sandbox".
-    /// Takes precedence over the legacy `sandbox` bool when present.
     #[serde(default)]
     pub isolation: Option<String>,
     /// Legacy field kept for backward compatibility with older server responses.
@@ -138,6 +54,61 @@ pub struct VirtualNodeInfo {
     pub exec_mode: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Creation timestamp (ISO 8601).
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Last-updated timestamp (ISO 8601).
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+// ── Peer (remote agent server) ────────────────────────────────────────────────
+
+/// A peer agent server on another machine.
+/// Loaded from `peers.toml` (project or global); will migrate to `global.db`
+/// in a future version.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PeerEntry {
+    /// Human-readable alias for this server (used as `@alias` suffix in node names).
+    pub name: String,
+    /// WebSocket URL of the remote agent server, e.g. `ws://192.168.1.20:9527`.
+    pub url: String,
+    /// Optional per-peer token override (falls back to `AGENT_CLUSTER_TOKEN`).
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// Minimal container for `peers.toml`.
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+struct PeersFile {
+    #[serde(default, rename = "peer")]
+    pub peers: Vec<PeerEntry>,
+}
+
+/// Load peer entries from `peers.toml`.  Search order:
+/// 1. `<project_dir>/.agent/peers.toml`
+/// 2. `~/.config/rust_agent/peers.toml`
+pub fn load_peers(project_dir: &std::path::Path) -> Vec<PeerEntry> {
+    let project_cfg = project_dir.join(".agent/peers.toml");
+    if let Ok(text) = std::fs::read_to_string(&project_cfg) {
+        if let Ok(cfg) = toml::from_str::<PeersFile>(&text) {
+            return cfg.peers;
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let global_cfg = home.join(".config/rust_agent/peers.toml");
+        if let Ok(text) = std::fs::read_to_string(&global_cfg) {
+            if let Ok(cfg) = toml::from_str::<PeersFile>(&text) {
+                return cfg.peers;
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Read the cluster token from the `AGENT_CLUSTER_TOKEN` environment variable.
+pub fn cluster_token_from_env() -> Option<String> {
+    std::env::var("AGENT_CLUSTER_TOKEN").ok().filter(|s| !s.is_empty())
 }
 
 // ── Well-known bin candidates ─────────────────────────────────────────────────
@@ -205,9 +176,9 @@ pub fn probe_gpus() -> Vec<GpuInfo> {
         .collect()
 }
 
-/// Probe hardware capabilities and build `VirtualNodeInfo` list from local
-/// node entries.  Returns `(caps, virtual_nodes)`.
-pub fn probe_capabilities(nodes: &[NodeEntry]) -> (NodeCapabilities, Vec<VirtualNodeInfo>) {
+/// Probe hardware capabilities and build the `VirtualNodeInfo` list from the DB.
+/// Returns `(caps, virtual_nodes)`.
+pub fn probe_capabilities() -> (NodeCapabilities, Vec<VirtualNodeInfo>) {
     let bins = probe_bins(BIN_CANDIDATES);
     let gpus = probe_gpus();
     let cpu_cores = std::thread::available_parallelism()
@@ -224,28 +195,122 @@ pub fn probe_capabilities(nodes: &[NodeEntry]) -> (NodeCapabilities, Vec<Virtual
         bins,
     };
 
-    let virtual_nodes: Vec<VirtualNodeInfo> = nodes
-        .iter()
-        .filter_map(|n| n.workdir.as_ref().map(|wd| {
-            // Resolve isolation: explicit field > legacy sandbox bool > None (server default)
-            let isolation = match n.isolation.as_deref() {
-                Some(m) => Some(m.to_string()),
-                None if n.sandbox => Some("sandbox".to_string()),
-                _ => None,
-            };
-            VirtualNodeInfo {
-                name: n.name.clone(),
-                workdir: wd.display().to_string(),
-                description: n.description.clone(),
-                isolation,
-                sandbox: n.sandbox,
-                exec_mode: n.exec_mode.clone(),
-                tags: n.tags.clone(),
-            }
-        }))
-        .collect();
+    let virtual_nodes = load_vnodes();
 
     (caps, virtual_nodes)
+}
+
+/// Convert a DB `Node` row into a `VirtualNodeInfo`.
+fn node_to_vinfo(n: &crate::db::models::Node) -> VirtualNodeInfo {
+    VirtualNodeInfo {
+        id: n.id.clone(),
+        name: n.name.clone(),
+        workdir: n.workdir.clone(),
+        description: n.description.clone(),
+        isolation: n.isolation.clone(),
+        sandbox: n.sandbox,
+        exec_mode: n.exec_mode.clone(),
+        tags: n.tags.clone(),
+        created_at: Some(n.created_at.clone()),
+        updated_at: Some(n.updated_at.clone()),
+    }
+}
+
+/// Load virtual node list from the global database.
+/// Called after Node CRUD mutations so the next `ready` / `node_saved` event
+/// contains an up-to-date snapshot.
+pub fn load_vnodes() -> Vec<VirtualNodeInfo> {
+    let db_nodes = match crate::db::GlobalDb::open_or_create() {
+        Ok(db) => db.list_nodes().unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    let mut result: Vec<VirtualNodeInfo> = db_nodes.iter().map(node_to_vinfo).collect();
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    result
+}
+
+// ── Seed: first-boot import from legacy workspaces.toml ───────────────────────
+
+/// If the DB `nodes` table is empty and a legacy `workspaces.toml` exists,
+/// import its `[[node]]` entries into the DB so the user doesn't lose their
+/// configuration after the upgrade.
+pub fn seed_nodes_from_legacy_toml() {
+    let Ok(db) = crate::db::GlobalDb::open_or_create() else { return };
+    let Ok(existing) = db.list_nodes() else { return };
+    if !existing.is_empty() {
+        return; // Already have nodes, nothing to seed.
+    }
+
+    // Try to load legacy workspaces.toml
+    let path = std::path::PathBuf::from(".")
+        .join(".agent/workspaces.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+
+    // Minimal legacy struct for import
+    #[derive(Deserialize)]
+    struct LegacyNode {
+        name: String,
+        #[serde(default)]
+        workdir: Option<String>,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        isolation: Option<String>,
+        #[serde(default)]
+        sandbox: bool,
+        #[serde(default)]
+        exec_mode: Option<String>,
+        #[serde(default)]
+        tags: Vec<String>,
+    }
+    #[derive(Deserialize)]
+    struct LegacyWorkspaces {
+        #[serde(default, rename = "node")]
+        nodes: Vec<LegacyNode>,
+    }
+
+    let Ok(legacy) = toml::from_str::<LegacyWorkspaces>(&text) else { return };
+    if legacy.nodes.is_empty() {
+        return;
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut imported = 0usize;
+    for n in &legacy.nodes {
+        let wd = match &n.workdir {
+            Some(w) if !w.is_empty() => w.clone(),
+            _ => continue,
+        };
+        let node = crate::db::models::Node {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: n.name.clone(),
+            workdir: wd,
+            description: n.description.clone(),
+            isolation: n.isolation.clone(),
+            sandbox: n.sandbox || matches!(n.isolation.as_deref(), Some("sandbox")),
+            exec_mode: n.exec_mode.clone(),
+            tags: n.tags.clone(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        if db.save_node(&node).is_ok() {
+            imported += 1;
+        }
+    }
+
+    if imported > 0 {
+        tracing::info!(
+            "Seeded {} node(s) from legacy .agent/workspaces.toml into global.db",
+            imported
+        );
+        // Rename the legacy file so we don't re-import on next startup.
+        let bak = path.with_extension("toml.bak");
+        let _ = std::fs::rename(&path, &bak);
+    }
 }
 
 // ── In-process route table (tag → remote node) ───────────────────────────────
@@ -253,7 +318,7 @@ pub fn probe_capabilities(nodes: &[NodeEntry]) -> (NodeCapabilities, Vec<Virtual
 /// A resolved route entry: a specific virtual node on a physical server.
 #[derive(Debug, Clone)]
 pub struct RouteEntry {
-    /// Name of the `[[remote]]` entry in workspaces.toml.
+    /// Name of the server entry.
     pub server_name: String,
     /// WebSocket URL of the physical server.
     pub server_url: String,
@@ -304,7 +369,7 @@ pub fn get_route_table() -> Result<Vec<RouteEntry>, ()> {
 
 // ── NodeRegistry ──────────────────────────────────────────────────────────────
 //
-// Runtime state of all known nodes: local [[node]] entries (always online) and
+// Runtime state of all known nodes: local nodes (always online) and
 // peer-expanded sub-nodes (online/offline based on probe results).
 // Populated at server startup by registry_init_local() + spawn_probe_loop().
 // Read by build_nodes_json() for the /nodes HTTP endpoint.
@@ -372,35 +437,32 @@ fn unix_now() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Populate the registry with local `[[node]]` entries.
+/// Populate the registry with local node entries from the DB.
 /// Called once at server startup; local nodes are always Online.
-pub fn registry_init_local(nodes: &[NodeEntry], port: u16) {
-    let entries: Vec<RegistryEntry> = nodes.iter().filter_map(|n| {
-        let workdir = n.workdir.as_ref()?;
-        let enc: String = workdir.display().to_string().bytes().flat_map(|b| {
+pub fn registry_init_local(port: u16) {
+    let vnodes = load_vnodes();
+
+    let entries: Vec<RegistryEntry> = vnodes.iter().map(|vn| {
+        let enc: String = vn.workdir.bytes().flat_map(|b| {
             if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
                 vec![b as char]
             } else {
                 format!("%{:02X}", b).chars().collect()
             }
         }).collect();
-        Some(RegistryEntry {
-            name:          n.name.clone(),
+        RegistryEntry {
+            name:          vn.name.clone(),
             url:           format!("ws://localhost:{}/?workdir={}", port, enc),
             peer_name:     None,
             status:        NodeStatus::Online,
             last_seen_secs: unix_now(),
-            tags:          n.tags.clone(),
-            isolation:     match n.isolation.as_deref() {
-                               Some(m) => Some(m.to_string()),
-                               None if n.sandbox => Some("sandbox".to_string()),
-                               _ => None,
-                           },
-            sandbox:       n.sandbox || matches!(n.isolation.as_deref(), Some("sandbox")),
-            description:   n.description.clone(),
-            workdir:       Some(workdir.display().to_string()),
-            exec_mode:     n.exec_mode.clone(),
-        })
+            tags:          vn.tags.clone(),
+            isolation:     vn.isolation.clone(),
+            sandbox:       vn.sandbox || matches!(vn.isolation.as_deref(), Some("sandbox")),
+            description:   vn.description.clone(),
+            workdir:       Some(vn.workdir.clone()),
+            exec_mode:     vn.exec_mode.clone(),
+        }
     }).collect();
 
     let mut reg = NODE_REGISTRY.write().unwrap();
@@ -454,31 +516,6 @@ pub fn registry_snapshot() -> Vec<RegistryEntry> {
     NODE_REGISTRY.read().unwrap().clone()
 }
 
-// ── Helpers on WorkspacesFile ─────────────────────────────────────────────────
-
-impl WorkspacesFile {
-    /// All local nodes declared with `[[node]]`.
-    pub fn all_nodes(&self) -> Vec<NodeEntry> {
-        self.nodes.clone()
-    }
-
-    /// Alias for `all_nodes()` — every `[[node]]` entry is local.
-    pub fn local_nodes(&self) -> Vec<NodeEntry> {
-        self.nodes.clone()
-    }
-
-    /// All peer servers declared with `[[peer]]`.
-    /// These are consumed by the server probe loop only.
-    pub fn all_peers(&self) -> &[PeerEntry] {
-        &self.peers
-    }
-
-    /// Cluster token, if configured.
-    pub fn cluster_token(&self) -> Option<&str> {
-        self.cluster.token.as_deref()
-    }
-}
-
 // ── URL helpers ─────────────────────────────────────────────────────────────────
 
 /// Ensure a WebSocket URL targets `path` (e.g. `/agent` or `/probe`).
@@ -499,31 +536,4 @@ pub fn with_path(url: &str, path: &str) -> String {
     } else {
         url.to_string()
     }
-}
-
-// ── Loader ────────────────────────────────────────────────────────────────────
-
-/// Load `workspaces.toml`.  Returns an empty default if no file is found.
-///
-/// Search order:
-/// 1. `<project_dir>/.agent/workspaces.toml`
-/// 2. `~/.config/rust_agent/workspaces.toml`
-pub fn load(project_dir: &Path) -> WorkspacesFile {
-    // Project-level takes priority.
-    let project_cfg = project_dir.join(".agent/workspaces.toml");
-    if let Ok(text) = std::fs::read_to_string(&project_cfg) {
-        if let Ok(cfg) = toml::from_str::<WorkspacesFile>(&text) {
-            return cfg;
-        }
-    }
-    // Global fallback.
-    if let Some(home) = dirs::home_dir() {
-        let global_cfg = home.join(".config/rust_agent/workspaces.toml");
-        if let Ok(text) = std::fs::read_to_string(&global_cfg) {
-            if let Ok(cfg) = toml::from_str::<WorkspacesFile>(&text) {
-                return cfg;
-            }
-        }
-    }
-    WorkspacesFile::default()
 }

@@ -180,6 +180,67 @@ impl GlobalDb {
         Ok(())
     }
 
+    // ── Node CRUD (server-managed workspaces) ───────────────────────────
+
+    pub fn list_nodes(&self) -> rusqlite::Result<Vec<Node>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, workdir, description, isolation,
+                    sandbox, exec_mode, tags, created_at, updated_at
+             FROM nodes ORDER BY name"
+        )?;
+        let rows: Vec<Node> = stmt.query_map([], |row| {
+            let tags_str: String = row.get(7)?;
+            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+            Ok(Node {
+                id:          row.get(0)?,
+                name:        row.get(1)?,
+                workdir:     row.get(2)?,
+                description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                isolation:   row.get(4)?,
+                sandbox:     row.get::<_, i32>(5)? != 0,
+                exec_mode:   row.get(6)?,
+                tags,
+                created_at:  row.get(8)?,
+                updated_at:  row.get(9)?,
+            })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn save_node(&self, node: &Node) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tags_json = serde_json::to_string(&node.tags).unwrap_or_default();
+        with_retry(|| {
+            conn.execute(
+                "INSERT INTO nodes (id, name, workdir, description, isolation,
+                 sandbox, exec_mode, tags, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    workdir = excluded.workdir,
+                    description = excluded.description,
+                    isolation = excluded.isolation,
+                    sandbox = excluded.sandbox,
+                    exec_mode = excluded.exec_mode,
+                    tags = excluded.tags,
+                    updated_at = excluded.updated_at",
+                params![
+                    node.id, node.name, node.workdir, node.description,
+                    node.isolation, node.sandbox as i32, node.exec_mode,
+                    tags_json, node.created_at, node.updated_at
+                ],
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn delete_node(&self, id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        with_retry(|| conn.execute("DELETE FROM nodes WHERE id = ?1", params![id]))?;
+        Ok(())
+    }
+
     // ── Workflow CRUD ─────────────────────────────────────────────────
 
     pub fn list_workflows(&self) -> rusqlite::Result<Vec<Workflow>> {

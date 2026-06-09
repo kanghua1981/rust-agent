@@ -1393,19 +1393,9 @@ pub async fn run(
                     }
                     // /nodes probes all [[remote]] entries in workspaces (via plugin system)
                     if input == "/nodes" {
-                        let ws_cfg = if let Some(pm) = &plugin_manager {
-                            let lock = pm.lock().await;
-                            let from_pm = lock.collect_workspace();
-                            if from_pm.peers.is_empty() {
-                                // 兼容兜底
-                                crate::workspaces::load(&agent.project_dir)
-                            } else {
-                                from_pm
-                            }
-                        } else {
-                            crate::workspaces::load(&agent.project_dir)
-                        };
-                        handle_nodes_command(ws_cfg).await;
+                        let peers = crate::workspaces::load_peers(&agent.project_dir);
+                        let cluster_tok = crate::workspaces::cluster_token_from_env();
+                        handle_nodes_command(&peers, cluster_tok).await;
                         continue;
                     }
                     // Sandbox commands need async
@@ -1874,13 +1864,12 @@ fn probe_url_encode(s: &str) -> String {
 /// Probe every `[[peer]]` entry collected from the plugin system, print hierarchical
 /// status (physical server → virtual nodes with workdir/sandbox/tags), and populate
 /// the in-process route table so that subsequent `any:<tag>` calls work immediately.
-async fn handle_nodes_command(cfg: crate::workspaces::WorkspacesFile) {
+async fn handle_nodes_command(peers: &[crate::workspaces::PeerEntry], cluster_tok: Option<String>) {
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
 
-    let remotes = cfg.all_peers().to_vec();
-    let cluster_tok = cfg.cluster.token.clone();
+    let remotes = peers.to_vec();
 
     if remotes.is_empty() {
         println!(

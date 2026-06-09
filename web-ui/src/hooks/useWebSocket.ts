@@ -303,6 +303,26 @@ export const useWebSocket = () => {
     sendRaw({ type: 'delete_preset', data: { id } });
   }, [sendRaw]);
 
+  // ── Node CRUD (global.db) ──────────────────────────────────────────
+  const listNodes = useCallback(() => {
+    sendRaw({ type: 'list_nodes', data: {} });
+  }, [sendRaw]);
+
+  const addNode = useCallback((node: any) => {
+    // Ensure timestamps are present (Rust Node struct requires them)
+    const now = new Date().toISOString();
+    sendRaw({ type: 'add_node', data: { ...node, createdAt: node.createdAt || now, updatedAt: node.updatedAt || now } });
+  }, [sendRaw]);
+
+  const updateNode = useCallback((node: any) => {
+    const now = new Date().toISOString();
+    sendRaw({ type: 'update_node', data: { ...node, updatedAt: now } });
+  }, [sendRaw]);
+
+  const deleteNode = useCallback((id: string) => {
+    sendRaw({ type: 'delete_node', data: { id } });
+  }, [sendRaw]);
+
   // ── Workflow CRUD (global.db) ─────────────────────────────────────
   const listWorkflows = useCallback(() => {
     sendRaw({ type: 'list_workflows', data: {} });
@@ -371,8 +391,6 @@ export const useWebSocket = () => {
         if (event.data.active_model) {
           setActiveModel(event.data.active_model);
         }
-        // Fetch presets from global.db
-        sendRaw({ type: 'list_presets', data: {} });
         break;
 
       case 'sandbox_status':
@@ -451,6 +469,29 @@ export const useWebSocket = () => {
       case 'preset_deleted': {
         const st = useAgentStore.getState();
         st.deletePreset(event.data.id);
+        break;
+      }
+
+      // ── Node events (server-managed workspaces) ─────────────────────────
+      case 'nodes_list': {
+        if (event.data.virtual_nodes) {
+          setNodeList(event.data.virtual_nodes);
+        }
+        break;
+      }
+
+      case 'node_saved': {
+        // The server sends back updated virtual_nodes after mutation
+        if (event.data.virtual_nodes) {
+          setNodeList(event.data.virtual_nodes);
+        }
+        break;
+      }
+
+      case 'node_deleted': {
+        if (event.data.virtual_nodes) {
+          setNodeList(event.data.virtual_nodes);
+        }
         break;
       }
 
@@ -1289,6 +1330,10 @@ export const useWebSocket = () => {
     listPresets,
     savePreset,
     deletePreset,
+    listNodes,
+    addNode,
+    updateNode,
+    deleteNode,
     listWorkflows,
     getWorkflow,
     saveWorkflow: sendSaveWorkflow,

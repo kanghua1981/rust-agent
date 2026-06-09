@@ -37,7 +37,11 @@ export type ClientMessage =
   | GetWorkflowMessage
   | SaveWorkflowMessage
   | DeleteWorkflowMessage
-  | RunWorkflowMessage;
+  | RunWorkflowMessage
+  | ListNodesMessage
+  | AddNodeMessage
+  | UpdateNodeMessage
+  | DeleteNodeMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
@@ -133,6 +137,9 @@ export type ServerEvent =
   | PresetsListEvent
   | PresetSavedEvent
   | PresetDeletedEvent
+  | NodesListEvent
+  | NodeSavedEvent
+  | NodeDeletedEvent
   | WorkflowsListEvent
   | WorkflowLoadedEvent
   | WorkflowSavedEvent
@@ -521,12 +528,16 @@ export interface NodeCapabilities {
 }
 
 export interface VirtualNodeInfo {
+  id: string;
   name: string;
   workdir: string;
   description: string;
   isolation: 'normal' | 'container' | 'sandbox';
   sandbox: boolean;  // legacy, kept for backward compat
+  exec_mode?: string;  // "simple" | "plan" | "pipeline" | undefined (=auto)
   tags: string[];
+  createdAt?: string;  // ISO timestamp from DB-stored nodes
+  updatedAt?: string;  // ISO timestamp from DB-stored nodes
 }
 
 export interface PongEvent extends BaseMessage {
@@ -740,6 +751,56 @@ export interface PresetSavedEvent extends BaseMessage {
 export interface PresetDeletedEvent extends BaseMessage {
   type: 'preset_deleted';
   data: { id: string };
+}
+
+// ── Node CRUD client messages (server-managed workspaces) ─────────────
+export interface ListNodesMessage extends BaseMessage {
+  type: 'list_nodes';
+  data: {};
+}
+
+export interface NodeData {
+  id: string;
+  name: string;
+  workdir: string;
+  description?: string;
+  isolation?: 'normal' | 'container' | 'sandbox';
+  sandbox?: boolean;
+  exec_mode?: 'simple' | 'plan' | 'pipeline' | 'auto';
+  tags?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AddNodeMessage extends BaseMessage {
+  type: 'add_node';
+  data: NodeData;
+}
+
+export interface UpdateNodeMessage extends BaseMessage {
+  type: 'update_node';
+  data: NodeData;
+}
+
+export interface DeleteNodeMessage extends BaseMessage {
+  type: 'delete_node';
+  data: { id: string };
+}
+
+// ── Node events (server-managed workspaces) ──────────────────────────
+export interface NodesListEvent extends BaseMessage {
+  type: 'nodes_list';
+  data: { virtual_nodes: VirtualNodeInfo[] };
+}
+
+export interface NodeSavedEvent extends BaseMessage {
+  type: 'node_saved';
+  data: { node: any; virtual_nodes?: any[] };
+}
+
+export interface NodeDeletedEvent extends BaseMessage {
+  type: 'node_deleted';
+  data: { id: string; virtual_nodes?: any[] };
 }
 
 // ── Workflow events ─────────────────────────────────────────────────

@@ -78,10 +78,9 @@ pub async fn run(
     isolation: IsolationMode,
     _worker_id: &str,
     _extra_binds: Vec<BindMount>,
-    workspaces: Vec<crate::workspaces::NodeEntry>,
     global_db: Arc<GlobalDb>,
 ) -> Result<()> {
-    run_async(config, project_dir, isolation, fd, workspaces, global_db).await
+    run_async(config, project_dir, isolation, fd, global_db).await
 }
 
 
@@ -94,7 +93,6 @@ async fn run_async(
     project_dir: PathBuf,
     isolation: IsolationMode,
     fd: i32,
-    workspaces: Vec<crate::workspaces::NodeEntry>,
     global_db: Arc<GlobalDb>,
 ) -> Result<()> {
     // Reconstruct TcpStream from the raw fd inherited from the server process.
@@ -307,21 +305,7 @@ async fn run_async(
     // Use pre-passed workspaces (from server via --workspaces-json) if available;
     // fall back to collecting from plugin system (CLI/direct worker invocations).
     // 注意：worker 中的 PluginManager 仅用于读取配置，enable/disable 操作
-    // 只改内存、不回写磁盘，持久化状态由客户端通过 plugin.toml enabled 字段管理。
-    let effective_workspaces = if workspaces.is_empty() {
-        let mut pm = crate::plugin::PluginManager::new(project_dir.clone());
-        let _ = pm.load_all_plugins();
-        let from_plugins = pm.collect_workspace();
-        if from_plugins.nodes.is_empty() {
-            // 兼容兜底
-            workspaces::load(&project_dir).local_nodes()
-        } else {
-            from_plugins.local_nodes()
-        }
-    } else {
-        workspaces
-    };
-    let (node_caps, virtual_nodes) = workspaces::probe_capabilities(&effective_workspaces);
+    let (node_caps, virtual_nodes) = workspaces::probe_capabilities();
 
     // ── Auto-restore local session (same as CLI mode) ─────────────────
     // Worker mode: when connecting to a workdir that has a local session
@@ -1134,6 +1118,86 @@ fn dispatch_ws_message(
             } else {
                 output.emit_public("error", serde_json::json!({
                     "message": "delete_preset: missing 'data.id'"
+                }));
+            }
+        }
+
+        // ── Node CRUD (server-managed workspaces) ────────────────────────────
+        "list_nodes" => {
+            let cached = crate::workspaces::load_vnodes();
+            output.emit_public("nodes_list", serde_json::json!({
+                "virtual_nodes": cached,
+            }));
+        }
+
+        "add_node" => {
+            match msg.get("data").cloned() {
+                Some(data) => match serde_json::from_value::<crate::db::models::Node>(data) {
+                    Ok(node) => match global_db.save_node(&node) {
+                        Ok(()) => {
+                            // Rebuild virtual_nodes after mutation
+                            let cached = crate::workspaces::load_vnodes();
+                            output.emit_public("node_saved", serde_json::json!({
+                                "node": node,
+                                "virtual_nodes": cached,
+                            }));
+                        }
+                        Err(e) => output.emit_public("error", serde_json::json!({
+                            "message": format!("add_node failed: {:#}", e)
+                        })),
+                    },
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("add_node: invalid node data: {}", e)
+                    })),
+                },
+                None => output.emit_public("error", serde_json::json!({
+                    "message": "add_node: missing 'data' field"
+                })),
+            }
+        }
+
+        "update_node" => {
+            match msg.get("data").cloned() {
+                Some(data) => match serde_json::from_value::<crate::db::models::Node>(data) {
+                    Ok(node) => match global_db.save_node(&node) {
+                        Ok(()) => {
+                            let cached = crate::workspaces::load_vnodes();
+                            output.emit_public("node_saved", serde_json::json!({
+                                "node": node,
+                                "virtual_nodes": cached,
+                            }));
+                        }
+                        Err(e) => output.emit_public("error", serde_json::json!({
+                            "message": format!("update_node failed: {:#}", e)
+                        })),
+                    },
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("update_node: invalid node data: {}", e)
+                    })),
+                },
+                None => output.emit_public("error", serde_json::json!({
+                    "message": "update_node: missing 'data' field"
+                })),
+            }
+        }
+
+        "delete_node" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                match global_db.delete_node(id) {
+                    Ok(()) => {
+                        let cached = crate::workspaces::load_vnodes();
+                        output.emit_public("node_deleted", serde_json::json!({
+                            "id": id,
+                            "virtual_nodes": cached,
+                        }));
+                    }
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("delete_node failed: {:#}", e)
+                    })),
+                }
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "delete_node: missing 'data.id'"
                 }));
             }
         }

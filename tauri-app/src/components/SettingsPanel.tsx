@@ -6,11 +6,9 @@ import type { ConfigPreset } from '../types/agent';
 interface SettingsPanelProps {
   isConnected: boolean;
   onSetWorkdirRemote: (workdir: string) => void;
-  savePresetWs?: (preset: any) => void;
-  deletePresetWs?: (id: string) => void;
 }
 
-export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote, savePresetWs, deletePresetWs }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote }) => {
   const { 
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset,
     clusterToken, setClusterToken, connectionStatus,
@@ -90,11 +88,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
       setEditingPreset(null);
     } else {
       addPreset(presetData);
-    }
-    
-    // Also send to server for persistence in global.db
-    if (isConnected && savePresetWs) {
-      savePresetWs(presetData);
     }
     
     resetPresetForm();
@@ -405,7 +398,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
                     <button
                       onClick={() => {
                         deletePreset(preset.id);
-                        if (isConnected && deletePresetWs) deletePresetWs(preset.id);
                       }}
                       style={{
                         padding: '4px 8px', background: 'var(--red-dim)', color: 'var(--red)',

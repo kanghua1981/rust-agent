@@ -32,7 +32,6 @@ pub async fn run(
     host: &str,
     port: u16,
     isolation: IsolationMode,
-    ws_cfg: crate::workspaces::WorkspacesFile,
     channel_configs: Vec<crate::plugin::ChannelConfig>,
 ) -> Result<()> {
     // Reap zombie worker processes asynchronously via a real SIGCHLD handler.
@@ -63,25 +62,29 @@ pub async fn run(
 
     cleanup_stale_worker_dirs();
 
-    // cluster token + nodes/peers 由调用方通过插件系统收集后传入，这里直接使用。
+    // cluster token from environment; peers from peers.toml (will migrate to DB).
     // No token = open server (local use).
-    let cluster_token: Option<String> = ws_cfg.cluster.token.clone();
-    let cached_ws_cfg = Arc::new(ws_cfg);
+    let cluster_token: Option<String> = crate::workspaces::cluster_token_from_env();
+    let peers: Vec<crate::workspaces::PeerEntry> =
+        crate::workspaces::load_peers(&project_dir);
+
+    // One-time seed: import legacy workspaces.toml nodes into global.db
+    crate::workspaces::seed_nodes_from_legacy_toml();
 
     // Probe capabilities once at startup and cache behind Arc so every probe
     // connection can clone cheaply without re-running nvidia-smi etc.
-    let (caps, virtual_nodes) = crate::workspaces::probe_capabilities(&cached_ws_cfg.local_nodes());
+    let (caps, virtual_nodes) = crate::workspaces::probe_capabilities();
     let cached_caps    = Arc::new(caps);
     let cached_vnodes  = Arc::new(virtual_nodes);
     let cached_workdir = project_dir.display().to_string();
 
     // ── Phase 2: NodeRegistry initialisation ─────────────────────────────────
-    // 1. Seed the registry with local [[node]] entries (always online).
-    crate::workspaces::registry_init_local(&cached_ws_cfg.local_nodes(), port);
+    // 1. Seed the registry with local node entries (always online).
+    crate::workspaces::registry_init_local(port);
     // 2. Spawn background task that probes all [[peer]] entries at startup,
     //    then retries offline peers every 30s and heartbeats online ones every 120s.
     spawn_probe_loop(
-        cached_ws_cfg.peers.clone(),
+        peers.clone(),
         cluster_token.clone(),
         port,
     );
@@ -171,7 +174,7 @@ pub async fn run(
             "/nodes" => {
                 // Plain HTTP GET — return all known nodes as JSON.
                 // Token validation already passed above; safe to respond.
-                let body = build_nodes_json(&cached_ws_cfg, port);
+                let body = build_nodes_json(port);
                 tokio::spawn(async move {
                     use tokio::io::AsyncWriteExt;
                     let resp = format!(
@@ -188,7 +191,7 @@ pub async fn run(
                 // Query param: ?peer=<peer_name>
                 // Returns updated /nodes JSON after re-probing the specified peer.
                 let peer_name = parse_query_param(&peek_buf[..peek_n], "peer");
-                let peers_cfg = cached_ws_cfg.peers.clone();
+                let peers_cfg = peers.clone();
                 let tok       = cluster_token.clone();
                 let port_cap  = port;
                 tokio::spawn(async move {
@@ -241,11 +244,6 @@ pub async fn run(
         // sandbox where those paths may not be accessible.
         let config_json = serde_json::to_string(&config)
             .unwrap_or_else(|_| "{}" .to_string());
-        // Serialize the workspaces list so the worker can build the virtual_nodes
-        // ready frame without touching the filesystem (which may be unavailable
-        // inside the container namespace).
-        let workspaces_json = serde_json::to_string(&cached_ws_cfg.local_nodes())
-            .unwrap_or_else(|_| "[]".to_string());
 
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
@@ -271,7 +269,6 @@ pub async fn run(
                 .arg("--worker-id").arg(&worker_id)
                 .arg("-d").arg(&conn_project_dir)
                 .arg("--config-json").arg(&config_json)
-                .arg("--workspaces-json").arg(&workspaces_json)
                 .arg("--isolation").arg(conn_isolation.to_string());
             c.env("AGENT_PARENT_PORT", port.to_string());
             if let Some(ref tok) = cluster_token {
@@ -287,7 +284,6 @@ pub async fn run(
                 // Inside the container project_dir is always /workspace.
                 .arg("-d").arg("/workspace")
                 .arg("--config-json").arg(&config_json)
-                .arg("--workspaces-json").arg(&workspaces_json)
                 .arg("--isolation").arg(conn_isolation.to_string());
             c.env("AGENT_PARENT_PORT", port.to_string());
             if let Some(ref tok) = cluster_token {
@@ -501,7 +497,7 @@ async fn handle_probe(
 ///
 /// Returns the NodeRegistry snapshot: local nodes + peer-expanded sub-nodes.
 /// Does NOT include raw [[peer]] gateway entries — those are server-internal.
-fn build_nodes_json(_ws_cfg: &crate::workspaces::WorkspacesFile, _port: u16) -> String {
+fn build_nodes_json(_port: u16) -> String {
     use crate::workspaces::{NodeStatus, registry_snapshot};
     let entries = registry_snapshot();
 

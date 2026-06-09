@@ -28,7 +28,7 @@ function App() {
   const [showConnect, setShowConnect] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listPresets, savePreset: savePresetWs, deletePreset: deletePresetWs, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow } = useWebSocket();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listPresets, savePreset: savePresetWs, deletePreset: deletePresetWs, listNodes, addNode, updateNode, deleteNode, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -322,9 +322,9 @@ function App() {
             </>
           )}
           {activeTab === 'tools' && <ToolsPanel />}
-          {activeTab === 'nodes' && <NodesPanel />}
+          {activeTab === 'nodes' && <NodesPanel isConnected={connectionStatus === 'connected'} onListNodes={listNodes} onAddNode={addNode} onUpdateNode={updateNode} onDeleteNode={deleteNode} />}
           {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} isConnected={connectionStatus === 'connected'} onListSessions={listSessions} onDeleteSession={deleteSession} onLoadSessionById={loadSessionById} />}
-          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} savePresetWs={savePresetWs} deletePresetWs={deletePresetWs} />}
+          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />}
           {activeTab === 'plugins' && <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />}
           {activeTab === 'workflows' && <WorkflowPanel
             isConnected={connectionStatus === 'connected'}

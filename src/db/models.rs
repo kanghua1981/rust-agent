@@ -119,6 +119,33 @@ fn default_task_template() -> String { "{{task}}".into() }
 fn default_always() -> String { "always".into() }
 fn default_stage_timeout() -> i32 { 300 }
 
+// ── Node (server-managed workspace) ───────────────────────────────────────
+
+/// A server-managed workspace node.
+///
+/// Nodes live in `global.db` and are merged with `workspaces.toml` `[[node]]`
+/// entries.  Unlike presets, a Node has no `server_url` — it is implicitly
+/// scoped to the machine that hosts it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Node {
+    pub id: String,
+    pub name: String,
+    pub workdir: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
+    #[serde(default)]
+    pub sandbox: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exec_mode: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 // ── WorkflowRun ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

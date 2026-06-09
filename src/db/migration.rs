@@ -20,6 +20,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "initial_schema",
         sql: include_str!("../../sql/migrations/001_initial.sql"),
     },
+    Migration {
+        version: 2,
+        name: "nodes_table",
+        sql: include_str!("../../sql/migrations/002_nodes.sql"),
+    },
 ];
 
 /// Run any pending migrations on `conn`.

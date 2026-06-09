@@ -150,12 +150,6 @@ struct Args {
     #[arg(long, hide = true)]
     config_json: Option<String>,
 
-    /// (Worker mode) Workspaces list serialized as JSON by the server.
-    /// When present, skips workspaces::load() so the worker does not need to
-    /// read workspaces.toml from inside a (potentially isolated) container.
-    #[arg(long, hide = true)]
-    workspaces_json: Option<String>,
-
     /// Use the global session store (~/.local/share/rust_agent/sessions/) instead of
     /// the project-local `.agent/session.json`. Useful when you want to manage
     /// multiple named sessions across projects.
@@ -250,39 +244,20 @@ async fn main() -> Result<()> {
         } else {
             config
         };
-        let worker_workspaces: Vec<crate::workspaces::NodeEntry> =
-            if let Some(ref json) = args.workspaces_json {
-                serde_json::from_str(json).unwrap_or_default()
-            } else {
-                vec![]
-            };
-        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![], worker_workspaces, global_db).await;
+        // Nodes are loaded from global.db by the worker — no need to pass
+        // a serialized workspace list.
+        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![], global_db).await;
     }
 
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
-        // 插件系统收集 workspaces 配置（nodes / peers / cluster token）。
-        // 旧的 .agent/workspaces.toml 仍可作为兼容插件放在插件目录下。
-        let (ws_cfg, channel_configs) = {
+        // 插件系统收集 channel 配置。Nodes/peers 现由 global.db 和 peers.toml 管理。
+        let channel_configs = {
             let mut pm = plugin::PluginManager::new(project_dir.clone());
             let _ = pm.load_all_plugins();
-            let from_plugins = pm.collect_workspace();
-            let channels = pm.collect_channels();
-            // 兼容兜底：若插件中没有任何 nodes/peers，尝试读旧配置文件
-            let ws = if from_plugins.nodes.is_empty() && from_plugins.peers.is_empty() {
-                let legacy = crate::workspaces::load(&project_dir);
-                if !legacy.nodes.is_empty() || !legacy.peers.is_empty() {
-                    tracing::warn!(".agent/workspaces.toml 已废弃，请将 workspaces.toml 放入插件目录");
-                    legacy
-                } else {
-                    from_plugins
-                }
-            } else {
-                from_plugins
-            };
-            (ws, channels)
+            pm.collect_channels()
         };
-        return server::run(config, project_dir, &args.host, args.port, args.isolation, ws_cfg, channel_configs).await;
+        return server::run(config, project_dir, &args.host, args.port, args.isolation, channel_configs).await;
     }
 
     // MCP server mode: expose tools as a JSON-RPC 2.0 MCP tool server over stdio.
