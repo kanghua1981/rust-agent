@@ -30,7 +30,7 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::container::IsolationMode;
 use crate::db::GlobalDb;
-use crate::output::{WsCommand, WsOutput};
+use crate::output::{AgentOutput, WsCommand, WsOutput};
 use crate::sandbox::Sandbox;
 use crate::workspaces;
 
@@ -1204,6 +1204,56 @@ fn dispatch_ws_message(
             } else {
                 output.emit_public("error", serde_json::json!({
                     "message": "delete_workflow: missing 'data.id'"
+                }));
+            }
+        }
+
+        "run_workflow" => {
+            let wf_id = msg.get("data").and_then(|d| d.get("workflowId"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let task = msg.get("data").and_then(|d| d.get("task"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+            if wf_id.is_empty() || task.is_empty() {
+                output.emit_public("error", serde_json::json!({
+                    "message": "run_workflow: missing 'data.workflowId' or 'data.task'"
+                }));
+            } else {
+                let out_clone = output.clone();  // Arc<WsOutput>
+                let out_orch = output.clone() as Arc<dyn AgentOutput>;
+                let db_clone = global_db.clone();
+                let wf_id2 = wf_id.clone();
+                let task2 = task.clone();
+                tokio::spawn(async move {
+                    match crate::orchestrator::run_workflow(&db_clone, &wf_id2, &task2, &out_orch).await {
+                        Ok(run) => {
+                            // Attach stage results
+                            let stage_results = db_clone.load_stage_results(&run.id).unwrap_or_default();
+                            out_clone.emit_public("workflow_complete", serde_json::json!({
+                                "run": {
+                                    "id": run.id,
+                                    "workflowId": run.workflow_id,
+                                    "workflowName": run.workflow_name,
+                                    "status": run.status,
+                                    "task": run.task,
+                                    "startedAt": run.started_at,
+                                    "finishedAt": run.finished_at,
+                                    "totalTokens": run.total_tokens,
+                                    "errorMessage": run.error_message,
+                                    "stageResults": stage_results,
+                                },
+                            }));
+                        }
+                        Err(e) => {
+                            out_clone.emit_public("workflow_error", serde_json::json!({
+                                "message": format!("{:#}", e),
+                            }));
+                        }
+                    }
+                });
+                output.emit_public("workflow_started", serde_json::json!({
+                    "workflowId": wf_id,
+                    "task": task,
                 }));
             }
         }

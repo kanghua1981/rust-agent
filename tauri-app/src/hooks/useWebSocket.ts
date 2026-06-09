@@ -162,6 +162,7 @@ export const useWebSocket = () => {
     addWorkflow,
     updateWorkflow,
     deleteWorkflow,
+    setActiveRun,
     activeConnectionId,
     connections,
     createConnectionSlot,
@@ -317,6 +318,10 @@ export const useWebSocket = () => {
 
   const sendDeleteWorkflow = useCallback((id: string) => {
     sendRaw({ type: 'delete_workflow', data: { id } });
+  }, [sendRaw]);
+
+  const runWorkflow = useCallback((workflowId: string, task: string) => {
+    sendRaw({ type: 'run_workflow', data: { workflowId, task } });
   }, [sendRaw]);
 
   const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
@@ -480,6 +485,33 @@ export const useWebSocket = () => {
       case 'workflow_deleted': {
         const st = useAgentStore.getState();
         st.deleteWorkflow(event.data.id);
+        break;
+      }
+
+      // ── Workflow execution events ─────────────────────────────────
+      case 'workflow_started': {
+        setActiveRun(null); // clear previous
+        // Optionally show a notification
+        console.log('Workflow started:', event.data);
+        break;
+      }
+
+      case 'workflow_complete': {
+        setActiveRun(event.data.run || null);
+        break;
+      }
+
+      case 'workflow_error': {
+        setActiveRun({
+          id: '',
+          workflowId: '',
+          workflowName: '',
+          status: 'error',
+          task: '',
+          totalTokens: 0,
+          stageResults: [],
+          errorMessage: event.data.message,
+        } as any);
         break;
       }
 
@@ -1255,6 +1287,7 @@ export const useWebSocket = () => {
     getWorkflow,
     saveWorkflow: sendSaveWorkflow,
     deleteWorkflow: sendDeleteWorkflow,
+    runWorkflow,
     uploadFile,
     listPlugins,
     enablePlugin,

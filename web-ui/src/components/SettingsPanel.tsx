@@ -44,6 +44,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     autoApprove: boolean;
     agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
     isolation: 'normal' | 'container' | 'sandbox';
+    newSession: boolean;
   }>({
     name: '',
     serverUrl: 'ws://localhost:9527',
@@ -52,6 +53,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     autoApprove: false,
     agentMode: 'auto',
     isolation: 'container',
+    newSession: false,
   });
 
   const handleIsolationChange = (mode: 'normal' | 'container' | 'sandbox') => {
@@ -80,6 +82,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
       ...presetForm,
       id: editingPreset || `preset_${now}_${Math.random().toString(36).slice(2, 6)}`,
       createdAt: now,
+      updatedAt: now,
     };
     
     if (editingPreset) {
@@ -107,6 +110,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
       autoApprove: false,
       agentMode: 'auto' as 'auto' | 'simple' | 'plan' | 'pipeline',
       isolation: 'container',
+      newSession: false,
     });
   };
 
@@ -119,6 +123,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
       autoApprove: preset.autoApprove,
       agentMode: preset.agentMode,
       isolation: preset.isolation || 'container',
+      newSession: preset.newSession ?? preset.newSessionOnConnect ?? false,
     });
     setEditingPreset(preset.id);
     setShowNewPreset(true);
@@ -512,6 +517,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
                       style={{ accentColor: 'var(--accent)' }}
                     />
                     <span style={{ fontSize: '13px' }}>自动确认工具调用</span>
+                  </label>
+
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={presetForm.newSession}
+                      onChange={(e) => setPresetForm(p => ({ ...p, newSession: e.target.checked }))}
+                      style={{ accentColor: 'var(--accent)' }}
+                    />
+                    <span style={{ fontSize: '13px' }}>新会话（每次连接独立对话历史）</span>
                   </label>
                 </div>
 

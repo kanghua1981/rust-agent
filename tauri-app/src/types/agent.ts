@@ -36,7 +36,8 @@ export type ClientMessage =
   | ListWorkflowsMessage
   | GetWorkflowMessage
   | SaveWorkflowMessage
-  | DeleteWorkflowMessage;
+  | DeleteWorkflowMessage
+  | RunWorkflowMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
@@ -135,7 +136,10 @@ export type ServerEvent =
   | WorkflowsListEvent
   | WorkflowLoadedEvent
   | WorkflowSavedEvent
-  | WorkflowDeletedEvent;
+  | WorkflowDeletedEvent
+  | WorkflowStartedEvent
+  | WorkflowCompleteEvent
+  | WorkflowErrorEvent;
 
 export interface SessionMeta {
   id: string;
@@ -659,6 +663,11 @@ export interface DeleteWorkflowMessage extends BaseMessage {
   data: { id: string };
 }
 
+export interface RunWorkflowMessage extends BaseMessage {
+  type: 'run_workflow';
+  data: { workflowId: string; task: string };
+}
+
 export interface PluginsListEvent extends BaseMessage {
   type: 'plugins_list';
   data: { plugins: PluginInfo[] };
@@ -752,6 +761,21 @@ export interface WorkflowSavedEvent extends BaseMessage {
 export interface WorkflowDeletedEvent extends BaseMessage {
   type: 'workflow_deleted';
   data: { id: string };
+}
+
+export interface WorkflowStartedEvent extends BaseMessage {
+  type: 'workflow_started';
+  data: { workflowId: string; task: string };
+}
+
+export interface WorkflowCompleteEvent extends BaseMessage {
+  type: 'workflow_complete';
+  data: { run: WorkflowRunResult };
+}
+
+export interface WorkflowErrorEvent extends BaseMessage {
+  type: 'workflow_error';
+  data: { message: string };
 }
 
 // ── Workflow data types ─────────────────────────────────────────────
@@ -911,4 +935,39 @@ export interface SandboxFileChange {
   original_size: number | null;
   current_size: number | null;
   diff: string | null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Workflow Run Types
+// ═══════════════════════════════════════════════════════════════
+
+export interface StageRunResult {
+  id: string;
+  runId: string;
+  stageId: string;
+  stageOrder: number;
+  presetName?: string;
+  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+  inputPrompt?: string;
+  outputText?: string;
+  outputSummary?: string;
+  tokensUsed: number;
+  toolCalls: string[];
+  startedAt?: string;
+  finishedAt?: string;
+  errorMessage?: string;
+  retryAttempt: number;
+}
+
+export interface WorkflowRunResult {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  status: string;
+  task: string;
+  startedAt?: string;
+  finishedAt?: string;
+  totalTokens: number;
+  errorMessage?: string;
+  stageResults: StageRunResult[];
 }

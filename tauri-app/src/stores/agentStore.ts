@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 
 export interface SandboxFileChange {
@@ -107,6 +107,7 @@ interface AgentState {
   presets: ConfigPreset[];
   connectionHistory: ConnectionHistory[];
   workflows: WorkflowDef[];
+  activeRun: WorkflowRunResult | null;
 
   // ── Connection lifecycle actions ──
   createConnectionSlot: (id: string, label: string, serverUrl: string, workdir?: string) => void;
@@ -144,7 +145,7 @@ interface AgentState {
   removeSessionFromList: (id: string) => void;
   setSessionRestoreAvailable: (info: { message_count: number } | null) => void;
   setConfig: (config: Partial<AgentConfig>) => void;
-  addPreset: (preset: Omit<ConfigPreset, 'id' | 'createdAt'>) => void;
+  addPreset: (preset: ConfigPreset) => void;
   updatePreset: (id: string, preset: Partial<ConfigPreset>) => void;
   deletePreset: (id: string) => void;
   setPresets: (presets: ConfigPreset[]) => void;
@@ -164,6 +165,7 @@ interface AgentState {
   setPlugins: (plugins: PluginInfo[]) => void;
   setAvailableModels: (models: ModelInfo[]) => void;
   setActiveModel: (alias: string | null) => void;
+  setActiveRun: (run: WorkflowRunResult | null) => void;
   reset: () => void;
 }
 
@@ -248,6 +250,7 @@ const initialState = {
   presets: (persistedConfig.presets || []) as ConfigPreset[],
   connectionHistory: [] as ConnectionHistory[],
   workflows: [] as WorkflowDef[],
+  activeRun: null as WorkflowRunResult | null,
   config: {
     serverUrl: defaultUrl,
     autoApprove: persistedConfig.autoApprove ?? false,
@@ -695,8 +698,8 @@ export const useAgentStore = create<AgentState>()(
             ...state.presets,
             {
               ...preset,
-              id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              createdAt: Date.now(),
+              id: preset.id || `preset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              createdAt: preset.createdAt || Date.now(),
             },
           ],
         })),
@@ -735,6 +738,9 @@ export const useAgentStore = create<AgentState>()(
         set((state) => ({
           workflows: state.workflows.filter((w) => w.id !== id),
         })),
+
+      setActiveRun: (run) =>
+        set({ activeRun: run }),
 
       applyPreset: (id) => {
         const state = get();

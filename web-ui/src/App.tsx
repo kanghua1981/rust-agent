@@ -28,7 +28,7 @@ function App() {
   const [showConnect, setShowConnect] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listPresets, savePreset: savePresetWs, deletePreset: deletePresetWs, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs } = useWebSocket();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listPresets, savePreset: savePresetWs, deletePreset: deletePresetWs, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -331,6 +331,7 @@ function App() {
             listWorkflowsWs={listWorkflows}
             saveWorkflowWs={saveWorkflowWs}
             deleteWorkflowWs={deleteWorkflowWs}
+            runWorkflowWs={runWorkflow}
           />}
           {activeTab === 'models' && <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />}
           {activeTab === 'sandbox' && (

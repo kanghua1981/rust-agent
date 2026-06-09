@@ -162,6 +162,7 @@ export const useWebSocket = () => {
     addWorkflow,
     updateWorkflow,
     deleteWorkflow,
+    setActiveRun,
     activeConnectionId,
     connections,
     createConnectionSlot,
@@ -319,6 +320,10 @@ export const useWebSocket = () => {
     sendRaw({ type: 'delete_workflow', data: { id } });
   }, [sendRaw]);
 
+  const runWorkflow = useCallback((workflowId: string, task: string) => {
+    sendRaw({ type: 'run_workflow', data: { workflowId, task } });
+  }, [sendRaw]);
+
   const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
     const uploadMsgId = uuidv4();
     addMessage({
@@ -410,13 +415,19 @@ export const useWebSocket = () => {
 
       // ── Preset events (global.db) ─────────────────────────────────────
       case 'presets_list': {
-        const presets: any[] = event.data.presets || [];
+        const serverPresets: any[] = event.data.presets || [];
         // Map Rust field names → TS ConfigPreset (newSession → newSessionOnConnect)
-        const mapped = presets.map((p: any) => ({
+        const mapped = serverPresets.map((p: any) => ({
           ...p,
           newSessionOnConnect: p.newSession ?? p.newSessionOnConnect ?? false,
         }));
-        setPresets(mapped);
+        // Merge with local presets (upsert by id) — never wipe local-only presets
+        const st = useAgentStore.getState();
+        const localPresets = st.presets;
+        const merged = new Map<string, any>();
+        for (const p of localPresets) merged.set(p.id, p);
+        for (const p of mapped) merged.set(p.id, p); // server wins on conflict
+        setPresets(Array.from(merged.values()));
         break;
       }
 
@@ -480,6 +491,33 @@ export const useWebSocket = () => {
       case 'workflow_deleted': {
         const st = useAgentStore.getState();
         st.deleteWorkflow(event.data.id);
+        break;
+      }
+
+      // ── Workflow execution events ─────────────────────────────────
+      case 'workflow_started': {
+        setActiveRun(null); // clear previous
+        // Optionally show a notification
+        console.log('Workflow started:', event.data);
+        break;
+      }
+
+      case 'workflow_complete': {
+        setActiveRun(event.data.run || null);
+        break;
+      }
+
+      case 'workflow_error': {
+        setActiveRun({
+          id: '',
+          workflowId: '',
+          workflowName: '',
+          status: 'error',
+          task: '',
+          totalTokens: 0,
+          stageResults: [],
+          errorMessage: event.data.message,
+        } as any);
         break;
       }
 
@@ -1255,6 +1293,7 @@ export const useWebSocket = () => {
     getWorkflow,
     saveWorkflow: sendSaveWorkflow,
     deleteWorkflow: sendDeleteWorkflow,
+    runWorkflow,
     uploadFile,
     listPlugins,
     enablePlugin,

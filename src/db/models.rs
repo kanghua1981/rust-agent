@@ -20,6 +20,7 @@ pub struct Preset {
     pub auto_approve: bool,
     pub agent_mode: String,
     pub isolation: String,
+    #[serde(default)]
     pub new_session: bool,
     #[serde(default = "default_icon")]
     pub icon: String,
@@ -30,6 +31,7 @@ pub struct Preset {
     #[serde(default)]
     pub sort_order: i32,
     pub created_at: String,
+    #[serde(default)]
     pub updated_at: String,
 }
 

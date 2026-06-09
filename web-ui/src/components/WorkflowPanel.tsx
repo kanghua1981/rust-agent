@@ -7,6 +7,7 @@ interface WorkflowPanelProps {
   listWorkflowsWs: () => void;
   saveWorkflowWs: (wf: any) => void;
   deleteWorkflowWs: (id: string) => void;
+  runWorkflowWs: (workflowId: string, task: string) => void;
 }
 
 const emptyStage = (order: number): WorkflowStage => ({
@@ -39,10 +40,13 @@ export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
   listWorkflowsWs,
   saveWorkflowWs,
   deleteWorkflowWs,
+  runWorkflowWs,
 }) => {
-  const { workflows, presets } = useAgentStore();
+  const { workflows, presets, activeRun } = useAgentStore();
   const [editing, setEditing] = useState<WorkflowDef | null>(null);
   const [showEditor, setShowEditor] = useState(false);
+  const [runTask, setRunTask] = useState('');
+  const [showRunInput, setShowRunInput] = useState<string | null>(null); // wf id or null
 
   // Fetch workflows on mount / connect
   useEffect(() => {
@@ -185,11 +189,72 @@ export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
+                <button style={dimBtnStyle} onClick={() => setShowRunInput(showRunInput === wf.id ? null : wf.id)}>▶ 运行</button>
                 <button style={dimBtnStyle} onClick={() => handleEdit(wf)}>编辑</button>
                 <button style={dangerBtnStyle} onClick={() => handleDelete(wf.id)}>删除</button>
               </div>
             </div>
           ))}
+
+          {/* Run input */}
+          {showRunInput && (
+            <div style={{
+              background: theme.cardBg, border: `1px solid ${theme.accent}`,
+              borderRadius: 6, padding: '10px 14px', marginBottom: 8,
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>▶ 运行工作流</div>
+              <textarea
+                style={{ ...inputStyle, minHeight: 50, marginBottom: 8 } as any}
+                value={runTask}
+                onChange={e => setRunTask(e.target.value)}
+                placeholder="输入任务描述，例如：重构 auth 模块"
+                rows={2}
+              />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={btnStyle}
+                  onClick={() => {
+                    if (runTask.trim()) {
+                      runWorkflowWs(showRunInput, runTask.trim());
+                      setRunTask('');
+                      setShowRunInput(null);
+                    }
+                  }}
+                  disabled={!runTask.trim()}
+                >🚀 启动</button>
+                <button style={dimBtnStyle} onClick={() => { setShowRunInput(null); setRunTask(''); }}>取消</button>
+              </div>
+            </div>
+          )}
+
+          {/* Run progress */}
+          {activeRun && (
+            <div style={{
+              background: theme.cardBg, border: `1px solid ${activeRun.status === 'success' ? theme.green : activeRun.status === 'error' || activeRun.status === 'failed' ? theme.red : theme.accent}`,
+              borderRadius: 6, padding: '10px 14px', marginBottom: 8,
+            }}>
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+                {(activeRun.status === 'running' || activeRun.status === 'success') ? '🔄' : activeRun.status === 'error' || activeRun.status === 'failed' ? '❌' : '📋'} {activeRun.workflowName} — {activeRun.status}
+              </div>
+              {activeRun.errorMessage && (
+                <div style={{ color: theme.red, fontSize: 12, marginBottom: 4 }}>{activeRun.errorMessage}</div>
+              )}
+              {activeRun.stageResults && activeRun.stageResults.length > 0 && (
+                <div>
+                  {activeRun.stageResults.map((sr: any, i: number) => (
+                    <div key={i} style={{
+                      fontSize: 12, padding: '4px 0', borderTop: `1px solid ${theme.border}`,
+                      display: 'flex', justifyContent: 'space-between',
+                    }}>
+                      <span>#{i + 1} {sr.presetName || '?'} — {sr.status}</span>
+                      <span style={{ color: theme.dim }}>
+                        {sr.outputSummary ? sr.outputSummary.slice(0, 60) + '…' : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
