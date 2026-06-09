@@ -90,6 +90,7 @@ interface AgentState {
   sessionRestoreAvailable: { message_count: number } | null;
 
   nodeList: VirtualNodeInfo[];
+  peerList: any[];  // PeerInfo[] — list of configured remote peer servers
 
   tokenUsage: TokenUsage | null;
 
@@ -156,6 +157,7 @@ interface AgentState {
   deleteWorkflow: (id: string) => void;
   clearSession: () => void;
   setNodeList: (nodes: VirtualNodeInfo[]) => void;
+  setPeerList: (peers: any[]) => void;
   setClusterToken: (token: string) => void;
   setConnectedWorkdir: (workdir: string | null) => void;
   setTokenUsage: (usage: TokenUsage) => void;
@@ -234,6 +236,7 @@ const initialState = {
   sessionRestoreAvailable: null as { message_count: number } | null,
 
   nodeList: [] as VirtualNodeInfo[],
+  peerList: [] as any[],
 
   tokenUsage: null as TokenUsage | null,
 
@@ -579,6 +582,9 @@ export const useAgentStore = create<AgentState>()(
 
       setNodeList: (nodes) =>
         set(syncActiveSlot({ nodeList: nodes })),
+
+      setPeerList: (peers) =>
+        set({ peerList: peers }),
 
       setTokenUsage: (usage) =>
         set(syncActiveSlot({ tokenUsage: usage })),

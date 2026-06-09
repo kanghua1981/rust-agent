@@ -41,7 +41,11 @@ export type ClientMessage =
   | ListNodesMessage
   | AddNodeMessage
   | UpdateNodeMessage
-  | DeleteNodeMessage;
+  | DeleteNodeMessage
+  | ListPeersMessage
+  | AddPeerMessage
+  | UpdatePeerMessage
+  | DeletePeerMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
@@ -140,6 +144,9 @@ export type ServerEvent =
   | NodesListEvent
   | NodeSavedEvent
   | NodeDeletedEvent
+  | PeersListEvent
+  | PeerSavedEvent
+  | PeerDeletedEvent
   | WorkflowsListEvent
   | WorkflowLoadedEvent
   | WorkflowSavedEvent
@@ -540,6 +547,18 @@ export interface VirtualNodeInfo {
   updatedAt?: string;  // ISO timestamp from DB-stored nodes
 }
 
+/** A remote peer agent server configured for discovery (stored in global.db). */
+export interface PeerInfo {
+  id: string;
+  name: string;
+  url: string;
+  token?: string | null;
+  tags: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PongEvent extends BaseMessage {
   type: 'pong';
   data: {};
@@ -787,6 +806,38 @@ export interface DeleteNodeMessage extends BaseMessage {
   data: { id: string };
 }
 
+// ── Peer messages (remote agent servers for discovery) ───────────────
+export interface ListPeersMessage extends BaseMessage {
+  type: 'list_peers';
+  data: {};
+}
+
+export interface PeerData {
+  id: string;
+  name: string;
+  url: string;
+  token?: string | null;
+  tags?: string[];
+  enabled?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AddPeerMessage extends BaseMessage {
+  type: 'add_peer';
+  data: PeerData;
+}
+
+export interface UpdatePeerMessage extends BaseMessage {
+  type: 'update_peer';
+  data: PeerData;
+}
+
+export interface DeletePeerMessage extends BaseMessage {
+  type: 'delete_peer';
+  data: { id: string };
+}
+
 // ── Node events (server-managed workspaces) ──────────────────────────
 export interface NodesListEvent extends BaseMessage {
   type: 'nodes_list';
@@ -801,6 +852,22 @@ export interface NodeSavedEvent extends BaseMessage {
 export interface NodeDeletedEvent extends BaseMessage {
   type: 'node_deleted';
   data: { id: string; virtual_nodes?: any[] };
+}
+
+// ── Peer events (remote agent servers for discovery) ─────────────────
+export interface PeersListEvent extends BaseMessage {
+  type: 'peers_list';
+  data: { peers: PeerInfo[] };
+}
+
+export interface PeerSavedEvent extends BaseMessage {
+  type: 'peer_saved';
+  data: { peer: PeerInfo; peers?: PeerInfo[] };
+}
+
+export interface PeerDeletedEvent extends BaseMessage {
+  type: 'peer_deleted';
+  data: { id: string; peers?: PeerInfo[] };
 }
 
 // ── Workflow events ─────────────────────────────────────────────────

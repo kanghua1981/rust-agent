@@ -1202,6 +1202,91 @@ fn dispatch_ws_message(
             }
         }
 
+        // ── Peer CRUD (remote agent servers for discovery) ───────────────────
+        "list_peers" => {
+            match global_db.list_peers() {
+                Ok(peers) => {
+                    output.emit_public("peers_list", serde_json::json!({
+                        "peers": peers,
+                    }));
+                }
+                Err(e) => output.emit_public("error", serde_json::json!({
+                    "message": format!("list_peers failed: {:#}", e)
+                })),
+            }
+        }
+
+        "add_peer" => {
+            match msg.get("data").cloned() {
+                Some(data) => match serde_json::from_value::<crate::db::models::Peer>(data) {
+                    Ok(peer) => match global_db.save_peer(&peer) {
+                        Ok(()) => {
+                            let peers = global_db.list_peers().unwrap_or_default();
+                            output.emit_public("peer_saved", serde_json::json!({
+                                "peer": peer,
+                                "peers": peers,
+                            }));
+                        }
+                        Err(e) => output.emit_public("error", serde_json::json!({
+                            "message": format!("add_peer failed: {:#}", e)
+                        })),
+                    },
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("add_peer: invalid peer data: {}", e)
+                    })),
+                },
+                None => output.emit_public("error", serde_json::json!({
+                    "message": "add_peer: missing 'data' field"
+                })),
+            }
+        }
+
+        "update_peer" => {
+            match msg.get("data").cloned() {
+                Some(data) => match serde_json::from_value::<crate::db::models::Peer>(data) {
+                    Ok(peer) => match global_db.save_peer(&peer) {
+                        Ok(()) => {
+                            let peers = global_db.list_peers().unwrap_or_default();
+                            output.emit_public("peer_saved", serde_json::json!({
+                                "peer": peer,
+                                "peers": peers,
+                            }));
+                        }
+                        Err(e) => output.emit_public("error", serde_json::json!({
+                            "message": format!("update_peer failed: {:#}", e)
+                        })),
+                    },
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("update_peer: invalid peer data: {}", e)
+                    })),
+                },
+                None => output.emit_public("error", serde_json::json!({
+                    "message": "update_peer: missing 'data' field"
+                })),
+            }
+        }
+
+        "delete_peer" => {
+            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
+                match global_db.delete_peer(id) {
+                    Ok(()) => {
+                        let peers = global_db.list_peers().unwrap_or_default();
+                        output.emit_public("peer_deleted", serde_json::json!({
+                            "id": id,
+                            "peers": peers,
+                        }));
+                    }
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("delete_peer failed: {:#}", e)
+                    })),
+                }
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "delete_peer: missing 'data.id'"
+                }));
+            }
+        }
+
         // ── Workflow CRUD (global.db) ──────────────────────────────────────
         "list_workflows" => {
             match global_db.list_workflows() {

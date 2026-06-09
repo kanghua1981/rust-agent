@@ -1391,9 +1391,12 @@ pub async fn run(
                         handle_plan_command(input, &mut agent).await;
                         continue;
                     }
-                    // /nodes probes all [[remote]] entries in workspaces (via plugin system)
+                    // /nodes probes all peers in global.db, prints status
                     if input == "/nodes" {
-                        let peers = crate::workspaces::load_peers(&agent.project_dir);
+                        let db = crate::db::GlobalDb::open_or_create().ok();
+                        let peers: Vec<crate::workspaces::PeerEntry> = db.as_ref()
+                            .map(|d| crate::workspaces::load_peers_from_db(d))
+                            .unwrap_or_default();
                         let cluster_tok = crate::workspaces::cluster_token_from_env();
                         handle_nodes_command(&peers, cluster_tok).await;
                         continue;

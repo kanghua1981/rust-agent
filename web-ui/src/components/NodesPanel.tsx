@@ -8,9 +8,13 @@ interface NodesPanelProps {
   onAddNode: (node: any) => void;
   onUpdateNode: (node: any) => void;
   onDeleteNode: (id: string) => void;
+  onListPeers: () => void;
+  onAddPeer: (peer: any) => void;
+  onUpdatePeer: (peer: any) => void;
+  onDeletePeer: (id: string) => void;
 }
 
-const EMPTY_FORM = {
+const EMPTY_NODE_FORM = {
   id: '',
   name: '',
   workdir: '',
@@ -22,15 +26,34 @@ const EMPTY_FORM = {
   createdAt: '',
 };
 
+const EMPTY_PEER_FORM = {
+  id: '',
+  name: '',
+  url: '',
+  token: '',
+  tags: '',
+  enabled: true,
+  createdAt: '',
+};
+
 export const NodesPanel: React.FC<NodesPanelProps> = ({
   isConnected, onListNodes, onAddNode, onUpdateNode, onDeleteNode,
+  onListPeers, onAddPeer, onUpdatePeer, onDeletePeer,
 }) => {
-  const { nodeList, workdir, setWorkdir, setConfig, connectedWorkdir } = useAgentStore();
+  const { nodeList, peerList, workdir, setWorkdir, setConfig, connectedWorkdir } = useAgentStore();
+
+  const [activeTab, setActiveTab] = useState<'nodes' | 'peers'>('nodes');
 
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [form, setForm] = useState({ ...EMPTY_NODE_FORM });
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  // Peer state
+  const [showPeerForm, setShowPeerForm] = useState(false);
+  const [editingPeerId, setEditingPeerId] = useState<string | null>(null);
+  const [peerForm, setPeerForm] = useState({ ...EMPTY_PEER_FORM, id: `peer_${Date.now()}` });
+  const [deletePeerConfirm, setDeletePeerConfirm] = useState<string | null>(null);
 
   // Fetch node list when panel opens or connection changes
   useEffect(() => {
@@ -56,7 +79,7 @@ export const NodesPanel: React.FC<NodesPanelProps> = ({
   const openAddForm = () => {
     setEditingId(null);
     setForm({
-      ...EMPTY_FORM,
+      ...EMPTY_NODE_FORM,
       id: `node_${Date.now()}`,
     });
     setShowForm(true);
@@ -111,6 +134,49 @@ export const NodesPanel: React.FC<NodesPanelProps> = ({
     setDeleteConfirm(null);
   };
 
+  // ── Peer helpers ──
+  const openAddPeer = () => {
+    setEditingPeerId(null);
+    setPeerForm({ ...EMPTY_PEER_FORM, id: `peer_${Date.now()}` });
+    setShowPeerForm(true);
+  };
+
+  const openEditPeer = (peer: any) => {
+    setEditingPeerId(peer.id);
+    setPeerForm({
+      id: peer.id,
+      name: peer.name,
+      url: peer.url,
+      token: peer.token || '',
+      tags: (peer.tags || []).join(', '),
+      enabled: peer.enabled !== false,
+      createdAt: peer.createdAt || '',
+    });
+    setShowPeerForm(true);
+  };
+
+  const handleSavePeer = () => {
+    if (!peerForm.name.trim() || !peerForm.url.trim()) return;
+    const now = new Date().toISOString();
+    const peerData: any = {
+      id: peerForm.id,
+      name: peerForm.name.trim(),
+      url: peerForm.url.trim(),
+      token: peerForm.token.trim() || null,
+      tags: peerForm.tags.split(',').map((t: string) => t.trim()).filter((t: string) => t),
+      enabled: peerForm.enabled,
+      createdAt: peerForm.createdAt || now,
+      updatedAt: now,
+    };
+    if (editingPeerId) {
+      onUpdatePeer(peerData);
+    } else {
+      onAddPeer(peerData);
+    }
+    setShowPeerForm(false);
+    setEditingPeerId(null);
+  };
+
   // ── Render helpers ──
 
   const iconForIsolation = (iso?: string, sandbox?: boolean) => {
@@ -163,52 +229,179 @@ export const NodesPanel: React.FC<NodesPanelProps> = ({
     marginBottom: '4px', display: 'block',
   };
 
-  // ── Empty state ──
-
-  if (nodeList.length === 0 && !showForm) {
-    return (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-        {/* Header */}
-        <div style={{ padding: '20px 24px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <h2 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text)', margin: 0 }}>
-              🌐 节点管理
-            </h2>
-            <p style={{ fontSize: '12px', color: 'var(--text3)', margin: '4px 0 0' }}>
-              {isConnected ? '管理服务器端节点配置' : '管理节点，连接到服务器后可用'}
-            </p>
-          </div>
-          {isConnected && (
-            <button
-              onClick={openAddForm}
-              style={{ ...btnStyle, background: 'var(--accent)', color: '#fff', fontSize: '13px', padding: '6px 16px' }}
-            >+ 添加节点</button>
-          )}
-        </div>
-
-        <div style={{
-          flex: 1, display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', gap: '12px',
-          color: 'var(--text3)', padding: '40px',
-        }}>
-          <span style={{ fontSize: '40px' }}>🌐</span>
-          <p style={{ fontSize: '14px', fontWeight: '500' }}>暂无节点信息</p>
-          <p style={{ fontSize: '12px', textAlign: 'center', lineHeight: 1.6 }}>
-            连接到服务器后，若服务器配置了虚拟节点，<br />节点列表将自动填充到这里。
-          </p>
-          {isConnected && (
-            <button
-              onClick={openAddForm}
-              style={{ ...btnStyle, background: 'var(--bg3)', color: 'var(--accent)', border: '1px solid var(--border)', marginTop: '8px' }}
-            >+ 添加第一个节点</button>
-          )}
-        </div>
-      </div>
-    );
-  }
+  // NOTE: No more early return for empty nodeList — tabs must always be visible
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: '4px', padding: '8px 24px 0', background: 'var(--bg2)', borderBottom: '1px solid var(--border)' }}>
+        {(['nodes', 'peers'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            style={{
+              padding: '8px 16px', fontSize: '13px', fontWeight: '600',
+              background: activeTab === tab ? 'var(--surface)' : 'transparent',
+              color: activeTab === tab ? 'var(--text)' : 'var(--text2)',
+              border: activeTab === tab ? '1px solid var(--border)' : '1px solid transparent',
+              borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
+              borderRadius: '8px 8px 0 0', cursor: 'pointer',
+              marginBottom: '-1px',
+            }}
+          >
+            {tab === 'nodes' ? '🌐 节点' : '📡 Peers'}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'peers' ? (
+        /* ── Peers tab ── */
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {/* Peer header */}
+          <div style={{ padding: '20px 24px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <h2 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text)', margin: 0 }}>
+                📡 远程节点发现
+              </h2>
+              <p style={{ fontSize: '12px', color: 'var(--text3)', margin: '4px 0 0' }}>
+                {isConnected
+                  ? '配置远程 Agent 服务器，自动发现其上的虚拟节点。'
+                  : '请先连接到服务器以管理 Peers。'}
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {isConnected && (
+                <button
+                  onClick={onListPeers}
+                  style={{ ...btnStyle, background: 'var(--bg3)', color: 'var(--text2)', border: '1px solid var(--border)' }}
+                >🔄 刷新</button>
+              )}
+              {isConnected && (
+                <button
+                  onClick={openAddPeer}
+                  style={{ ...btnStyle, background: 'var(--accent)', color: '#fff', fontSize: '13px', padding: '6px 16px' }}
+                >+ 添加 Peer</button>
+              )}
+            </div>
+          </div>
+
+          {/* Peer form modal */}
+          {showPeerForm && (
+            <div style={{ margin: '16px 24px 0', padding: '16px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '10px' }}>
+              <h3 style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)', margin: '0 0 12px' }}>
+                {editingPeerId ? '✏️ 编辑 Peer' : '➕ 新建 Peer'}
+              </h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '11px', color: 'var(--text2)', marginBottom: '4px', display: 'block' }}>名称 *</label>
+                  <input style={inputStyle} placeholder="如: gpu-server" value={peerForm.name}
+                    onChange={e => setPeerForm({ ...peerForm, name: e.target.value })} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '11px', color: 'var(--text2)', marginBottom: '4px', display: 'block' }}>WebSocket URL *</label>
+                  <input style={inputStyle} placeholder="ws://10.0.0.5:9527" value={peerForm.url}
+                    onChange={e => setPeerForm({ ...peerForm, url: e.target.value })} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '11px', color: 'var(--text2)', marginBottom: '4px', display: 'block' }}>Token (可选)</label>
+                  <input style={inputStyle} placeholder="peer 认证 token" value={peerForm.token}
+                    onChange={e => setPeerForm({ ...peerForm, token: e.target.value })} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '11px', color: 'var(--text2)', marginBottom: '4px', display: 'block' }}>标签 (逗号分隔)</label>
+                  <input style={inputStyle} placeholder="gpu, large-ram" value={peerForm.tags}
+                    onChange={e => setPeerForm({ ...peerForm, tags: e.target.value })} />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input type="checkbox" checked={peerForm.enabled}
+                    onChange={e => setPeerForm({ ...peerForm, enabled: e.target.checked })} />
+                  <label style={{ fontSize: '12px', color: 'var(--text2)' }}>启用 (禁用后停止探测)</label>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                <button onClick={handleSavePeer}
+                  style={{ ...btnStyle, background: 'var(--accent)', color: '#fff' }}
+                >保存</button>
+                <button onClick={() => { setShowPeerForm(false); setEditingPeerId(null); }}
+                  style={{ ...btnStyle, background: 'var(--bg3)', color: 'var(--text2)' }}
+                >取消</button>
+              </div>
+            </div>
+          )}
+
+          {/* Peer list */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+            {peerList.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text3)' }}>
+                <span style={{ fontSize: '40px' }}>📡</span>
+                <p style={{ fontSize: '14px', fontWeight: '500' }}>暂无 Peer 配置</p>
+                <p style={{ fontSize: '12px' }}>
+                  添加远程 Agent 服务器，自动发现对方节点。
+                </p>
+              </div>
+            ) : (
+              peerList.map((peer: any) => (
+                <div key={peer.id} style={{
+                  padding: '12px', marginBottom: '8px',
+                  background: 'var(--bg2)', border: '1px solid var(--border)',
+                  borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px',
+                }}>
+                  <span style={{ fontSize: '18px' }}>📡</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                      <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text)' }}>
+                        {peer.name}
+                      </span>
+                      {!peer.enabled && (
+                        <span style={{ fontSize: '10px', color: 'var(--text3)', background: 'var(--bg3)', padding: '1px 6px', borderRadius: '4px' }}>已禁用</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text3)', marginBottom: '4px' }}>
+                      {peer.url}
+                    </div>
+                    {(peer.tags || []).length > 0 && (
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        {(peer.tags || []).map((t: string) => (
+                          <span key={t} style={{ fontSize: '10px', color: 'var(--accent)', background: 'var(--accent-glow)', padding: '1px 6px', borderRadius: '4px' }}>{t}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {isConnected && (
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      <button onClick={() => openEditPeer(peer)}
+                        style={{ ...btnStyle, background: 'transparent', color: 'var(--text3)', padding: '2px 6px', fontSize: '12px', border: 'none' }}
+                        title="编辑 Peer"
+                      >✏️</button>
+                      <button onClick={() => setDeletePeerConfirm(peer.id)}
+                        style={{ ...btnStyle, background: 'transparent', color: 'var(--text3)', padding: '2px 6px', fontSize: '12px', border: 'none' }}
+                        title="删除 Peer"
+                      >🗑️</button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Delete confirmation */}
+          {deletePeerConfirm && (
+            <div style={{ margin: '12px 24px', padding: '12px', background: 'var(--yellow-dim)', border: '1px solid var(--yellow)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '12px', color: 'var(--text)' }}>确定要删除此 Peer 吗？</span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={() => { onDeletePeer(deletePeerConfirm); setDeletePeerConfirm(null); }}
+                  style={{ ...btnStyle, background: 'var(--red)', color: '#fff' }}
+                >删除</button>
+                <button onClick={() => setDeletePeerConfirm(null)}
+                  style={{ ...btnStyle, background: 'var(--bg3)', color: 'var(--text2)' }}
+                >取消</button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+      /* ── Nodes tab (existing) ── */
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <div style={{ padding: '20px 24px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
@@ -306,6 +499,25 @@ export const NodesPanel: React.FC<NodesPanelProps> = ({
 
       {/* Node list */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px 20px' }}>
+        {nodeList.length === 0 && !showForm ? (
+          <div style={{
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: '12px',
+            color: 'var(--text3)', padding: '40px',
+          }}>
+            <span style={{ fontSize: '40px' }}>🌐</span>
+            <p style={{ fontSize: '14px', fontWeight: '500' }}>暂无节点信息</p>
+            <p style={{ fontSize: '12px', textAlign: 'center', lineHeight: 1.6 }}>
+              连接到服务器后，若服务器配置了虚拟节点，<br />节点列表将自动填充到这里。
+            </p>
+            {isConnected && (
+              <button
+                onClick={openAddForm}
+                style={{ ...btnStyle, background: 'var(--bg3)', color: 'var(--accent)', border: '1px solid var(--border)', marginTop: '8px' }}
+              >+ 添加第一个节点</button>
+            )}
+          </div>
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {nodeList.map((node) => {
             const active = isActive(node);
@@ -412,6 +624,7 @@ export const NodesPanel: React.FC<NodesPanelProps> = ({
             );
           })}
         </div>
+        )}
       </div>
 
       {/* Delete confirmation modal */}
@@ -440,6 +653,8 @@ export const NodesPanel: React.FC<NodesPanelProps> = ({
             </div>
           </div>
         </div>
+      )}
+      </div>
       )}
     </div>
   );

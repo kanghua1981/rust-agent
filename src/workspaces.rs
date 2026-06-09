@@ -64,9 +64,8 @@ pub struct VirtualNodeInfo {
 
 // ── Peer (remote agent server) ────────────────────────────────────────────────
 
-/// A peer agent server on another machine.
-/// Loaded from `peers.toml` (project or global); will migrate to `global.db`
-/// in a future version.
+/// A peer agent server on another machine.  Loaded from `global.db` (peers table).
+/// This is a lightweight runtime view — the full model lives in `db::Peer`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PeerEntry {
     /// Human-readable alias for this server (used as `@alias` suffix in node names).
@@ -78,32 +77,25 @@ pub struct PeerEntry {
     pub token: Option<String>,
 }
 
-/// Minimal container for `peers.toml`.
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-struct PeersFile {
-    #[serde(default, rename = "peer")]
-    pub peers: Vec<PeerEntry>,
+impl From<&crate::db::Peer> for PeerEntry {
+    fn from(p: &crate::db::Peer) -> Self {
+        PeerEntry {
+            name: p.name.clone(),
+            url: p.url.clone(),
+            token: p.token.clone(),
+        }
+    }
 }
 
-/// Load peer entries from `peers.toml`.  Search order:
-/// 1. `<project_dir>/.agent/peers.toml`
-/// 2. `~/.config/rust_agent/peers.toml`
-pub fn load_peers(project_dir: &std::path::Path) -> Vec<PeerEntry> {
-    let project_cfg = project_dir.join(".agent/peers.toml");
-    if let Ok(text) = std::fs::read_to_string(&project_cfg) {
-        if let Ok(cfg) = toml::from_str::<PeersFile>(&text) {
-            return cfg.peers;
+/// Load enabled peer entries from the global database.
+pub fn load_peers_from_db(db: &crate::db::GlobalDb) -> Vec<PeerEntry> {
+    match db.list_enabled_peers() {
+        Ok(peers) => peers.iter().map(|p| p.into()).collect(),
+        Err(e) => {
+            tracing::warn!("Failed to load peers from DB: {}", e);
+            vec![]
         }
     }
-    if let Some(home) = dirs::home_dir() {
-        let global_cfg = home.join(".config/rust_agent/peers.toml");
-        if let Ok(text) = std::fs::read_to_string(&global_cfg) {
-            if let Ok(cfg) = toml::from_str::<PeersFile>(&text) {
-                return cfg.peers;
-            }
-        }
-    }
-    Vec::new()
 }
 
 /// Read the cluster token from the `AGENT_CLUSTER_TOKEN` environment variable.

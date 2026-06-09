@@ -33,6 +33,7 @@ pub async fn run(
     port: u16,
     isolation: IsolationMode,
     channel_configs: Vec<crate::plugin::ChannelConfig>,
+    global_db: Arc<crate::db::GlobalDb>,
 ) -> Result<()> {
     // Reap zombie worker processes asynchronously via a real SIGCHLD handler.
     //
@@ -62,11 +63,11 @@ pub async fn run(
 
     cleanup_stale_worker_dirs();
 
-    // cluster token from environment; peers from peers.toml (will migrate to DB).
+    // cluster token from environment; peers from global.db.
     // No token = open server (local use).
     let cluster_token: Option<String> = crate::workspaces::cluster_token_from_env();
     let peers: Vec<crate::workspaces::PeerEntry> =
-        crate::workspaces::load_peers(&project_dir);
+        crate::workspaces::load_peers_from_db(&global_db);
 
     // One-time seed: import legacy workspaces.toml nodes into global.db
     crate::workspaces::seed_nodes_from_legacy_toml();

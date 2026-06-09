@@ -251,13 +251,13 @@ async fn main() -> Result<()> {
 
     // Server mode has its own event loop — launch and return
     if args.mode == RunMode::Server {
-        // 插件系统收集 channel 配置。Nodes/peers 现由 global.db 和 peers.toml 管理。
+        // 插件系统收集 channel 配置。
         let channel_configs = {
             let mut pm = plugin::PluginManager::new(project_dir.clone());
             let _ = pm.load_all_plugins();
             pm.collect_channels()
         };
-        return server::run(config, project_dir, &args.host, args.port, args.isolation, channel_configs).await;
+        return server::run(config, project_dir, &args.host, args.port, args.isolation, channel_configs, global_db).await;
     }
 
     // MCP server mode: expose tools as a JSON-RPC 2.0 MCP tool server over stdio.

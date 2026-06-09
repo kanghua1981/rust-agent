@@ -151,6 +151,7 @@ export const useWebSocket = () => {
     setPendingChanges,
     setSandboxChangesData,
     setNodeList,
+    setPeerList,
     setConnectedWorkdir,
     setTokenUsage,
     addConnectionHistory,
@@ -323,6 +324,25 @@ export const useWebSocket = () => {
     sendRaw({ type: 'delete_node', data: { id } });
   }, [sendRaw]);
 
+  // ── Peer CRUD (global.db) ───────────────────────────────────────────
+  const listPeers = useCallback(() => {
+    sendRaw({ type: 'list_peers', data: {} });
+  }, [sendRaw]);
+
+  const addPeer = useCallback((peer: any) => {
+    const now = new Date().toISOString();
+    sendRaw({ type: 'add_peer', data: { ...peer, createdAt: peer.createdAt || now, updatedAt: now } });
+  }, [sendRaw]);
+
+  const updatePeer = useCallback((peer: any) => {
+    const now = new Date().toISOString();
+    sendRaw({ type: 'update_peer', data: { ...peer, updatedAt: now } });
+  }, [sendRaw]);
+
+  const deletePeer = useCallback((id: string) => {
+    sendRaw({ type: 'delete_peer', data: { id } });
+  }, [sendRaw]);
+
   // ── Workflow CRUD (global.db) ─────────────────────────────────────
   const listWorkflows = useCallback(() => {
     sendRaw({ type: 'list_workflows', data: {} });
@@ -491,6 +511,26 @@ export const useWebSocket = () => {
       case 'node_deleted': {
         if (event.data.virtual_nodes) {
           setNodeList(event.data.virtual_nodes);
+        }
+        break;
+      }
+
+      // ── Peer events (global.db — remote agent server discovery) ──────
+      case 'peers_list': {
+        setPeerList(event.data.peers || []);
+        break;
+      }
+
+      case 'peer_saved': {
+        if (event.data.peers) {
+          setPeerList(event.data.peers);
+        }
+        break;
+      }
+
+      case 'peer_deleted': {
+        if (event.data.peers) {
+          setPeerList(event.data.peers);
         }
         break;
       }
@@ -1334,6 +1374,10 @@ export const useWebSocket = () => {
     addNode,
     updateNode,
     deleteNode,
+    listPeers,
+    addPeer,
+    updatePeer,
+    deletePeer,
     listWorkflows,
     getWorkflow,
     saveWorkflow: sendSaveWorkflow,

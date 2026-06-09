@@ -146,6 +146,44 @@ pub struct Node {
     pub updated_at: String,
 }
 
+// ── Peer (remote agent server for discovery) ──────────────────────────────
+
+/// A remote agent server that this server probes for virtual nodes.
+///
+/// Peers live in `global.db` (replaces `peers.toml`).  The server's background
+/// probe loop reads all enabled peers and discovers their virtual nodes via
+/// the `/probe` WebSocket endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Peer {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl Default for Peer {
+    fn default() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: String::new(),
+            url: String::new(),
+            token: None,
+            enabled: true,
+            tags: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+}
+
 // ── WorkflowRun ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

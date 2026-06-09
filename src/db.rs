@@ -241,6 +241,66 @@ impl GlobalDb {
         Ok(())
     }
 
+    // ── Peer CRUD (remote agent servers for discovery) ─────────────────
+
+    pub fn list_peers(&self) -> rusqlite::Result<Vec<Peer>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, url, token, tags, enabled, created_at, updated_at
+             FROM peers ORDER BY name"
+        )?;
+        let rows: Vec<Peer> = stmt.query_map([], |row| {
+            let tags_str: String = row.get(4)?;
+            Ok(Peer {
+                id:         row.get(0)?,
+                name:       row.get(1)?,
+                url:        row.get(2)?,
+                token:      row.get(3)?,
+                tags:       serde_json::from_str(&tags_str).unwrap_or_default(),
+                enabled:    row.get::<_, i32>(5)? != 0,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// List only enabled peers (used by probe loop).
+    pub fn list_enabled_peers(&self) -> rusqlite::Result<Vec<Peer>> {
+        let all = self.list_peers()?;
+        Ok(all.into_iter().filter(|p| p.enabled).collect())
+    }
+
+    pub fn save_peer(&self, peer: &Peer) -> rusqlite::Result<()> {
+        let tags_json = serde_json::to_string(&peer.tags).unwrap_or_default();
+        let conn = self.conn.lock().unwrap();
+        with_retry(|| {
+            conn.execute(
+                "INSERT INTO peers (id, name, url, token, tags, enabled, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                     name=?2, url=?3, token=?4, tags=?5, enabled=?6, updated_at=?8",
+                params![
+                    peer.id,
+                    peer.name,
+                    peer.url,
+                    peer.token,
+                    tags_json,
+                    peer.enabled as i32,
+                    peer.created_at,
+                    peer.updated_at,
+                ],
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn delete_peer(&self, id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        with_retry(|| conn.execute("DELETE FROM peers WHERE id = ?1", params![id]))?;
+        Ok(())
+    }
+
     // ── Workflow CRUD ─────────────────────────────────────────────────
 
     pub fn list_workflows(&self) -> rusqlite::Result<Vec<Workflow>> {
