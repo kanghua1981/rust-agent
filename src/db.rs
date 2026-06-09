@@ -85,7 +85,7 @@ impl GlobalDb {
         let mut stmt = conn.prepare(
             "SELECT id, name, server_url, workdir, model, auto_approve,
                     agent_mode, isolation, new_session, icon, color,
-                    tags, sort_order, created_at, updated_at
+                    tags, sort_order, node_ref, created_at, updated_at
              FROM presets ORDER BY sort_order, name"
         )?;
         let rows: Vec<Preset> = stmt.query_map([], |row| {
@@ -105,8 +105,9 @@ impl GlobalDb {
                 color:        row.get(10)?,
                 tags,
                 sort_order:   row.get(12)?,
-                created_at:   row.get(13)?,
-                updated_at:   row.get(14)?,
+                node_ref:     row.get(13)?,
+                created_at:   row.get(14)?,
+                updated_at:   row.get(15)?,
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -117,7 +118,7 @@ impl GlobalDb {
         let mut stmt = conn.prepare(
             "SELECT id, name, server_url, workdir, model, auto_approve,
                     agent_mode, isolation, new_session, icon, color,
-                    tags, sort_order, created_at, updated_at
+                    tags, sort_order, node_ref, created_at, updated_at
              FROM presets WHERE id = ?1"
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -137,8 +138,9 @@ impl GlobalDb {
                 color:        row.get(10)?,
                 tags,
                 sort_order:   row.get(12)?,
-                created_at:   row.get(13)?,
-                updated_at:   row.get(14)?,
+                node_ref:     row.get(13)?,
+                created_at:   row.get(14)?,
+                updated_at:   row.get(15)?,
             })
         })?;
         rows.next().transpose()
@@ -151,16 +153,17 @@ impl GlobalDb {
             conn.execute(
                 "INSERT INTO presets (id, name, server_url, workdir, model, auto_approve,
                      agent_mode, isolation, new_session, icon, color, tags, sort_order,
-                     created_at, updated_at)
+                     node_ref, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,
-                         datetime('now'), datetime('now'))
+                         ?14, datetime('now'), datetime('now'))
                  ON CONFLICT(id) DO UPDATE SET
                      name=excluded.name, server_url=excluded.server_url,
                      workdir=excluded.workdir, model=excluded.model,
                      auto_approve=excluded.auto_approve, agent_mode=excluded.agent_mode,
                      isolation=excluded.isolation, new_session=excluded.new_session,
                      icon=excluded.icon, color=excluded.color, tags=excluded.tags,
-                     sort_order=excluded.sort_order, updated_at=datetime('now')",
+                     sort_order=excluded.sort_order, node_ref=excluded.node_ref,
+                     updated_at=datetime('now')",
                 params![
                     preset.id, preset.name, preset.server_url,
                     preset.workdir, preset.model,
@@ -168,6 +171,7 @@ impl GlobalDb {
                     preset.isolation, preset.new_session as i32,
                     preset.icon, preset.color, tags_json,
                     preset.sort_order,
+                    preset.node_ref,
                 ],
             )
         })?;

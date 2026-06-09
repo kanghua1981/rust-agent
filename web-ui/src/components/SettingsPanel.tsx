@@ -13,7 +13,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset,
     clusterToken, setClusterToken, connectionStatus,
     presets, addPreset, updatePreset, deletePreset, applyPreset,
-    availableModels,
+    availableModels, nodeList,
   } = useAgentStore();
   
   const [activeTab, setActiveTab] = useState<'current' | 'presets'>('current');
@@ -43,6 +43,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
     isolation: 'normal' | 'container' | 'sandbox';
     newSession: boolean;
+    nodeRef: string;
   }>({
     name: '',
     serverUrl: 'ws://localhost:9527',
@@ -52,6 +53,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     agentMode: 'auto',
     isolation: 'container',
     newSession: false,
+    nodeRef: '',
   });
 
   const handleIsolationChange = (mode: 'normal' | 'container' | 'sandbox') => {
@@ -79,6 +81,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     const presetData: any = {
       ...presetForm,
       id: editingPreset || `preset_${now}_${Math.random().toString(36).slice(2, 6)}`,
+      nodeRef: presetForm.nodeRef.trim() || null,
       createdAt: now,
       updatedAt: now,
     };
@@ -104,6 +107,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
       agentMode: 'auto' as 'auto' | 'simple' | 'plan' | 'pipeline',
       isolation: 'container',
       newSession: false,
+      nodeRef: '',
     });
   };
 
@@ -117,6 +121,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
       agentMode: preset.agentMode,
       isolation: preset.isolation || 'container',
       newSession: preset.newSession ?? preset.newSessionOnConnect ?? false,
+      nodeRef: preset.nodeRef || '',
     });
     setEditingPreset(preset.id);
     setShowNewPreset(true);
@@ -466,6 +471,31 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
                       style={inputStyle}
                     />
                   </Field>
+
+                  {nodeList.length > 0 && (
+                    <Field label="引用节点（可选，覆盖工作目录和隔离模式）">
+                      <select
+                        value={presetForm.nodeRef}
+                        onChange={(e) => setPresetForm(p => ({ ...p, nodeRef: e.target.value }))}
+                        style={selectStyle}
+                      >
+                        <option value="">不使用节点引用</option>
+                        {nodeList.map(n => (
+                          <option key={n.id} value={n.id}>
+                            {n.name} — {n.workdir}
+                          </option>
+                        ))}
+                      </select>
+                      {presetForm.nodeRef && (() => {
+                        const node = nodeList.find(n => n.id === presetForm.nodeRef);
+                        return node ? (
+                          <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--accent)' }}>
+                            🔗 将使用节点 "{node.name}" 的配置: workdir={node.workdir}, isolation={node.isolation || (node.sandbox ? 'sandbox' : 'container')}
+                          </p>
+                        ) : null;
+                      })()}
+                    </Field>
+                  )}
 
                   <Field label="模型">
                     <input

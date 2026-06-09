@@ -993,6 +993,7 @@ export interface ConfigPreset {
   autoApprove: boolean;
   agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
   isolation?: 'normal' | 'container' | 'sandbox';
+  nodeRef?: string;                      // reference a server-side Node for workdir/isolation
   newSessionOnConnect?: boolean;
   newSession?: boolean;  // from Rust backend (camelCase of new_session)
   icon?: string;

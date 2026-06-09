@@ -1,6 +1,10 @@
 # Distributed Nodes 设计文档
 
-> 状态：架构设计完成，编码中
+> ⚠️ **本文档为历史设计记录，部分内容已过时。**  
+> `workspaces.toml` 已被 `global.db` 取代。Node / Preset / Peer 的当前架构请参见  
+> **[NODE_PRESET_ARCHITECTURE.md](./NODE_PRESET_ARCHITECTURE.md)**
+>
+> 状态：架构设计完成，已实现并演进  
 > 讨论日期：2026-03-24 / 2026-03-25
 
 ---

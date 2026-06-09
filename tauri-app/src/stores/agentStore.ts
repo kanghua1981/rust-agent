@@ -752,15 +752,30 @@ export const useAgentStore = create<AgentState>()(
         const state = get();
         const preset = state.presets.find((p) => p.id === id);
         if (!preset) return;
+
+        // Resolve nodeRef if preset references a server-side Node
+        let resolvedWorkdir = preset.workdir;
+        let resolvedIsolation = preset.isolation ?? state.config.isolation;
+        let resolvedExecMode = preset.agentMode;
+
+        if (preset.nodeRef && state.nodeList.length > 0) {
+          const node = state.nodeList.find(n => n.id === preset.nodeRef);
+          if (node) {
+            resolvedWorkdir = node.workdir;               // Node overrides workdir
+            resolvedIsolation = node.isolation ?? (node.sandbox ? 'sandbox' : 'container');
+            resolvedExecMode = (node.exec_mode || preset.agentMode) as 'auto' | 'simple' | 'plan' | 'pipeline';
+          }
+        }
+
         const updates: any = {
           serverUrl: preset.serverUrl,
-          workdir: preset.workdir,
+          workdir: resolvedWorkdir,
           config: {
             ...state.config,
             model: preset.model ?? state.config.model,
             autoApprove: preset.autoApprove,
-            agentMode: preset.agentMode,
-            isolation: preset.isolation ?? state.config.isolation,
+            agentMode: resolvedExecMode as 'auto' | 'simple' | 'plan' | 'pipeline',
+            isolation: resolvedIsolation,
             newSessionOnConnect: preset.newSessionOnConnect ?? state.config.newSessionOnConnect,
           },
         };

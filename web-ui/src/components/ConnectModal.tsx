@@ -77,9 +77,23 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
           isolation: preset.isolation || 'container',
           newSessionOnConnect: preset.newSessionOnConnect ?? false,
         });
+        // Auto-resolve nodeRef if preset references a server-side Node
+        if (preset.nodeRef && nodeList.length > 0) {
+          const node = nodeList.find(n => n.id === preset.nodeRef);
+          if (node) {
+            setSelectedNode(node.name);
+            setDir(node.workdir);
+            const iso = node.isolation ?? (node.sandbox ? 'sandbox' : 'container');
+            setConfig({ isolation: iso });
+          } else {
+            setSelectedNode('');
+          }
+        } else {
+          setSelectedNode('');
+        }
       }
     }
-  }, [selectedPreset, activeTab, presets, setConfig]);
+  }, [selectedPreset, activeTab, presets, setConfig, nodeList]);
 
   // 当选择历史记录时，更新表单
   useEffect(() => {
@@ -436,6 +450,14 @@ export const ConnectModal: React.FC<Props> = ({ onConnect, onClose }) => {
                           📂 {preset.workdir}
                         </div>
                       )}
+                      {preset.nodeRef && (() => {
+                        const node = nodeList.find(n => n.id === preset.nodeRef);
+                        return (
+                          <div style={{ fontSize: '11px', color: 'var(--accent)', marginTop: '2px' }}>
+                            🔗 引用节点: {node ? node.name : preset.nodeRef} {node && <span style={{ color: 'var(--text3)' }}>({node.workdir})</span>}
+                          </div>
+                        );
+                      })()}
                       <div style={{ display: 'flex', gap: '8px', marginTop: '6px', fontSize: '10px', color: 'var(--text3)' }}>
                         <span>自动确认: {preset.autoApprove ? '是' : '否'}</span>
                         <span>模式: {preset.agentMode === 'auto' ? '自动' : preset.agentMode === 'simple' ? '单层' : preset.agentMode === 'plan' ? '计划' : '流水线'}</span>

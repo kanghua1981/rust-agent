@@ -30,6 +30,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "peers_table",
         sql: include_str!("../../sql/migrations/003_peers.sql"),
     },
+    Migration {
+        version: 4,
+        name: "preset_noderef",
+        sql: include_str!("../../sql/migrations/004_preset_noderef.sql"),
+    },
 ];
 
 /// Run any pending migrations on `conn`.

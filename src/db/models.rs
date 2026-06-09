@@ -30,6 +30,10 @@ pub struct Preset {
     pub tags: Vec<String>,
     #[serde(default)]
     pub sort_order: i32,
+    /// If set, this preset references a server-side Node for workdir/isolation/exec_mode.
+    /// When resolved, the Node's values take precedence over the preset's own fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_ref: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
@@ -53,6 +57,7 @@ impl Default for Preset {
             color:        None,
             tags:         vec![],
             sort_order:   0,
+            node_ref:     None,
             created_at:   String::new(),
             updated_at:   String::new(),
         }
