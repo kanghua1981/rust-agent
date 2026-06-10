@@ -1010,7 +1010,7 @@ export interface ConfigPreset {
   color?: string;
   tags?: string[];
   sortOrder?: number;
-  createdAt: number;
+  createdAt: string;
   updatedAt?: string;
 }
 

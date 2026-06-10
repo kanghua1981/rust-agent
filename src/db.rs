@@ -17,6 +17,7 @@
 pub mod models;
 pub mod migration;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -309,11 +310,12 @@ impl GlobalDb {
 
     pub fn list_workflows(&self) -> rusqlite::Result<Vec<Workflow>> {
         let conn = self.conn.lock().unwrap();
+        // 1. Load all workflows (without stages)
         let mut stmt = conn.prepare(
             "SELECT id, name, description, enabled, default_timeout, created_at, updated_at
              FROM workflows ORDER BY name"
         )?;
-        let workflows: Vec<Workflow> = stmt.query_map([], |row| {
+        let mut workflows: Vec<Workflow> = stmt.query_map([], |row| {
             Ok(Workflow {
                 id:              row.get(0)?,
                 name:            row.get(1)?,
@@ -325,6 +327,49 @@ impl GlobalDb {
                 stages:          vec![],
             })
         })?.collect::<rusqlite::Result<_>>()?;
+
+        // 2. Load all stages for all workflows in a single query (same lock scope)
+        let mut stage_stmt = conn.prepare(
+            "SELECT id, workflow_id, preset_id, stage_order, stage_group,
+                    input_template, output_key, condition, timeout_secs,
+                    retry_count, auto_approve, server_url, workdir, model, agent_mode
+             FROM workflow_stages ORDER BY workflow_id, stage_order"
+        )?;
+
+        let all_stages: Vec<(String, WorkflowStage)> = stage_stmt.query_map([], |row| {
+            let wid: String = row.get(1)?;
+            let stage = WorkflowStage {
+                id:             row.get(0)?,
+                workflow_id:    wid.clone(),
+                preset_id:      row.get(2)?,
+                stage_order:    row.get(3)?,
+                stage_group:    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                input_template: row.get(5)?,
+                output_key:     row.get(6)?,
+                condition:      row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "always".into()),
+                timeout_secs:   row.get(8)?,
+                retry_count:    row.get(9)?,
+                auto_approve:   row.get::<_, i32>(10)? != 0,
+                server_url:     row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                workdir:        row.get(12)?,
+                model:          row.get(13)?,
+                agent_mode:     row.get::<_, Option<String>>(14)?.unwrap_or_else(|| "auto".into()),
+            };
+            Ok((wid, stage))
+        })?.collect::<rusqlite::Result<_>>()?;
+
+        // 3. Group stages by workflow_id and assign them
+        let mut stage_map: HashMap<String, Vec<WorkflowStage>> = HashMap::new();
+        for (wid, stage) in all_stages {
+            stage_map.entry(wid).or_default().push(stage);
+        }
+
+        for wf in &mut workflows {
+            if let Some(stages) = stage_map.remove(&wf.id) {
+                wf.stages = stages;
+            }
+        }
+
         Ok(workflows)
     }
 

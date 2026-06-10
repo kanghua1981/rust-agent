@@ -6,9 +6,13 @@ import type { ConfigPreset } from '../types/agent';
 interface SettingsPanelProps {
   isConnected: boolean;
   onSetWorkdirRemote: (workdir: string) => void;
+  /** Save preset to server (global.db) via WebSocket */
+  onSavePreset: (preset: any) => void;
+  /** Delete preset from server (global.db) via WebSocket */
+  onDeletePreset: (id: string) => void;
 }
 
-export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote, onSavePreset, onDeletePreset }) => {
   const { 
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset,
     clusterToken, setClusterToken, connectionStatus,
@@ -78,12 +82,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     if (!presetForm.name.trim()) return;
     
     const now = Date.now();
+    const nowIso = new Date().toISOString();
     const presetData: any = {
       ...presetForm,
       id: editingPreset || `preset_${now}_${Math.random().toString(36).slice(2, 6)}`,
       nodeRef: presetForm.nodeRef.trim() || null,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     
     if (editingPreset) {
@@ -91,6 +96,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
       setEditingPreset(null);
     } else {
       addPreset(presetData);
+    }
+    
+    // Also sync to server if connected
+    if (isConnected) {
+      onSavePreset(presetData);
     }
     
     resetPresetForm();
@@ -403,6 +413,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
                     <button
                       onClick={() => {
                         deletePreset(preset.id);
+                        if (isConnected) onDeletePreset(preset.id);
                       }}
                       style={{
                         padding: '4px 8px', background: 'var(--red-dim)', color: 'var(--red)',

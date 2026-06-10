@@ -705,7 +705,7 @@ export const useAgentStore = create<AgentState>()(
             {
               ...preset,
               id: preset.id || `preset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              createdAt: preset.createdAt || Date.now(),
+              createdAt: preset.createdAt || new Date().toISOString(),
             },
           ],
         })),
