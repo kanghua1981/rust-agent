@@ -13,7 +13,6 @@ interface WorkflowPanelProps {
 const emptyStage = (order: number): WorkflowStage => ({
   id: `stage_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
   workflowId: '',
-  presetId: undefined,
   stageOrder: order,
   stageGroup: 'default',
   inputTemplate: '{{task}}',
@@ -22,6 +21,10 @@ const emptyStage = (order: number): WorkflowStage => ({
   timeoutSecs: 300,
   retryCount: 0,
   autoApprove: false,
+  serverUrl: '',
+  workdir: undefined,
+  model: undefined,
+  agentMode: 'auto',
 });
 
 const emptyWorkflow = (): WorkflowDef => ({
@@ -309,7 +312,7 @@ export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
             </div>
 
             {editing.stages.length === 0 && (
-              <p style={{ fontSize: 12, color: theme.dim }}>尚未添加阶段。每个阶段绑定一个 Preset 并定义输入模板。</p>
+              <p style={{ fontSize: 12, color: theme.dim }}>尚未添加阶段。每个阶段配置目标服务器连接和输入模板。</p>
             )}
 
             {editing.stages.map((stage, idx) => (
@@ -324,18 +327,66 @@ export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                  {/* Preset bind */}
+                  {/* Server URL */}
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                      <label style={{ fontSize: 11, color: theme.dim }}>目标服务器 URL *</label>
+                      <select
+                        style={{ fontSize: 11, padding: '1px 4px', background: theme.inputBg, border: `1px solid ${theme.border}`, borderRadius: 3, color: theme.dim }}
+                        value=""
+                        onChange={e => {
+                          const pid = e.target.value;
+                          if (!pid) return;
+                          const p = presets.find(x => x.id === pid);
+                          if (p) {
+                            updateStage(stage.id, {
+                              serverUrl: p.serverUrl,
+                              workdir: p.workdir,
+                              model: p.model,
+                              agentMode: p.agentMode || 'auto',
+                            });
+                          }
+                        }}
+                      >
+                        <option value="">从 Preset 快速填充…</option>
+                        {presets.map(p => (
+                          <option key={p.id} value={p.id}>{p.name} ({p.serverUrl})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <input style={inputStyle} value={stage.serverUrl || ''}
+                      onChange={e => updateStage(stage.id, { serverUrl: e.target.value })}
+                      placeholder="ws://host:9527" />
+                  </div>
+
+                  {/* Workdir */}
                   <div>
-                    <label style={{ fontSize: 11, color: theme.dim }}>Preset</label>
+                    <label style={{ fontSize: 11, color: theme.dim }}>工作目录</label>
+                    <input style={inputStyle} value={stage.workdir || ''}
+                      onChange={e => updateStage(stage.id, { workdir: e.target.value || undefined })}
+                      placeholder="/path/to/project" />
+                  </div>
+
+                  {/* Model */}
+                  <div>
+                    <label style={{ fontSize: 11, color: theme.dim }}>模型</label>
+                    <input style={inputStyle} value={stage.model || ''}
+                      onChange={e => updateStage(stage.id, { model: e.target.value || undefined })}
+                      placeholder="gpt-4 / claude-3" />
+                  </div>
+
+                  {/* Agent mode */}
+                  <div>
+                    <label style={{ fontSize: 11, color: theme.dim }}>执行模式</label>
                     <select
                       style={{ ...inputStyle, fontSize: 12 }}
-                      value={stage.presetId || ''}
-                      onChange={e => updateStage(stage.id, { presetId: e.target.value || undefined })}
+                      value={stage.agentMode || 'auto'}
+                      onChange={e => updateStage(stage.id, { agentMode: e.target.value })}
                     >
-                      <option value="">-- 无可选 --</option>
-                      {presets.map(p => (
-                        <option key={p.id} value={p.id}>{p.name} ({p.serverUrl})</option>
-                      ))}
+                      <option value="auto">auto</option>
+                      <option value="simple">simple</option>
+                      <option value="plan">plan</option>
+                      <option value="pipeline">pipeline</option>
                     </select>
                   </div>
 

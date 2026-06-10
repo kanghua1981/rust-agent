@@ -910,6 +910,7 @@ export interface WorkflowErrorEvent extends BaseMessage {
 export interface WorkflowStage {
   id: string;
   workflowId: string;
+  /** @deprecated kept for backward compat; use embedded fields */
   presetId?: string;
   stageOrder: number;
   stageGroup: string;
@@ -919,6 +920,15 @@ export interface WorkflowStage {
   timeoutSecs: number;
   retryCount: number;
   autoApprove: boolean;
+  // ── Embedded connection fields ──
+  /** Target Agent server URL, e.g. ws://host:9527 */
+  serverUrl: string;
+  /** Working directory on the target server */
+  workdir?: string;
+  /** Model alias */
+  model?: string;
+  /** Execution mode: auto, simple, plan, pipeline */
+  agentMode: string;
 }
 
 export interface WorkflowDef {

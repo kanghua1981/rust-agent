@@ -35,6 +35,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "preset_noderef",
         sql: include_str!("../../sql/migrations/004_preset_noderef.sql"),
     },
+    Migration {
+        version: 5,
+        name: "embed_stage_conn",
+        sql: include_str!("../../sql/migrations/005_embed_stage_conn.sql"),
+    },
 ];
 
 /// Run any pending migrations on `conn`.
@@ -105,7 +110,7 @@ mod tests {
         migrate(&conn).unwrap();
 
         let v = current_version(&conn).unwrap();
-        assert!(v >= 1, "expected at least migration 1, got {}", v);
+        assert!(v >= 5, "expected at least migration 5, got {}", v);
 
         // Spot-check that a table exists
         let cnt: i64 = conn

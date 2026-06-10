@@ -98,43 +98,18 @@ pub async fn run_workflow(
             stage.stage_order + 1, stage.stage_group,
         ));
 
-        // 4c. Load preset
-        let preset = match &stage.preset_id {
-            Some(pid) => match db.get_preset(pid) {
-                Ok(Some(p)) => p,
-                Ok(None) => {
-                    let err = format!("Preset '{}' not found", pid);
-                    output.on_warning(&format!("❌ {}", err));
-                    overall_status = "failed".to_string();
-                    let sr = failed_stage_result(&run_id, stage, &err);
-                    db.save_stage_result(&sr)?;
-                    db.update_run_status(&run_id, "failed", Some(&err))?;
-                    run.stage_results.push(sr);
-                    run.status = "failed".into();
-                    run.error_message = Some(err);
-                    return Ok(run);
-                }
-                Err(e) => {
-                    let err = format!("Preset '{}' not found: {}", pid, e);
-                    output.on_warning(&format!("❌ {}", err));
-                    overall_status = "failed".to_string();
-                    let sr = failed_stage_result(&run_id, stage, &err);
-                    db.save_stage_result(&sr)?;
-                    db.update_run_status(&run_id, "failed", Some(&err))?;
-                    run.stage_results.push(sr);
-                    run.status = "failed".into();
-                    run.error_message = Some(err);
-                    return Ok(run);
-                }
-            },
-            None => {
-                output.on_warning("⚠️ 阶段没有绑定 Preset，跳过");
-                let sr = skipped_stage_result(&run_id, stage);
-                db.save_stage_result(&sr)?;
-                run.stage_results.push(sr);
-                continue;
-            }
-        };
+        // 4c. Resolve connection target from embedded fields
+        //     New stages carry server_url directly; fall back to preset_id for
+        //     backward compatibility with workflows saved before migration 005.
+        let (server_url, workdir, model, agent_mode) = resolve_stage_target(db, stage)?;
+
+        if server_url.is_empty() {
+            output.on_warning("⚠️ 阶段没有指定目标服务器，跳过");
+            let sr = skipped_stage_result(&run_id, stage);
+            db.save_stage_result(&sr)?;
+            run.stage_results.push(sr);
+            continue;
+        }
 
         // 4d. Execute on remote agent (with retries)
         let timeout = if stage.timeout_secs > 0 { stage.timeout_secs as u64 } else { 300 };
@@ -151,7 +126,10 @@ pub async fn run_workflow(
             }
 
             match execute_single_stage(
-                &preset,
+                &server_url,
+                &workdir,
+                &model,
+                &agent_mode,
                 &prompt,
                 stage,
                 timeout,
@@ -230,28 +208,30 @@ pub async fn run_workflow(
 // ── Single stage execution ─────────────────────────────────────────────────
 
 async fn execute_single_stage(
-    preset: &Preset,
+    server_url: &str,
+    workdir: &Option<String>,
+    model: &Option<String>,
+    agent_mode: &str,
     prompt: &str,
     stage: &WorkflowStage,
     timeout_secs: u64,
     output: &Arc<dyn AgentOutput>,
 ) -> Result<StageResult> {
-    let _stage_id = stage.id.clone();
-    let preset_name = preset.name.clone();
-    let server_url = preset.server_url.clone();
+    let display_name = stage.stage_group.clone();
+    let server_url = server_url.to_string();
 
     let mut sr = StageResult {
         id: uuid::Uuid::new_v4().to_string(),
         run_id: String::new(), // filled in by caller
         stage_id: stage.id.clone(),
         stage_order: stage.stage_order,
-        preset_name: Some(preset.name.clone()),
+        preset_name: Some(display_name.clone()),
         status: "running".into(),
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         ..Default::default()
     };
 
-    output.on_warning(&format!("  🔗 连接到 {} ({})", preset_name, server_url));
+    output.on_warning(&format!("  🔗 连接到 {} ({})", display_name, server_url));
 
     // Use the server URL directly — the user_message + ready protocol
     let ws_url = if server_url.ends_with("/agent") {
@@ -269,15 +249,22 @@ async fn execute_single_stage(
     let mut _connected = false;
 
     // Send set_mode if specified
-    if !preset.agent_mode.is_empty() && preset.agent_mode != "auto" {
-        let mode_msg = json!({ "type": "set_mode", "data": { "mode": preset.agent_mode } });
+    if !agent_mode.is_empty() && agent_mode != "auto" {
+        let mode_msg = json!({ "type": "set_mode", "data": { "mode": agent_mode } });
         let _ = write.send(Message::Text(mode_msg.to_string().into())).await;
     }
 
-    // Send user_message
+    // Send user_message (with optional workdir/model from stage config)
+    let mut msg_data = serde_json::json!({ "text": prompt });
+    if let Some(ref wd) = workdir {
+        msg_data["workdir"] = serde_json::json!(wd);
+    }
+    if let Some(ref m) = model {
+        msg_data["model"] = serde_json::json!(m);
+    }
     let initial_msg = json!({
         "type": "user_message",
-        "data": { "text": prompt }
+        "data": msg_data
     });
     write.send(Message::Text(initial_msg.to_string().into())).await
         .context("发送任务失败")?;
@@ -287,7 +274,7 @@ async fn execute_single_stage(
     let mut last_msg_at = Instant::now();
     let total_timeout = Duration::from_secs(timeout_secs);
     let mut token_count: i64 = 0;
-    let auto_approve = stage.auto_approve || preset.auto_approve;
+    let auto_approve = stage.auto_approve;
 
     loop {
         tokio::select! {
@@ -478,6 +465,43 @@ async fn execute_single_stage(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Resolve a stage's connection target.
+///
+/// New stages carry `server_url` (and optionally `workdir`, `model`, `agent_mode`)
+/// directly.  For backward compatibility with workflows saved before migration 005,
+/// if `server_url` is empty we fall back to the `preset_id` → `presets` table lookup.
+fn resolve_stage_target(
+    db: &GlobalDb,
+    stage: &WorkflowStage,
+) -> Result<(String, Option<String>, Option<String>, String)> {
+    // New path: stage carries its own connection info
+    if !stage.server_url.is_empty() {
+        return Ok((
+            stage.server_url.clone(),
+            stage.workdir.clone(),
+            stage.model.clone(),
+            stage.agent_mode.clone(),
+        ));
+    }
+
+    // Backward compat: look up preset
+    if let Some(ref pid) = stage.preset_id {
+        if let Some(p) = db.get_preset(pid)? {
+            return Ok((
+                p.server_url.clone(),
+                p.workdir.clone(),
+                p.model.clone(),
+                p.agent_mode.clone(),
+            ));
+        }
+        // Preset not found — return empty so caller can skip
+        return Ok((String::new(), None, None, "auto".into()));
+    }
+
+    // No target at all
+    Ok((String::new(), None, None, "auto".into()))
+}
 
 /// Evaluate a stage condition against the current pipeline status.
 fn evaluate_condition(condition: &str, current_status: &str) -> bool {

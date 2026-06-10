@@ -354,7 +354,7 @@ impl GlobalDb {
         let mut stage_stmt = conn.prepare(
             "SELECT id, workflow_id, preset_id, stage_order, stage_group,
                     input_template, output_key, condition, timeout_secs,
-                    retry_count, auto_approve
+                    retry_count, auto_approve, server_url, workdir, model, agent_mode
              FROM workflow_stages WHERE workflow_id = ?1 ORDER BY stage_order"
         )?;
         let stage_rows: Vec<WorkflowStage> = stage_stmt.query_map(params![id], |row| {
@@ -370,6 +370,10 @@ impl GlobalDb {
                 timeout_secs:   row.get(8)?,
                 retry_count:    row.get(9)?,
                 auto_approve:   row.get::<_, i32>(10)? != 0,
+                server_url:     row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                workdir:        row.get(12)?,
+                model:          row.get(13)?,
+                agent_mode:     row.get::<_, Option<String>>(14)?.unwrap_or_else(|| "auto".into()),
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         wf.stages = stage_rows;
@@ -396,13 +400,14 @@ impl GlobalDb {
                 conn.execute(
                     "INSERT INTO workflow_stages (id, workflow_id, preset_id, stage_order,
                          stage_group, input_template, output_key, condition, timeout_secs,
-                         retry_count, auto_approve)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                         retry_count, auto_approve, server_url, workdir, model, agent_mode)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                     params![
                         s.id, wf.id, s.preset_id, s.stage_order,
                         s.stage_group, s.input_template, s.output_key,
                         s.condition, s.timeout_secs, s.retry_count,
                         s.auto_approve as i32,
+                        s.server_url, s.workdir, s.model, s.agent_mode,
                     ],
                 )?;
             }
@@ -423,7 +428,7 @@ impl GlobalDb {
         let mut stmt = conn.prepare(
             "SELECT id, workflow_id, preset_id, stage_order, stage_group,
                     input_template, output_key, condition, timeout_secs,
-                    retry_count, auto_approve
+                    retry_count, auto_approve, server_url, workdir, model, agent_mode
              FROM workflow_stages WHERE workflow_id = ?1 ORDER BY stage_order"
         )?;
         let rows: Vec<WorkflowStage> = stmt.query_map(params![workflow_id], |row| {
@@ -439,6 +444,10 @@ impl GlobalDb {
                 timeout_secs:   row.get(8)?,
                 retry_count:    row.get(9)?,
                 auto_approve:   row.get::<_, i32>(10)? != 0,
+                server_url:     row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                workdir:        row.get(12)?,
+                model:          row.get(13)?,
+                agent_mode:     row.get::<_, Option<String>>(14)?.unwrap_or_else(|| "auto".into()),
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -709,14 +718,6 @@ mod tests {
         let path = dir.path().join("test.db");
         let db = GlobalDb::open(&path).unwrap();
 
-        // Create a dummy preset so FK constraints are satisfied
-        db.save_preset(&Preset {
-            id: "p1".into(),
-            name: "Dummy".into(),
-            server_url: "ws://localhost:1".into(),
-            ..Default::default()
-        }).unwrap();
-
         let mut wf = Workflow {
             id: "wf-1".into(),
             name: "Test Workflow".into(),
@@ -725,18 +726,21 @@ mod tests {
                 WorkflowStage {
                     id: "s1".into(),
                     workflow_id: "wf-1".into(),
-                    preset_id: Some("p1".into()),
                     stage_order: 0,
                     input_template: "Plan: {{task}}".into(),
                     output_key: Some("plan".into()),
+                    server_url: "ws://server1:9527".into(),
+                    agent_mode: "pipeline".into(),
                     ..Default::default()
                 },
                 WorkflowStage {
                     id: "s2".into(),
                     workflow_id: "wf-1".into(),
                     stage_order: 1,
-                    input_template: "Execute: {{stage.s1.output}}".into(),
+                    input_template: "Execute: {{stage.plan.output}}".into(),
                     condition: "on_success".into(),
+                    server_url: "ws://server2:9527".into(),
+                    model: Some("gpt-4".into()),
                     ..Default::default()
                 },
             ],

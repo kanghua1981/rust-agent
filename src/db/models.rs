@@ -99,6 +99,7 @@ pub struct WorkflowStage {
     pub id: String,
     #[serde(default)]
     pub workflow_id: String,
+    /// Deprecated: kept for backward compat.  Use embedded fields instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preset_id: Option<String>,
     #[serde(default)]
@@ -117,7 +118,22 @@ pub struct WorkflowStage {
     pub retry_count: i32,
     #[serde(default)]
     pub auto_approve: bool,
+    // ── Embedded connection fields (replaces preset foreign key) ──────
+    /// Target Agent server URL, e.g. `ws://host:9527`
+    #[serde(default)]
+    pub server_url: String,
+    /// Working directory on the target server
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    /// Model alias to use on the target server
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Execution mode: auto, simple, plan, pipeline
+    #[serde(default = "default_agent_mode")]
+    pub agent_mode: String,
 }
+
+fn default_agent_mode() -> String { "auto".into() }
 
 fn default_group() -> String { "default".into() }
 fn default_task_template() -> String { "{{task}}".into() }
