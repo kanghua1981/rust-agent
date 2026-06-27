@@ -16,6 +16,7 @@ pub mod connect_service;
 pub mod query_service;
 pub mod subscribe_service;
 pub mod list_services;
+#[cfg(feature = "browser")]
 pub mod browser;
 pub mod script_tool;
 pub mod upload_image;
@@ -218,6 +219,7 @@ impl ToolExecutor {
         let pm_for_load_skill = executor.plugin_manager.clone();
         executor.register(Box::new(load_skill::LoadSkillTool::new(pm_for_load_skill)));
         executor.register(Box::new(create_skill::CreateSkillTool));
+        #[cfg(feature = "browser")]
         executor.register(Box::new(browser::BrowserTool::new()));
         executor.register(Box::new(upload_image::UploadImageTool));
         executor.register(Box::new(todo::TodoWriteTool));

@@ -1,7 +1,14 @@
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 
+# musl uses rust-lld by default — do NOT override with musl-gcc,
+# otherwise the startup objects (crt1.o etc.) are linked incorrectly.
+# CC/CXX/AR below are only for compiling C dependencies (rusqlite/sqlite).
+
 [env]
 CC_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-gcc"
 CXX_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-g++"
 AR_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-ar"
+CC_x86_64_unknown_linux_musl = "musl-gcc"
+CXX_x86_64_unknown_linux_musl = "musl-g++"
+AR_x86_64_unknown_linux_musl = "ar"
