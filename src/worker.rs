@@ -399,7 +399,9 @@ async fn run_async(
                     if p.is_dir() {
                         let changed = agent.project_dir != p;
                         agent.set_project_dir(p.clone());
-                        agent.set_allowed_dir(Some(p));
+                        if !agent.sandbox.is_disabled {
+                            agent.set_allowed_dir(Some(p));
+                        }
                         changed
                     } else { false }
                 } else { false };
@@ -599,7 +601,9 @@ async fn handle_control_cmd(
                     let new_dir = std::path::PathBuf::from(&session.meta.working_dir);
                     if new_dir.is_dir() {
                         agent.set_project_dir(new_dir.clone());
-                        agent.set_allowed_dir(Some(new_dir));
+                        if !agent.sandbox.is_disabled {
+                            agent.set_allowed_dir(Some(new_dir));
+                        }
                         ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
                     }
                     let history = messages_to_json(&session.messages);
