@@ -144,6 +144,8 @@ export const useWebSocket = () => {
     addDiff,
     setSessionInfo,
     setSessionList,
+    setLocalSessions,
+    setActiveSessionName,
     removeSessionFromList,
     setSessionRestoreAvailable,
     clearSession,
@@ -284,6 +286,31 @@ export const useWebSocket = () => {
     clearSession();
     sendRaw({ type: 'load_session_by_id', data: { id } });
   }, [sendRaw, clearSession]);
+
+  // ── Local named session commands ──────────────────────────────────
+  const listLocalSessions = useCallback(() => {
+    sendRaw({ type: 'list_local_sessions', data: {} });
+  }, [sendRaw]);
+  const listLocalSessionsRef = useRef(listLocalSessions);
+  listLocalSessionsRef.current = listLocalSessions;
+
+  const switchLocalSession = useCallback((name: string) => {
+    clearSession();
+    sendRaw({ type: 'switch_local_session', data: { name } });
+  }, [sendRaw, clearSession]);
+
+  const newLocalSession = useCallback((name: string) => {
+    clearSession();
+    sendRaw({ type: 'new_local_session', data: { name } });
+  }, [sendRaw, clearSession]);
+
+  const deleteLocalSession = useCallback((name: string) => {
+    sendRaw({ type: 'delete_local_session', data: { name } });
+  }, [sendRaw]);
+
+  const renameLocalSession = useCallback((oldName: string, newName: string) => {
+    sendRaw({ type: 'rename_local_session', data: { old_name: oldName, new_name: newName } });
+  }, [sendRaw]);
 
   // ── Preset CRUD (global.db) ───────────────────────────────────────
   const listPresets = useCallback(() => {
@@ -817,6 +844,7 @@ export const useWebSocket = () => {
 
       case 'session_info':
         setSessionInfo(event.data);
+        if (event.data.session_name) setActiveSessionName(event.data.session_name);
         break;
 
       case 'sessions_list':
@@ -826,6 +854,42 @@ export const useWebSocket = () => {
       case 'session_deleted':
         removeSessionFromList(event.data.id);
         break;
+
+      // ── Local named session events ────────────────────────────────
+      case 'local_sessions_list': {
+        setLocalSessions(event.data.sessions);
+        if (event.data.active) setActiveSessionName(event.data.active);
+        break;
+      }
+
+      case 'session_switched': {
+        clearSession();
+        setActiveSessionName(event.data.name);
+        if (event.data.messages && event.data.messages.length > 0) {
+          const now = Date.now();
+          event.data.messages.forEach((m: any, i: number) => {
+            const ts = Date.now() - (event.data.messages.length - i) * 1000;
+            addMessage({
+              id: m.id || `hist-${i}`,
+              role: m.role as 'user' | 'assistant' | 'system',
+              content: m.content || [],
+              timestamp: ts,
+            });
+          });
+        }
+        break;
+      }
+
+      case 'session_renamed': {
+        const st = useAgentStore.getState();
+        const current = st.activeSessionName;
+        if (current === event.data.old_name) {
+          setActiveSessionName(event.data.new_name);
+        }
+        // Refresh local session list
+        listLocalSessionsRef.current?.();
+        break;
+      }
 
       case 'session_cleared':
         clearSession();
@@ -1367,6 +1431,11 @@ export const useWebSocket = () => {
     listSessions,
     deleteSession,
     loadSessionById,
+    listLocalSessions,
+    switchLocalSession,
+    newLocalSession,
+    deleteLocalSession,
+    renameLocalSession,
     listPresets,
     savePreset,
     deletePreset,

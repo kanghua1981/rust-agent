@@ -9,13 +9,13 @@
 //! 方法在调用 `.await` 前会立即释放读锁，保证不持锁等待外部脚本。
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::sync::RwLock;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::sync::Semaphore;
 
 use super::hook_loader::HookDefinition;
 
@@ -62,14 +62,29 @@ pub enum HookResult {
 
 // ── HookBus ───────────────────────────────────────────────────────────────────
 
+/// 最大并发执行的 fire-and-forget hook 数量。
+/// 超过此限制的新 hook 会被丢弃并记录 WARN，防止系统压力下任务堆积。
+const MAX_CONCURRENT_HOOKS: usize = 4;
+
 /// Hook 事件总线
 ///
 /// 线程安全：内部使用 `RwLock` 保护 hooks 映射表，通常由多个
 /// `Arc<HookBus>` 共享访问。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HookBus {
     /// event_name → 按 priority 排序的 hook 列表
     hooks: RwLock<HashMap<String, Vec<HookDefinition>>>,
+    /// 限制并发 hook 执行数量，防止系统内存压力下任务无限堆积。
+    sem: Arc<Semaphore>,
+}
+
+impl Default for HookBus {
+    fn default() -> Self {
+        Self {
+            hooks: RwLock::default(),
+            sem:   Arc::new(Semaphore::new(MAX_CONCURRENT_HOOKS)),
+        }
+    }
 }
 
 impl HookBus {
@@ -136,6 +151,7 @@ impl HookBus {
     /// **Fire-and-forget**：spawn 异步任务后立即返回，不阻塞调用方。
     ///
     /// 用于通知、日志等不需要结果的场景。
+    /// 使用 `Semaphore` 限制并发数：超过 `MAX_CONCURRENT_HOOKS` 时丢弃新 hook。
     pub fn emit(&self, event: HookEvent) {
         let hooks = self.snapshot_matching(&event.name, &event.data);
         if hooks.is_empty() {
@@ -147,14 +163,43 @@ impl HookBus {
             hooks.len()
         );
         let payload = build_payload(&event);
+        let sem = self.sem.clone();
         for hook in hooks {
             let p = payload.clone();
-            tokio::spawn(async move {
-                if let Err(e) = run_script(&hook, &p).await {
+            let permit = match sem.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
                     tracing::warn!(
-                        "[hook] fire-and-forget '{}' failed: {}",
-                        hook.description, e
+                        "[hook] fire-and-forget '{}' dropped: {} concurrent hooks at limit",
+                        hook.description,
+                        MAX_CONCURRENT_HOOKS
                     );
+                    continue;
+                }
+            };
+            let desc = hook.description.clone();
+            let script_path = hook.script_path.clone();
+            let timeout_secs = hook.timeout_secs;
+            let env_vars = hook.env.clone();
+            tokio::spawn(async move {
+                let _permit = permit; // hold permit until done
+                let result = tokio::task::spawn_blocking(move || {
+                    run_script_sync(&script_path, &env_vars, &p, timeout_secs)
+                }).await;
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            "[hook] fire-and-forget '{}' failed: {}",
+                            desc, e
+                        );
+                    }
+                    Err(join_err) => {
+                        tracing::warn!(
+                            "[hook] fire-and-forget '{}' spawn_blocking panicked: {}",
+                            desc, join_err
+                        );
+                    }
                 }
             });
         }
@@ -176,16 +221,27 @@ impl HookBus {
         let payload = build_payload(&event);
         for hook in &hooks {
             let start = std::time::Instant::now();
-            match run_script(hook, &payload).await {
-                Ok(_) => {
+            let script_path = hook.script_path.clone();
+            let timeout_secs = hook.timeout_secs;
+            let env_vars = hook.env.clone();
+            let p = payload.clone();
+            let _permit = self.sem.acquire().await;
+            let result = tokio::task::spawn_blocking(move || {
+                run_script_sync(&script_path, &env_vars, &p, timeout_secs)
+            }).await;
+            match result {
+                Ok(Ok(_)) => {
                     tracing::debug!(
                         "[hook] ✓ {} ({:.1}s)",
                         hook.description,
                         start.elapsed().as_secs_f32()
                     );
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!("[hook] ✗ {} failed: {}", hook.description, e);
+                }
+                Err(join_err) => {
+                    tracing::warn!("[hook] ✗ {} spawn_blocking panicked: {}", hook.description, join_err);
                 }
             }
         }
@@ -209,11 +265,22 @@ impl HookBus {
         let payload = build_payload(&event);
 
         for hook in &hooks {
-            let stdout = match run_script(hook, &payload).await {
-                Ok(out) => out,
-                Err(e) => {
-                    // 脚本失败 → 降级为 allow，不阻断主流程
+            let script_path = hook.script_path.clone();
+            let timeout_secs = hook.timeout_secs;
+            let env_vars = hook.env.clone();
+            let p = payload.clone();
+            let _permit = self.sem.acquire().await;
+            let result = tokio::task::spawn_blocking(move || {
+                run_script_sync(&script_path, &env_vars, &p, timeout_secs)
+            }).await;
+            let stdout = match result {
+                Ok(Ok(out)) => out,
+                Ok(Err(e)) => {
                     tracing::warn!("[hook] intercepting '{}' failed (allow): {}", hook.description, e);
+                    String::new()
+                }
+                Err(join_err) => {
+                    tracing::warn!("[hook] intercepting '{}' spawn_blocking failed: {}", hook.description, join_err);
                     String::new()
                 }
             };
@@ -290,34 +357,94 @@ fn build_payload(event: &HookEvent) -> Value {
     })
 }
 
-/// 执行 hook 脚本；通过 `AGENT_EVENT` 注入 payload，返回 stdout 字符串。
-async fn run_script(hook: &HookDefinition, payload: &Value) -> anyhow::Result<String> {
-    if !hook.script_path.exists() {
-        anyhow::bail!("Script not found: {:?}", hook.script_path);
+/// 同步执行 hook 脚本；通过 `AGENT_EVENT` 注入 payload，返回 stdout 字符串。
+///
+/// 使用 `std::process::Command`（同步），由调用方通过
+/// `tokio::task::spawn_blocking` 在专用阻塞线程池上执行，
+/// 避免占用 tokio worker thread。
+fn run_script_sync(
+    script_path: &PathBuf,
+    env_vars: &HashMap<String, String>,
+    payload: &Value,
+    timeout_secs: u64,
+) -> anyhow::Result<String> {
+    if !script_path.exists() {
+        anyhow::bail!("Script not found: {:?}", script_path);
     }
 
     let payload_str = serde_json::to_string(payload)?;
 
-    let mut cmd = Command::new(&hook.script_path);
+    let mut cmd = Command::new(script_path);
     cmd.env("AGENT_EVENT", &payload_str);
-    for (k, v) in &hook.env {
+    for (k, v) in env_vars {
         cmd.env(k, v);
     }
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let fut = async {
-        let output = cmd.output().await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Exit {}: {}", output.status, stderr.trim());
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    };
+    // Use std::process::Command::output() with a timeout via a separate
+    // watchdog thread so we can capture partial stderr on timeout.
+    let mut child = cmd.spawn()?;
 
-    match timeout(Duration::from_secs(hook.timeout_secs), fut).await {
-        Ok(result) => result,
-        Err(_)     => anyhow::bail!("Script timed out after {}s", hook.timeout_secs),
+    // Wait with a timeout on a separate thread
+    let start = std::time::Instant::now();
+    let deadline = start + Duration::from_secs(timeout_secs);
+
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                let output = child.wait_with_output()?;
+                if !status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("Exit {}: {}", status, stderr.trim());
+                }
+                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+            }
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    // Timeout — kill the child and collect whatever stderr we can
+                    let _ = child.kill();
+                    let _ = child.wait(); // reap the zombie
+                    // Try to read stderr from a fresh execution for diagnostics
+                    // (the killed child's pipes may or may not have data)
+                    let diag = run_script_diag(script_path, env_vars, payload);
+                    anyhow::bail!(
+                        "Script timed out after {}s (script={:?}){}",
+                        timeout_secs,
+                        script_path,
+                        diag
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+/// Quick diagnostic: run the script with a short timeout to see if it
+/// even starts. Returns a string with stderr output if available.
+fn run_script_diag(script_path: &PathBuf, env_vars: &HashMap<String, String>, payload: &Value) -> String {
+    let payload_str = match serde_json::to_string(payload) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let mut cmd = Command::new(script_path);
+    cmd.env("AGENT_EVENT", &payload_str);
+    for (k, v) in env_vars {
+        cmd.env(k, v);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    match cmd.output() {
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" | stderr: {}", stderr.trim())
+            }
+        }
+        Err(e) => format!(" | spawn failed: {}", e),
     }
 }
 

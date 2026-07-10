@@ -156,6 +156,12 @@ struct Args {
     #[arg(long)]
     global_session: bool,
 
+    /// (Worker/CLI) Local session name within the project.
+    /// Session files live in `.agent/sessions/<name>.json`.
+    /// If not set, the last-active session is auto-resumed.
+    #[arg(long = "session-name")]
+    session_name: Option<String>,
+
     /// 启用插件系统
     #[arg(long)]
     enable_plugins: bool,
@@ -283,7 +289,7 @@ async fn main() -> Result<()> {
     };
 
     // Run the agent
-    let result = cli::run(config, project_dir, args.prompt, args.resume, output, args.isolation, args.global_session, plugin_manager).await;
+    let result = cli::run(config, project_dir, args.prompt, args.resume, args.session_name, output, args.isolation, args.global_session, plugin_manager).await;
 
     // Kill auto-spawned sub-agents so they don't become orphan processes.
     // On the next startup the ports would be occupied, causing port-bind failures.

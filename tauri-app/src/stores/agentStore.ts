@@ -42,6 +42,8 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
     currentMessage: '',
     sessionInfo: null,
     sessionList: [],
+    localSessions: [],
+    activeSessionName: null,
     sandboxBackend: 'disabled',
     pendingChanges: 0,
     sandboxChangesData: null,
@@ -88,6 +90,9 @@ interface AgentState {
   sessionInfo: SessionInfo | null;
   sessionList: SessionMeta[];
   sessionRestoreAvailable: { message_count: number } | null;
+
+  localSessions: SessionMeta[];
+  activeSessionName: string | null;
 
   nodeList: VirtualNodeInfo[];
   peerList: any[];  // PeerInfo[] — list of configured remote peer servers
@@ -145,6 +150,8 @@ interface AgentState {
   setSessionList: (list: SessionMeta[]) => void;
   removeSessionFromList: (id: string) => void;
   setSessionRestoreAvailable: (info: { message_count: number } | null) => void;
+  setLocalSessions: (list: SessionMeta[]) => void;
+  setActiveSessionName: (name: string | null) => void;
   setConfig: (config: Partial<AgentConfig>) => void;
   addPreset: (preset: ConfigPreset) => void;
   updatePreset: (id: string, preset: Partial<ConfigPreset>) => void;
@@ -234,6 +241,9 @@ const initialState = {
   sessionInfo: null as SessionInfo | null,
   sessionList: [] as SessionMeta[],
   sessionRestoreAvailable: null as { message_count: number } | null,
+
+  localSessions: [] as SessionMeta[],
+  activeSessionName: null as string | null,
 
   nodeList: [] as VirtualNodeInfo[],
   peerList: [] as any[],
@@ -579,6 +589,12 @@ export const useAgentStore = create<AgentState>()(
 
       setSessionRestoreAvailable: (info) =>
         set(syncActiveSlot({ sessionRestoreAvailable: info })),
+
+      setLocalSessions: (list) =>
+        set(syncActiveSlot({ localSessions: list })),
+
+      setActiveSessionName: (name) =>
+        set(syncActiveSlot({ activeSessionName: name })),
 
       setNodeList: (nodes) =>
         set(syncActiveSlot({ nodeList: nodes })),

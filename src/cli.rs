@@ -320,8 +320,12 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
                     Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
                 }
             } else {
-                match persistence::save_local_session(&agent.conversation, &agent.project_dir) {
-                    Ok(()) => println!("\n{}  Session saved to {}", "💾", ".agent/session.json".bright_yellow()),
+                let name = agent.session_id().unwrap_or("default");
+                match persistence::save_local_named_session(name, &agent.conversation, &agent.project_dir) {
+                    Ok(()) => {
+                        let _ = persistence::write_active_session_name(&agent.project_dir, name);
+                        println!("\n{}  Session '{}' saved to {}", "💾", name.bright_yellow(), ".agent/sessions/".bright_yellow());
+                    }
                     Err(e) => ui::print_error(&format!("Failed to save session: {}", e)),
                 }
             }
@@ -452,6 +456,29 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
             handle_endpoint_command(input);
             SlashResult::Continue
         }
+        _ if input == "/list" => {
+            handle_list_sessions_command(agent);
+            SlashResult::Continue
+        }
+        _ if input.starts_with("/new ") => {
+            let name = input.strip_prefix("/new ").unwrap_or("").trim();
+            handle_new_session_command(name, agent);
+            SlashResult::Continue
+        }
+        _ if input.starts_with("/switch ") => {
+            let name = input.strip_prefix("/switch ").unwrap_or("").trim();
+            handle_switch_session_command(name, agent);
+            SlashResult::Continue
+        }
+        _ if input.starts_with("/rename ") => {
+            let args: Vec<&str> = input.strip_prefix("/rename ").unwrap_or("").split_whitespace().collect();
+            if args.len() >= 2 {
+                handle_rename_session_command(args[0], args[1], agent);
+            } else {
+                println!("\n{}  Usage: /rename <old_name> <new_name>", "❓");
+            }
+            SlashResult::Continue
+        }
         _ => SlashResult::NotACommand,
     }
 }
@@ -471,9 +498,128 @@ pub fn auto_save_session(agent: &mut Agent) {
             }
         }
     } else {
-        if let Err(e) = persistence::save_local_session(&agent.conversation, &agent.project_dir) {
-            tracing::warn!("Auto-save (local) failed: {}", e);
+        let name = agent.session_id().unwrap_or("default");
+        if let Err(e) = persistence::save_local_named_session(name, &agent.conversation, &agent.project_dir) {
+            tracing::warn!("Auto-save (local '{}') failed: {}", name, e);
         }
+        let _ = persistence::write_active_session_name(&agent.project_dir, name);
+    }
+}
+
+// ── Multi-session slash command handlers ────────────────────────────────
+
+/// `/list` — list local named sessions
+fn handle_list_sessions_command(agent: &Agent) {
+    match persistence::list_local_sessions(&agent.project_dir) {
+        Ok(sessions) => {
+            if sessions.is_empty() {
+                println!("\n{}  No local sessions found.", "📋");
+                return;
+            }
+            let active = agent.session_id().unwrap_or("default");
+            println!("\n{}  Local sessions ({}):", "📋", sessions.len());
+            for s in &sessions {
+                let marker = if s.id == active { " *" } else { "" };
+                let name = s.session_name.as_deref().unwrap_or(&s.id);
+                println!(
+                    "  {}{} {} {}  {} messages  {}",
+                    "•".bright_cyan(),
+                    marker.bright_green(),
+                    name.bright_white(),
+                    format!("({})", s.working_dir).dimmed(),
+                    s.message_count.to_string().bright_white(),
+                    s.updated_at.dimmed(),
+                );
+            }
+            println!("  {} = active session", "*".bright_green());
+        }
+        Err(e) => ui::print_error(&format!("Failed to list sessions: {}", e)),
+    }
+}
+
+/// `/new <name>` — create a new named session
+fn handle_new_session_command(name: &str, agent: &mut Agent) {
+    if name.is_empty() {
+        println!("\n{}  Usage: /new <name>", "❓");
+        return;
+    }
+    if name == "_active" {
+        println!("\n{}  '_active' is a reserved name.", "❌");
+        return;
+    }
+
+    // Save current session first
+    auto_save_session(agent);
+
+    // Create a fresh conversation (keeping system prompt)
+    agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+    agent.set_session_id(name.to_string());
+
+    // Persist empty session immediately
+    if let Err(e) = persistence::save_local_named_session(name, &agent.conversation, &agent.project_dir) {
+        ui::print_error(&format!("Failed to create session: {}", e));
+        return;
+    }
+    let _ = persistence::write_active_session_name(&agent.project_dir, name);
+    println!("\n{}  Created and switched to session '{}'", "✅", name.bright_yellow());
+}
+
+/// `/switch <name>` — switch to a named session
+fn handle_switch_session_command(name: &str, agent: &mut Agent) {
+    if name.is_empty() {
+        println!("\n{}  Usage: /switch <name>", "❓");
+        return;
+    }
+
+    // Save current session first
+    auto_save_session(agent);
+
+    match persistence::load_local_named_session(name, &agent.project_dir) {
+        Ok(Some(session)) => {
+            let msg_count = session.messages.len();
+            agent.conversation = persistence::restore_conversation(&session);
+            agent.set_session_id(name.to_string());
+            let _ = persistence::write_active_session_name(&agent.project_dir, name);
+            println!(
+                "\n{}  Switched to session '{}' ({} messages)",
+                "✅",
+                name.bright_yellow(),
+                msg_count.to_string().bright_white()
+            );
+        }
+        Ok(None) => {
+            // Session doesn't exist — create it
+            agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+            agent.set_session_id(name.to_string());
+            let _ = persistence::save_local_named_session(name, &agent.conversation, &agent.project_dir);
+            let _ = persistence::write_active_session_name(&agent.project_dir, name);
+            println!(
+                "\n{}  Created and switched to new session '{}'",
+                "✅",
+                name.bright_yellow()
+            );
+        }
+        Err(e) => ui::print_error(&format!("Failed to switch session: {}", e)),
+    }
+}
+
+/// `/rename <old> <new>` — rename a local session
+fn handle_rename_session_command(old_name: &str, new_name: &str, agent: &mut Agent) {
+    match persistence::rename_local_named_session(old_name, new_name, &agent.project_dir) {
+        Ok(()) => {
+            // Update agent's session_id if we renamed the active session
+            if agent.session_id() == Some(old_name) {
+                agent.set_session_id(new_name.to_string());
+                let _ = persistence::write_active_session_name(&agent.project_dir, new_name);
+            }
+            println!(
+                "\n{}  Renamed session '{}' → '{}'",
+                "✅",
+                old_name.bright_yellow(),
+                new_name.bright_yellow()
+            );
+        }
+        Err(e) => ui::print_error(&format!("Failed to rename session: {}", e)),
     }
 }
 
@@ -1128,6 +1274,7 @@ pub async fn run(
     project_dir: PathBuf,
     initial_prompt: Option<String>,
     resume_id: Option<String>,
+    session_name: Option<String>,
     output: Arc<dyn AgentOutput>,
     isolation: crate::container::IsolationMode,
     global_session: bool,
@@ -1135,6 +1282,14 @@ pub async fn run(
 ) -> Result<()> {
     ui::print_banner();
     ui::print_workdir();
+
+    // ── Resolve session name ─────────────────────────────────────────
+    let active_session = persistence::resolve_session_name(&project_dir, session_name.as_deref());
+    if session_name.is_some() {
+        println!("{}  Session: {}", "📋", active_session.bright_yellow());
+    }
+    // Ensure migration happens before any load/save
+    let _ = persistence::migrate_old_local_session(&project_dir);
 
     // Build sandbox: only Sandbox mode tries fuse-overlayfs.
     // Normal and Container both run without overlay protection in the CLI.
@@ -1167,17 +1322,19 @@ pub async fn run(
             }
         }
     } else if !global_session {
-        // Default: auto-load local session from .agent/session.json
-        match persistence::load_local_session(&project_dir) {
+        // Default: auto-load local named session
+        match persistence::load_local_named_session(&active_session, &project_dir) {
             Ok(Some(session)) => {
                 let msg_count = session.messages.len();
                 let conversation = persistence::restore_conversation(&session);
                 println!(
-                    "{}  Resumed local session ({} messages)\n",
+                    "{}  Resumed session '{}' ({} messages)\n",
                     "🔄",
+                    active_session.bright_yellow(),
                     msg_count.to_string().bright_white()
                 );
-                Agent::with_conversation(config, project_dir.clone(), conversation, "local".to_string(), output.clone(), sandbox, plugin_manager.clone())
+                // Pass session name as session_id so auto-save picks it up
+                Agent::with_conversation(config, project_dir.clone(), conversation, active_session.clone(), output.clone(), sandbox, plugin_manager.clone())
             }
             Ok(None) => Agent::new(config, project_dir.clone(), output.clone(), sandbox, plugin_manager.clone()),
             Err(e) => {

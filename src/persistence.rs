@@ -1,7 +1,16 @@
 //! Conversation persistence - save and restore conversation sessions.
 //!
-//! Conversations are saved as JSON files in the data directory,
-//! allowing the user to resume previous sessions.
+//! ## Multi-session support (per-project)
+//!
+//! Local sessions are stored under `.agent/sessions/<name>.json`.
+//! The file `.agent/sessions/_active` holds the name of the most-recently-used
+//! session so workers and the CLI can auto-resume.
+//!
+//! Old single-file `.agent/session.json` is migrated to
+//! `.agent/sessions/default.json` on first access.
+//!
+//! Global sessions are stored in the user data directory
+//! (`~/.local/share/rust_agent/sessions/<id>.json`).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -9,14 +18,20 @@ use std::path::{Path, PathBuf};
 
 use crate::conversation::{Conversation, Message};
 
-/// Maximum number of messages kept in local `.agent/session.json`.
+/// Maximum number of messages kept in each local session file.
 /// Older messages are rotated to `.agent/archive/YYYY-MM.jsonl`.
 const LOCAL_MAX_MESSAGES: usize = 100;
+
+/// Default session name when none is specified.
+const DEFAULT_SESSION_NAME: &str = "default";
 
 /// Metadata for a saved session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub id: String,
+    /// Local session name (only for local/named sessions).
+    #[serde(default)]
+    pub session_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub message_count: usize,
@@ -110,6 +125,7 @@ pub fn save_session(conversation: &Conversation, session_id: Option<&str>, proje
     let session = SavedSession {
         meta: SessionMeta {
             id: id.clone(),
+            session_name: None,
             created_at: now.clone(),
             updated_at: now,
             message_count: conversation.messages.len(),
@@ -207,9 +223,19 @@ pub fn delete_session(session_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Path to the local session file: `<workdir>/.agent/session.json`
+/// Path to the local sessions directory: `<workdir>/.agent/sessions/`
+pub fn local_sessions_dir(workdir: &Path) -> PathBuf {
+    workdir.join(".agent").join("sessions")
+}
+
+/// Path to the old single-file session: `<workdir>/.agent/session.json`
 pub fn local_session_path(workdir: &Path) -> PathBuf {
     workdir.join(".agent").join("session.json")
+}
+
+/// Path to the active-session marker: `<workdir>/.agent/sessions/_active`
+fn active_session_marker(workdir: &Path) -> PathBuf {
+    local_sessions_dir(workdir).join("_active")
 }
 
 /// Derive a year-month string from the current unix timestamp, e.g. "2026-03"
@@ -225,14 +251,21 @@ fn year_month_string() -> String {
     format!("{:04}-{:02}", years, months)
 }
 
-/// Save conversation to local `.agent/session.json`.
+/// Save conversation to a named local session file.
+///
+/// File: `<workdir>/.agent/sessions/<name>.json`
 ///
 /// If the conversation grows past `LOCAL_MAX_MESSAGES`, the oldest excess
 /// messages are appended to `.agent/archive/YYYY-MM.jsonl` and dropped
-/// from `session.json` to keep the active file lean.
-pub fn save_local_session(conversation: &Conversation, workdir: &Path) -> Result<()> {
+/// from the active file to keep it lean.
+pub fn save_local_named_session(
+    name: &str,
+    conversation: &Conversation,
+    workdir: &Path,
+) -> Result<()> {
+    let sessions_dir = local_sessions_dir(workdir);
     let agent_dir = workdir.join(".agent");
-    std::fs::create_dir_all(&agent_dir)?;
+    std::fs::create_dir_all(&sessions_dir)?;
 
     let mut messages = conversation.messages.clone();
 
@@ -266,7 +299,8 @@ pub fn save_local_session(conversation: &Conversation, workdir: &Path) -> Result
 
     let session = SavedSession {
         meta: SessionMeta {
-            id: "local".to_string(),
+            id: name.to_string(),
+            session_name: Some(name.to_string()),
             created_at: now.clone(),
             updated_at: now,
             message_count: messages.len(),
@@ -277,23 +311,198 @@ pub fn save_local_session(conversation: &Conversation, workdir: &Path) -> Result
         messages,
     };
 
-    let path = local_session_path(workdir);
+    let path = sessions_dir.join(format!("{}.json", name));
     let json = serde_json::to_string_pretty(&session)?;
     std::fs::write(&path, json)?;
 
     Ok(())
 }
 
-/// Load the local session from `.agent/session.json`.
-/// Returns `None` if no local session file is found.
-pub fn load_local_session(workdir: &Path) -> Result<Option<SavedSession>> {
-    let path = local_session_path(workdir);
+/// Load a named local session from `<workdir>/.agent/sessions/<name>.json`.
+/// Returns `None` if the file does not exist.
+pub fn load_local_named_session(name: &str, workdir: &Path) -> Result<Option<SavedSession>> {
+    let path = local_sessions_dir(workdir).join(format!("{}.json", name));
     if !path.exists() {
         return Ok(None);
     }
     let json = std::fs::read_to_string(&path)?;
     let session: SavedSession = serde_json::from_str(&json)?;
     Ok(Some(session))
+}
+
+/// List all local named sessions (`.agent/sessions/*.json`).
+/// Skips the `_active` marker file.
+pub fn list_local_sessions(workdir: &Path) -> Result<Vec<SessionMeta>> {
+    let dir = local_sessions_dir(workdir);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut sessions = Vec::new();
+    for entry in std::fs::read_dir(&dir)?.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Skip non-json files and the _active marker
+        if !file_name.ends_with(".json") || file_name == "_active" {
+            continue;
+        }
+        if let Ok(json) = std::fs::read_to_string(&path) {
+            if let Ok(session) = serde_json::from_str::<SavedSession>(&json) {
+                sessions.push(session.meta);
+            }
+        }
+    }
+
+    // Sort by updated_at descending (most recent first)
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(sessions)
+}
+
+/// Delete a named local session file.
+pub fn delete_local_named_session(name: &str, workdir: &Path) -> Result<()> {
+    let path = local_sessions_dir(workdir).join(format!("{}.json", name));
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+        Ok(())
+    } else {
+        anyhow::bail!("Local session '{}' not found", name)
+    }
+}
+
+/// Rename a local session file.
+pub fn rename_local_named_session(old_name: &str, new_name: &str, workdir: &Path) -> Result<()> {
+    let sessions_dir = local_sessions_dir(workdir);
+    let old_path = sessions_dir.join(format!("{}.json", old_name));
+    let new_path = sessions_dir.join(format!("{}.json", new_name));
+
+    if !old_path.exists() {
+        anyhow::bail!("Local session '{}' not found", old_name);
+    }
+    if new_path.exists() {
+        anyhow::bail!("Local session '{}' already exists", new_name);
+    }
+
+    // Also update the session metadata inside the file
+    let json = std::fs::read_to_string(&old_path)?;
+    let mut session: SavedSession = serde_json::from_str(&json)?;
+    session.meta.id = new_name.to_string();
+    session.meta.session_name = Some(new_name.to_string());
+    session.meta.updated_at = now_string();
+    let new_json = serde_json::to_string_pretty(&session)?;
+    std::fs::write(&new_path, new_json)?;
+    std::fs::remove_file(&old_path)?;
+
+    Ok(())
+}
+
+/// Read the name of the last-active local session from `.agent/sessions/_active`.
+pub fn read_active_session_name(workdir: &Path) -> Option<String> {
+    let marker = active_session_marker(workdir);
+    if !marker.exists() {
+        return None;
+    }
+    std::fs::read_to_string(&marker)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Write the active session name to `.agent/sessions/_active`.
+pub fn write_active_session_name(workdir: &Path, name: &str) -> Result<()> {
+    let dir = local_sessions_dir(workdir);
+    std::fs::create_dir_all(&dir)?;
+    let marker = active_session_marker(workdir);
+    std::fs::write(&marker, name)?;
+    Ok(())
+}
+
+/// Migrate the old single-file `.agent/session.json` to the new
+/// `.agent/sessions/default.json` layout.  Called once at startup.
+///
+/// Returns `Some("default")` if migration happened, `None` if nothing to do.
+pub fn migrate_old_local_session(workdir: &Path) -> Result<Option<String>> {
+    let old_path = local_session_path(workdir);
+    if !old_path.exists() {
+        return Ok(None);
+    }
+
+    let sessions_dir = local_sessions_dir(workdir);
+    let new_path = sessions_dir.join("default.json");
+
+    // If the new file already exists, the old one is stale — just remove it.
+    if new_path.exists() {
+        tracing::info!(
+            "persistence: removing stale session.json (sessions/default.json already exists)"
+        );
+        let _ = std::fs::remove_file(&old_path);
+        return Ok(None);
+    }
+
+    // Read old, write to new location
+    let json = std::fs::read_to_string(&old_path)?;
+    let mut session: SavedSession = serde_json::from_str(&json)?;
+
+    // Patch metadata for the new layout
+    session.meta.id = DEFAULT_SESSION_NAME.to_string();
+    session.meta.session_name = Some(DEFAULT_SESSION_NAME.to_string());
+    session.meta.updated_at = now_string();
+
+    std::fs::create_dir_all(&sessions_dir)?;
+    let new_json = serde_json::to_string_pretty(&session)?;
+    std::fs::write(&new_path, new_json)?;
+
+    // Remove old file after successful migration
+    let _ = std::fs::remove_file(&old_path);
+
+    tracing::info!(
+        "persistence: migrated session.json → sessions/default.json"
+    );
+
+    Ok(Some(DEFAULT_SESSION_NAME.to_string()))
+}
+
+/// Resolve the session name to use at startup, given an optional CLI/URL override.
+///
+/// Priority:
+/// 1. `cli_override` (from `--session-name` or `?session=` in URL)
+/// 2. `.agent/sessions/_active` (last-used session)
+/// 3. Fallback to `DEFAULT_SESSION_NAME`
+pub fn resolve_session_name(workdir: &Path, cli_override: Option<&str>) -> String {
+    if let Some(name) = cli_override.filter(|n| !n.is_empty()) {
+        return name.to_string();
+    }
+    read_active_session_name(workdir).unwrap_or_else(|| DEFAULT_SESSION_NAME.to_string())
+}
+
+/// Save conversation to local session (backward-compatible wrapper).
+///
+/// Delegates to `save_local_named_session("default", ...)`.
+pub fn save_local_session(conversation: &Conversation, workdir: &Path) -> Result<()> {
+    // Try migration on first access
+    let _ = migrate_old_local_session(workdir);
+    save_local_named_session(DEFAULT_SESSION_NAME, conversation, workdir)?;
+    let _ = write_active_session_name(workdir, DEFAULT_SESSION_NAME);
+    Ok(())
+}
+
+/// Load the local session (backward-compatible wrapper).
+///
+/// Tries the new `.agent/sessions/default.json` first, then falls back to
+/// the old single-file `.agent/session.json`.  Old file is auto-migrated.
+pub fn load_local_session(workdir: &Path) -> Result<Option<SavedSession>> {
+    // Try new layout first
+    if let Some(session) = load_local_named_session(DEFAULT_SESSION_NAME, workdir)? {
+        return Ok(Some(session));
+    }
+    // Fall back to old single-file layout → migrate on load
+    let old_path = local_session_path(workdir);
+    if old_path.exists() {
+        let json = std::fs::read_to_string(&old_path)?;
+        let session: SavedSession = serde_json::from_str(&json)?;
+        let _ = migrate_old_local_session(workdir);
+        return Ok(Some(session));
+    }
+    Ok(None)
 }
 
 /// Restore a saved session into a Conversation

@@ -308,12 +308,13 @@ async fn run_async(
     let (node_caps, virtual_nodes) = workspaces::probe_capabilities();
 
     // ── Auto-restore local session (same as CLI mode) ─────────────────
-    // Worker mode: when connecting to a workdir that has a local session
-    // (.agent/session.json), automatically restore the agent's conversation
-    // so context is preserved.  But only emit a "session_available" summary
-    // to the UI — the user must explicitly click "restore" to load the full
-    // message history into the chat area.
-    match crate::persistence::load_local_session(&project_dir) {
+    // Worker mode: resolve which named session to load, then auto-restore
+    // the conversation so context is preserved.  Only emit a "session_available"
+    // summary to the UI — the user must explicitly click "restore" to load the
+    // full message history into the chat area.
+    let active_session = crate::persistence::resolve_session_name(&project_dir, None);
+    let _ = crate::persistence::migrate_old_local_session(&project_dir);
+    match crate::persistence::load_local_named_session(&active_session, &project_dir) {
         Ok(Some(session)) => {
             let msg_count = session.messages.len();
             let mut conv = crate::persistence::restore_conversation(&session);
@@ -323,21 +324,29 @@ async fn run_async(
                 conv.system_prompt.push_str(&extra_prompt);
             }
             agent.conversation = conv;
+            agent.set_session_id(active_session.clone());
             ws_output.emit_public("session_available", serde_json::json!({
                 "message_count": msg_count,
-                "session_id": "local",
+                "session_id": active_session,
+                "session_name": active_session,
             }));
             tracing::info!(
-                "Worker: auto-restored local session with {} messages for {} (UI notified)",
+                "Worker: auto-restored session '{}' with {} messages for {} (UI notified)",
+                active_session,
                 msg_count,
                 project_dir.display()
             );
         }
         Ok(None) => {
-            // No existing session - fresh start, nothing to restore.
+            // No existing session - fresh start, write _active marker
+            agent.set_session_id(active_session.clone());
+            let _ = crate::persistence::save_local_named_session(
+                &active_session, &agent.conversation, &project_dir,
+            );
+            let _ = crate::persistence::write_active_session_name(&project_dir, &active_session);
         }
         Err(e) => {
-            tracing::warn!("Worker: failed to load local session: {}", e);
+            tracing::warn!("Worker: failed to load local session '{}': {}", active_session, e);
         }
     }
 
@@ -456,9 +465,12 @@ async fn run_async(
                             }));
                         }
 
-                        if let Err(e) = crate::persistence::save_local_session(
-                            &agent.conversation, &agent.project_dir,
-                        ) { tracing::warn!("save_local_session: {}", e); }
+                        if let Err(e) = {
+                            let name = agent.session_id().unwrap_or("default");
+                            crate::persistence::save_local_named_session(
+                                name, &agent.conversation, &agent.project_dir,
+                            )
+                        } { tracing::warn!("save_local_named_session: {}", e); }
 
                         if let Err(e) = crate::persistence::save_session_for_workdir(
                             &agent.conversation, &agent.project_dir,
@@ -496,6 +508,16 @@ enum ControlCmd {
     LoadSession,
     NewSession,
     LoadSessionById(String),
+    /// 列出本地命名会话。
+    ListLocalSessions,
+    /// 切换到命名会话。
+    SwitchLocalSession(String),
+    /// 创建新的命名会话。
+    NewLocalNamedSession(String),
+    /// 删除命名会话。
+    DeleteLocalNamedSession(String),
+    /// 重命名本地会话。
+    RenameLocalSession { old: String, new: String },
     /// Sandbox toggle: in worker mode sandbox is fixed at startup.
     /// We respond with the current status and optionally a warning.
     SetSandbox(bool),
@@ -560,38 +582,40 @@ async fn handle_control_cmd(
         }
 
         ControlCmd::LoadSession => {
-            match crate::persistence::load_local_session(&agent.project_dir) {
+            let name = agent.session_id().map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
+            match crate::persistence::load_local_named_session(&name, &agent.project_dir) {
                 Ok(Some(session)) => {
                     let history = messages_to_json(&session.messages);
                     agent.conversation = crate::persistence::restore_conversation(&session);
                     ws_output.emit_public("session_restored", serde_json::json!({
                         "message_count": history.len(),
                         "messages": history,
+                        "session_name": name,
                     }));
                 }
                 Ok(None) => {
                     ws_output.emit_public("warning", serde_json::json!({
-                        "message": "当前目录没有保存的会话",
+                        "message": format!("Session '{}' has no saved data", name),
                     }));
                 }
                 Err(e) => {
                     ws_output.emit_public("error", serde_json::json!({
-                        "message": format!("加载会话失败: {:#}", e),
+                        "message": format!("Failed to load session: {:#}", e),
                     }));
                 }
             }
         }
 
         ControlCmd::NewSession => {
+            let name = agent.session_id().map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
             agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
-            // Immediately persist the empty conversation so the old session files are overwritten.
-            if let Err(e) = crate::persistence::save_local_session(
-                &agent.conversation, &agent.project_dir,
-            ) { tracing::warn!("save_local_session on new_session: {}", e); }
+            if let Err(e) = crate::persistence::save_local_named_session(
+                &name, &agent.conversation, &agent.project_dir,
+            ) { tracing::warn!("save_local_named_session on new_session: {}", e); }
             if let Err(e) = crate::persistence::save_session_for_workdir(
                 &agent.conversation, &agent.project_dir,
             ) { tracing::warn!("save_session_for_workdir on new_session: {}", e); }
-            ws_output.emit_public("session_cleared", serde_json::json!({ "message": "New session started" }));
+            ws_output.emit_public("session_cleared", serde_json::json!({ "message": "New session started", "session_name": &name }));
             ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
         }
 
@@ -615,9 +639,140 @@ async fn handle_control_cmd(
                 }
                 Err(e) => {
                     ws_output.emit_public("error", serde_json::json!({
-                        "message": format!("加载会话失败: {:#}", e),
+                        "message": format!("Failed to load session: {:#}", e),
                     }));
                 }
+            }
+        }
+
+        // ── Local named session commands ──────────────────────────────
+
+        ControlCmd::ListLocalSessions => {
+            match crate::persistence::list_local_sessions(&agent.project_dir) {
+                Ok(sessions) => {
+                    let active = agent.session_id().unwrap_or("default");
+                    let list: Vec<_> = sessions.iter().map(|s| serde_json::json!({
+                        "id": s.id,
+                        "session_name": s.session_name,
+                        "summary": s.summary,
+                        "updated_at": s.updated_at,
+                        "message_count": s.message_count,
+                        "working_dir": s.working_dir,
+                    })).collect();
+                    ws_output.emit_public("local_sessions_list", serde_json::json!({
+                        "sessions": list,
+                        "active": active,
+                    }));
+                }
+                Err(e) => ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("list_local_sessions failed: {:#}", e)
+                })),
+            }
+        }
+
+        ControlCmd::SwitchLocalSession(name) => {
+            // Save current session first
+            let old_name = agent.session_id().map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
+            if let Err(e) = crate::persistence::save_local_named_session(
+                &old_name, &agent.conversation, &agent.project_dir,
+            ) { tracing::warn!("save before switch failed: {}", e); }
+
+            match crate::persistence::load_local_named_session(&name, &agent.project_dir) {
+                Ok(Some(session)) => {
+                    let history = messages_to_json(&session.messages);
+                    agent.conversation = crate::persistence::restore_conversation(&session);
+                    agent.set_session_id(name.clone());
+                    let _ = crate::persistence::write_active_session_name(&agent.project_dir, &name);
+                    ws_output.emit_public("session_switched", serde_json::json!({
+                        "name": name,
+                        "message_count": history.len(),
+                        "messages": history,
+                    }));
+                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+                }
+                Ok(None) => {
+                    // Create new session
+                    agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+                    agent.set_session_id(name.clone());
+                    let _ = crate::persistence::save_local_named_session(
+                        &name, &agent.conversation, &agent.project_dir,
+                    );
+                    let _ = crate::persistence::write_active_session_name(&agent.project_dir, &name);
+                    ws_output.emit_public("session_switched", serde_json::json!({
+                        "name": name,
+                        "message_count": 0,
+                        "messages": [],
+                    }));
+                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+                }
+                Err(e) => ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("switch_local_session failed: {:#}", e)
+                })),
+            }
+        }
+
+        ControlCmd::NewLocalNamedSession(name) => {
+            // Save current first
+            let old_name = agent.session_id().map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
+            let _ = crate::persistence::save_local_named_session(
+                &old_name, &agent.conversation, &agent.project_dir,
+            );
+            agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+            agent.set_session_id(name.clone());
+            if let Err(e) = crate::persistence::save_local_named_session(
+                &name, &agent.conversation, &agent.project_dir,
+            ) {
+                ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("new_local_session failed: {:#}", e)
+                }));
+            } else {
+                let _ = crate::persistence::write_active_session_name(&agent.project_dir, &name);
+                ws_output.emit_public("session_switched", serde_json::json!({
+                    "name": name,
+                    "message_count": 0,
+                    "messages": [],
+                }));
+                ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+            }
+        }
+
+        ControlCmd::DeleteLocalNamedSession(name) => {
+            let active = agent.session_id().map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
+            match crate::persistence::delete_local_named_session(&name, &agent.project_dir) {
+                Ok(()) => {
+                    // If deleted the active session, reset to default
+                    if name == active {
+                        agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+                        agent.set_session_id("default".to_string());
+                        let _ = crate::persistence::write_active_session_name(&agent.project_dir, "default");
+                    }
+                    ws_output.emit_public("session_deleted", serde_json::json!({
+                        "name": name,
+                    }));
+                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+                }
+                Err(e) => ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("delete_local_session failed: {:#}", e)
+                })),
+            }
+        }
+
+        ControlCmd::RenameLocalSession { old, new } => {
+            match crate::persistence::rename_local_named_session(&old, &new, &agent.project_dir) {
+                Ok(()) => {
+                    if agent.session_id() == Some(&old) {
+                        agent.set_session_id(new.clone());
+                        let _ = crate::persistence::write_active_session_name(&agent.project_dir, &new);
+                    }
+                    ws_output.emit_public("session_renamed", serde_json::json!({
+                        "old_name": old,
+                        "new_name": new,
+                    }));
+                    ws_output.emit_public("session_info", session_info_json(&agent.project_dir));
+                }
+                Err(e) => ws_output.emit_public("error", serde_json::json!({
+                    "message": format!("rename_local_session failed: {:#}", e)
+                })),
             }
         }
 
@@ -1071,6 +1226,41 @@ fn dispatch_ws_message(
                         "message": format!("delete_session failed: {:#}", e)
                     })),
                 }
+            }
+        }
+
+        // ── Local named session commands ──────────────────────────────
+
+        "list_local_sessions" => {
+            let _ = ctrl_tx.send(ControlCmd::ListLocalSessions);
+        }
+
+        "switch_local_session" => {
+            if let Some(name) = msg.get("data").and_then(|d| d.get("name")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::SwitchLocalSession(name.to_string()));
+            }
+        }
+
+        "new_local_session" => {
+            if let Some(name) = msg.get("data").and_then(|d| d.get("name")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::NewLocalNamedSession(name.to_string()));
+            }
+        }
+
+        "delete_local_session" => {
+            if let Some(name) = msg.get("data").and_then(|d| d.get("name")).and_then(|v| v.as_str()) {
+                let _ = ctrl_tx.send(ControlCmd::DeleteLocalNamedSession(name.to_string()));
+            }
+        }
+
+        "rename_local_session" => {
+            let old = msg.get("data").and_then(|d| d.get("old_name")).and_then(|v| v.as_str());
+            let new = msg.get("data").and_then(|d| d.get("new_name")).and_then(|v| v.as_str());
+            if let (Some(old), Some(new)) = (old, new) {
+                let _ = ctrl_tx.send(ControlCmd::RenameLocalSession {
+                    old: old.to_string(),
+                    new: new.to_string(),
+                });
             }
         }
 
@@ -1649,15 +1839,24 @@ fn dispatch_ws_message(
 // ═══════════════════════════════════════════════════════════════════
 
 fn session_info_json(workdir: &Path) -> serde_json::Value {
-    match crate::persistence::load_local_session(workdir) {
+    let name = crate::persistence::resolve_session_name(workdir, None);
+    let local_count = crate::persistence::list_local_sessions(workdir)
+        .map(|s| s.len()).unwrap_or(0);
+    match crate::persistence::load_local_named_session(&name, workdir) {
         Ok(Some(session)) => serde_json::json!({
             "exists": true,
+            "session_name": name,
             "message_count": session.meta.message_count,
             "updated_at": session.meta.updated_at,
             "summary": session.meta.summary,
             "working_dir": session.meta.working_dir,
+            "local_session_count": local_count,
         }),
-        _ => serde_json::json!({ "exists": false }),
+        _ => serde_json::json!({
+            "exists": false,
+            "session_name": name,
+            "local_session_count": local_count,
+        }),
     }
 }
 

@@ -45,7 +45,12 @@ export type ClientMessage =
   | ListPeersMessage
   | AddPeerMessage
   | UpdatePeerMessage
-  | DeletePeerMessage;
+  | DeletePeerMessage
+  | ListLocalSessionsMessage
+  | SwitchLocalSessionMessage
+  | NewLocalSessionMessage
+  | DeleteLocalSessionMessage
+  | RenameLocalSessionMessage;
 
 export interface CancelMessage extends BaseMessage {
   type: 'cancel';
@@ -91,6 +96,33 @@ export interface LoadSessionByIdMessage extends BaseMessage {
   data: { id: string };
 }
 
+// ── Local named session messages ────────────────────────────────────
+
+export interface ListLocalSessionsMessage extends BaseMessage {
+  type: 'list_local_sessions';
+  data: {};
+}
+
+export interface SwitchLocalSessionMessage extends BaseMessage {
+  type: 'switch_local_session';
+  data: { name: string };
+}
+
+export interface NewLocalSessionMessage extends BaseMessage {
+  type: 'new_local_session';
+  data: { name: string };
+}
+
+export interface DeleteLocalSessionMessage extends BaseMessage {
+  type: 'delete_local_session';
+  data: { name: string };
+}
+
+export interface RenameLocalSessionMessage extends BaseMessage {
+  type: 'rename_local_session';
+  data: { old_name: string; new_name: string };
+}
+
 // 服务器发送给客户端的事件
 export type ServerEvent =
   | ThinkingEvent
@@ -121,6 +153,9 @@ export type ServerEvent =
   | SessionClearedEvent
   | SessionsListEvent
   | SessionDeletedEvent
+  | LocalSessionsListEvent
+  | SessionSwitchedEvent
+  | SessionRenamedEvent
   | SandboxStatusEvent
   | SandboxChangesResultEvent
   | SandboxCommitResultEvent
@@ -157,6 +192,7 @@ export type ServerEvent =
 
 export interface SessionMeta {
   id: string;
+  session_name?: string | null;
   summary: string;
   updated_at: string;
   message_count: number;
@@ -165,10 +201,12 @@ export interface SessionMeta {
 
 export interface SessionInfo {
   exists: boolean;
+  session_name?: string;
   message_count?: number;
   updated_at?: string;
   summary?: string;
   working_dir?: string;
+  local_session_count?: number;
 }
 
 export interface SessionsListEvent extends BaseMessage {
@@ -178,7 +216,28 @@ export interface SessionsListEvent extends BaseMessage {
 
 export interface SessionDeletedEvent extends BaseMessage {
   type: 'session_deleted';
-  data: { id: string };
+  data: { id: string; name?: string };
+}
+
+// ── Local named session events ─────────────────────────────────────
+
+export interface LocalSessionsListEvent extends BaseMessage {
+  type: 'local_sessions_list';
+  data: { sessions: SessionMeta[]; active: string };
+}
+
+export interface SessionSwitchedEvent extends BaseMessage {
+  type: 'session_switched';
+  data: {
+    name: string;
+    message_count: number;
+    messages: any[];
+  };
+}
+
+export interface SessionRenamedEvent extends BaseMessage {
+  type: 'session_renamed';
+  data: { old_name: string; new_name: string };
 }
 
 export interface SandboxStatusEvent extends BaseMessage {
@@ -1042,6 +1101,8 @@ export interface ConnectionSlot {
   currentMessage: string;
   sessionInfo: SessionInfo | null;
   sessionList: SessionMeta[];
+  localSessions: SessionMeta[];
+  activeSessionName: string | null;
   sandboxBackend: string;
   pendingChanges: number;
   sandboxChangesData: SandboxFileChange[] | null;

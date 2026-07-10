@@ -863,6 +863,29 @@ impl Agent {
             self.extract_and_store_knowledge().await;
         }
 
+        // Periodic diagnostics: every 10 turns, log conversation stats so we
+        // can correlate hook-script timeouts with memory / context growth.
+        if self.knowledge_extract_turns % 10 == 0 {
+            let msg_count = self.conversation.messages.len();
+            let token_est = context::estimate_conversation_tokens(&self.conversation);
+            let mem_est: usize = self.conversation.messages.iter()
+                .map(|m| m.content.iter().map(|b| match b {
+                    ContentBlock::Text { text } => text.len(),
+                    ContentBlock::ToolResult { content, .. } => content.len(),
+                    ContentBlock::Thinking { thinking, .. } => thinking.len(),
+                    _ => 256,
+                }).sum::<usize>())
+                .sum();
+            tracing::info!(
+                "[diag] turn={} messages={} tokens_est={} mem_est_bytes={} mem_est_mb={:.1}",
+                self.total_turns,
+                msg_count,
+                token_est,
+                mem_est,
+                mem_est as f64 / 1_048_576.0,
+            );
+        }
+
         // Record complete interaction episode to intelligent memory.
         // intent_summary = first sentence of the assistant reply (zero extra tokens).
         let intent_summary = {
