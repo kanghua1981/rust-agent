@@ -108,7 +108,7 @@ export const useWebSocket = () => {
   }, [flushTokens]);
 
   // ── Helpers for store access ──
-  const getActiveSlotId = () => useAgentStore.getState().activeConnectionId;
+  const getActiveSlotId = () => useAgentStore.getState().activeProjectId;
   const getActiveConn = (): SlotConn | undefined => {
     const id = getActiveSlotId();
     return id ? connMapRef.current.get(id) : undefined;
@@ -877,6 +877,8 @@ export const useWebSocket = () => {
             });
           });
         }
+        // Refresh session list so newly created sessions appear in sidebar
+        listLocalSessionsRef.current?.();
         break;
       }
 
@@ -906,15 +908,15 @@ export const useWebSocket = () => {
       // ── Model & endpoint state sync ──────────────────────────────
       case 'model_state': {
         const st = useAgentStore.getState();
-        if (event.data.models) st._updateSlot(st.activeConnectionId ?? 'default', (s) => ({ ...s, availableModels: event.data.models }));
-        if (event.data.endpoints) st._updateSlot(st.activeConnectionId ?? 'default', (s) => ({ ...s, endpoints: event.data.endpoints }));
+        if (event.data.models) st._updateSlot(st.activeProjectId ?? 'default', (s) => ({ ...s, availableModels: event.data.models }));
+        if (event.data.endpoints) st._updateSlot(st.activeProjectId ?? 'default', (s) => ({ ...s, endpoints: event.data.endpoints }));
         if (event.data.default) st.setActiveModel(event.data.default as string);
         break;
       }
 
       case 'endpoints_list': {
         const st = useAgentStore.getState();
-        st._updateSlot(st.activeConnectionId ?? 'default', (s) => ({ ...s, endpoints: event.data.endpoints }));
+        st._updateSlot(st.activeProjectId ?? 'default', (s) => ({ ...s, endpoints: event.data.endpoints }));
         break;
       }
 
@@ -1028,7 +1030,7 @@ export const useWebSocket = () => {
 
     const st = useAgentStore.getState();
     // Don't swap if the slot became active while we were waiting
-    if (slotId === st.activeConnectionId) {
+    if (slotId === st.activeProjectId) {
       for (const evt of queue) handleServerEvent(evt);
       const conn = connMapRef.current.get(slotId);
       if (conn) saveRefsToConn(conn);
@@ -1038,7 +1040,7 @@ export const useWebSocket = () => {
     const targetConn = connMapRef.current.get(slotId);
     if (!targetConn || targetConn.inactiveTerminated) return;
 
-    const origId = st.activeConnectionId;
+    const origId = st.activeProjectId;
     const origConn = origId ? connMapRef.current.get(origId) : undefined;
     if (origConn) saveRefsToConn(origConn);
 
@@ -1080,7 +1082,7 @@ export const useWebSocket = () => {
   // Active slot: process directly. Inactive slot: batch/accumulate WITHOUT store swap.
   const processEventForSlot = useCallback((event: ServerEvent, slotId: string) => {
     const st = useAgentStore.getState();
-    if (slotId === st.activeConnectionId) {
+    if (slotId === st.activeProjectId) {
       // Active slot — refs already loaded, process directly
       handleServerEvent(event);
       const conn = connMapRef.current.get(slotId);
@@ -1148,7 +1150,7 @@ export const useWebSocket = () => {
       flushInactiveBatch(slotId);
       targetConn.inactiveTerminated = true;
       // Direct swap for terminal event — these need handleServerEvent to update flat proxy
-      const origId = st.activeConnectionId;
+      const origId = st.activeProjectId;
       const origConn = origId ? connMapRef.current.get(origId) : undefined;
       if (origConn) saveRefsToConn(origConn);
       loadRefsFromConn(targetConn);
@@ -1169,7 +1171,7 @@ export const useWebSocket = () => {
   // ── Connect a specific slot ──
   const connect = useCallback((slotId?: string) => {
     const st = useAgentStore.getState();
-    const id = slotId || st.activeConnectionId;
+    const id = slotId || st.activeProjectId;
     if (!id) {
       setConnectionStatus('disconnected');
       return;
@@ -1177,11 +1179,11 @@ export const useWebSocket = () => {
 
     // Defensive: sync flat proxy → slot so the slot always has the latest serverUrl/workdir
     // (e.g. when applyPreset updated the flat proxy but not the legacy 'default' slot)
-    if (id === st.activeConnectionId) {
+    if (id === st.activeProjectId) {
       st._saveActiveSlot();  // sync metadata to slot before connecting
     }
 
-    const slot = st.connections[id];
+    const slot = st.projectSlots[id];
     if (!slot || !slot.serverUrl) {
       setConnectionStatus('disconnected');
       return;
@@ -1200,7 +1202,7 @@ export const useWebSocket = () => {
     const currentClusterToken = st.clusterToken;
 
     // Update flat proxy if this is the active slot
-    if (id === st.activeConnectionId) {
+    if (id === st.activeProjectId) {
       setConnectionStatus('connecting');
     } else {
       // Inactive slot: just update its stored status
@@ -1232,7 +1234,7 @@ export const useWebSocket = () => {
       connMapRef.current.set(id, conn);
 
       ws.onopen = () => {
-        if (id === useAgentStore.getState().activeConnectionId) {
+        if (id === useAgentStore.getState().activeProjectId) {
           setConnectionStatus('connected');
           // Clear any stale session-restore hint from a previous connection
           setSessionRestoreAvailable(null);
@@ -1241,6 +1243,9 @@ export const useWebSocket = () => {
         }
         addConnectionHistory(currentServerUrl, currentWorkdir);
         ws.send(JSON.stringify({ type: 'list_plugins', data: {} }));
+
+        // Fetch session lists so sidebar can display them
+        listLocalSessionsRef.current?.();
 
         // If user opted for a fresh session, send new_session after connect.
         // This runs BEFORE the server's auto-restore emits session_available,
@@ -1253,7 +1258,7 @@ export const useWebSocket = () => {
       ws.onclose = () => {
         if (connMapRef.current.get(id)?.ws !== ws) return; // stale close
         // Flush
-        if (id === useAgentStore.getState().activeConnectionId) {
+        if (id === useAgentStore.getState().activeProjectId) {
           flushTokens();
           setConnectionStatus('disconnected');
           setConnectedWorkdir(null);
@@ -1261,14 +1266,16 @@ export const useWebSocket = () => {
           setIsProcessing(false);
           streamingMsgIdRef.current = null;
         }
-        // Clean up connection map
+        // Clean up connection map and inactive queues (belt-and-suspenders)
         if (connMapRef.current.get(id)?.ws === ws) {
           connMapRef.current.delete(id);
         }
+        inactiveQueuesRef.current.delete(id);
+        inactiveTimersRef.current.delete(id);
       };
 
       ws.onerror = () => {
-        if (id === useAgentStore.getState().activeConnectionId) {
+        if (id === useAgentStore.getState().activeProjectId) {
           setConnectionStatus('error');
         } else {
           st._updateSlot(id, s => ({ ...s, connectionStatus: 'error' }));
@@ -1285,11 +1292,11 @@ export const useWebSocket = () => {
       };
 
       // If this is the active slot, wire up global refs
-      if (id === st.activeConnectionId) {
+      if (id === st.activeProjectId) {
         loadRefsFromConn(conn);
       }
     } catch (err) {
-      if (id === st.activeConnectionId) {
+      if (id === st.activeProjectId) {
         setConnectionStatus('error');
       } else {
         st._updateSlot(id, s => ({ ...s, connectionStatus: 'error' }));
@@ -1300,14 +1307,14 @@ export const useWebSocket = () => {
 
   // ── Disconnect a specific slot ──
   const disconnect = useCallback((slotId?: string) => {
-    const id = slotId || useAgentStore.getState().activeConnectionId;
+    const id = slotId || useAgentStore.getState().activeProjectId;
     if (!id) return;
 
     const conn = connMapRef.current.get(id);
     if (!conn) return;
 
     // Save state
-    if (id === useAgentStore.getState().activeConnectionId) {
+    if (id === useAgentStore.getState().activeProjectId) {
       useAgentStore.getState()._saveActiveSlot();
       saveRefsToConn(conn);
     }
@@ -1317,10 +1324,15 @@ export const useWebSocket = () => {
     inactiveQueuesRef.current.delete(id);
     inactiveTimersRef.current.delete(id);
 
+    // Nullify WS handlers to break closure references, then close
+    conn.ws.onopen = null;
+    conn.ws.onclose = null;
+    conn.ws.onerror = null;
+    conn.ws.onmessage = null;
     conn.ws.close();
     connMapRef.current.delete(id);
 
-    if (id === useAgentStore.getState().activeConnectionId) {
+    if (id === useAgentStore.getState().activeProjectId) {
       setConnectionStatus('disconnected');
       setSessionInfo(null);
     }
@@ -1332,13 +1344,13 @@ export const useWebSocket = () => {
   // and swaps the flat proxy in the store.
   const switchToConnection = useCallback((id: string) => {
     const st = useAgentStore.getState();
-    if (id === st.activeConnectionId) return;
+    if (id === st.activeProjectId) return;
 
     // Flush any pending inactive batches for the target before switching
     flushInactiveBatch(id);
 
     // Save current refs to old connection
-    const oldId = st.activeConnectionId;
+    const oldId = st.activeProjectId;
     const oldConn = oldId ? connMapRef.current.get(oldId) : undefined;
     if (oldConn) saveRefsToConn(oldConn);
 
@@ -1374,7 +1386,7 @@ export const useWebSocket = () => {
     }
 
     // If the new slot has no WS yet, auto-connect
-    if (!newConn && st.connections[id]?.serverUrl) {
+    if (!newConn && st.projectSlots[id]?.serverUrl) {
       connect(id);
     }
   }, [connect, flushInactiveBatch, flushTokens, scheduleFlush]);
@@ -1393,12 +1405,19 @@ export const useWebSocket = () => {
 
   // ── Cleanup on unmount: close all connections ──
   useEffect(() => () => {
+    // Clear global flush timer
+    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
     // Clear all inactive timers and queues
     inactiveTimersRef.current.forEach(t => clearTimeout(t));
     inactiveTimersRef.current.clear();
     inactiveQueuesRef.current.clear();
     connMapRef.current.forEach(conn => {
       if (conn.inactiveFlushTimer) clearTimeout(conn.inactiveFlushTimer);
+      // Nullify handlers then close to break closure references
+      conn.ws.onopen = null;
+      conn.ws.onclose = null;
+      conn.ws.onerror = null;
+      conn.ws.onmessage = null;
       try { conn.ws.close(); } catch {}
     });
     connMapRef.current.clear();

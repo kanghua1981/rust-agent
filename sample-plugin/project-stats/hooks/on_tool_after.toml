@@ -9,7 +9,7 @@ mode        = "fire_and_forget"
 description = "工具执行后写入审计日志"
 script      = "hooks/scripts/on_tool_after.sh"
 priority    = 100
-timeout     = 5
+timeout     = 15
 
 # 过滤条件：只关注写操作工具（任意一个字段完全匹配即可触发）
 # 注意：filter 各字段是 AND 关系，需要全部满足

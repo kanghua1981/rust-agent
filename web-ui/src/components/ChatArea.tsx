@@ -14,11 +14,27 @@ interface Props {
   onDismissRestore: () => void;
 }
 
-/** Get a slot by id, returning a safe fallback for missing slots. */
+/** Get a slot by id, returning a safe fallback for missing slots.
+ *  Only picks fields ChatArea actually renders — excludes currentMessage
+ *  (which changes on every streaming token and is only used by InputArea). */
 const emptySlot = { messages: [] as any[], toolCalls: [] as any[], diffs: [] as any[], pendingConfirmations: [] as any[], connectionStatus: 'disconnected' as const, isProcessing: false, streamingMessageId: null as string | null, thinkingMessageId: null as string | null, sessionRestoreAvailable: null as any };
 
 const useSlot = (id: string) => useAgentStore(
-  useShallow((s) => s.connections[id] ?? emptySlot)
+  useShallow((s) => {
+    const slot = s.projectSlots[id];
+    if (!slot) return emptySlot;
+    return {
+      messages: slot.messages,
+      toolCalls: slot.toolCalls,
+      diffs: slot.diffs,
+      pendingConfirmations: slot.pendingConfirmations,
+      connectionStatus: slot.connectionStatus,
+      isProcessing: slot.isProcessing,
+      streamingMessageId: slot.streamingMessageId,
+      thinkingMessageId: slot.thinkingMessageId,
+      sessionRestoreAvailable: slot.sessionRestoreAvailable,
+    };
+  })
 );
 
 export const ChatArea: React.FC<Props> = ({ slotId, onConfirm, onAnswer, onReviewPlan, onRestoreSession, onDismissRestore }) => {

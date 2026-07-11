@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message, ToolCall } from '../types/agent';
@@ -44,18 +44,23 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
   
   // 复制功能状态
   const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  // Track mount state to avoid setState on unmounted component
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   // 复制消息内容到剪贴板
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      if (!mountedRef.current) return;
       setCopyStatus('success');
-      setTimeout(() => setCopyStatus('idle'), 2000); // 2秒后重置状态
+      setTimeout(() => { if (mountedRef.current) setCopyStatus('idle'); }, 2000);
       return true;
     } catch (err) {
       console.error('复制失败:', err);
+      if (!mountedRef.current) return;
       setCopyStatus('error');
-      setTimeout(() => setCopyStatus('idle'), 2000);
+      setTimeout(() => { if (mountedRef.current) setCopyStatus('idle'); }, 2000);
       return false;
     }
   };

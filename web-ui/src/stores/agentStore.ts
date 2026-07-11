@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
+import { runMigration } from '../utils/migration';
 
 export interface SandboxFileChange {
   path: string;
@@ -27,9 +28,9 @@ export interface PendingConfirmation {
 
 // ── Helpers: create empty slot ──
 
-function createEmptySlot(id: string, label: string, serverUrl: string, workdir?: string): ConnectionSlot {
+function createEmptySlot(id: string, label: string, serverUrl: string, workdir?: string, projectId?: string): ConnectionSlot {
   return {
-    id, label, serverUrl, workdir,
+    id, projectId: projectId || id, label, serverUrl, workdir,
     connectionStatus: 'disconnected',
     connectedWorkdir: null,
     messages: [],
@@ -62,7 +63,11 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
 interface AgentState {
   // ── Multi-connection slots ──
   connections: Record<string, ConnectionSlot>;
+  /** New name for connections (Project-First Architecture). Always kept in sync with connections. */
+  projectSlots: Record<string, ConnectionSlot>;
   activeConnectionId: string | null;
+  /** New name for activeConnectionId (Project-First Architecture). Always kept in sync. */
+  activeProjectId: string | null;
 
   // ── Active connection proxy state (flat, for backward compat selectors) ──
   // These are always kept in sync with connections[activeConnectionId].
@@ -111,6 +116,11 @@ interface AgentState {
   fileList: FileInfo[];
   config: AgentConfig;
   presets: ConfigPreset[];
+
+  // ── Project-First Architecture ──
+  /** All known projects, persisted to localStorage. */
+  projects: Record<string, ProjectDefinition>;
+
   connectionHistory: ConnectionHistory[];
   workflows: WorkflowDef[];
   activeRun: WorkflowRunResult | null;
@@ -119,6 +129,15 @@ interface AgentState {
   createConnectionSlot: (id: string, label: string, serverUrl: string, workdir?: string) => void;
   removeConnectionSlot: (id: string) => void;
   setActiveConnection: (id: string) => void;
+
+  // ── Project lifecycle actions (Project-First: wrappers around connection actions) ──
+  /** Open a project: create slot + switch to it. WebSocket connect is handled by useWebSocket. */
+  openProject: (projectId: string) => void;
+  /** Close a project: disconnect WS + remove slot. */
+  closeProject: (projectId: string) => void;
+  /** Switch active project tab (same as setActiveConnection). */
+  setActiveProject: (projectId: string) => void;
+
   /** Save current flat proxy state into the active slot (metadata sync). */
   _saveActiveSlot: () => void;
   /** Update a specific slot's data. If it's the active slot, also mirror to flat proxy. */
@@ -158,6 +177,12 @@ interface AgentState {
   deletePreset: (id: string) => void;
   setPresets: (presets: ConfigPreset[]) => void;
   applyPreset: (id: string) => void;
+
+  // ── Project CRUD (Project-First Architecture) ──
+  addProject: (project: ProjectDefinition) => void;
+  updateProject: (id: string, updates: Partial<ProjectDefinition>) => void;
+  deleteProject: (id: string) => void;
+
   setWorkflows: (workflows: WorkflowDef[]) => void;
   addWorkflow: (wf: WorkflowDef) => void;
   updateWorkflow: (id: string, wf: Partial<WorkflowDef>) => void;
@@ -207,6 +232,9 @@ const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; workd
 
 const persistedConfig = loadPersistedConfig();
 
+// ── Run legacy data migration (Phase 0) ──
+const migrationResult = runMigration();
+
 const defaultId = 'default';
 const defaultUrl = persistedConfig.serverUrl || getDefaultServerUrl();
 
@@ -215,7 +243,9 @@ const initialSlot = createEmptySlot(defaultId, '', defaultUrl, persistedConfig.w
 const initialState = {
   // ── Connections ──
   connections: { [defaultId]: initialSlot } as Record<string, ConnectionSlot>,
+  projectSlots: { [defaultId]: initialSlot } as Record<string, ConnectionSlot>,
   activeConnectionId: defaultId as string | null,
+  activeProjectId: defaultId as string | null,
 
   // ── Active proxy ──
   connectionStatus: 'disconnected' as ConnectionStatus,
@@ -261,6 +291,16 @@ const initialState = {
   currentPath: '.',
   fileList: [] as FileInfo[],
   presets: (persistedConfig.presets || []) as ConfigPreset[],
+
+  // ── Project-First Architecture ──
+  projects: (() => {
+    const map: Record<string, ProjectDefinition> = {};
+    for (const p of migrationResult.projects) {
+      map[p.id] = p;
+    }
+    return map;
+  })(),
+
   connectionHistory: [] as ConnectionHistory[],
   workflows: [] as WorkflowDef[],
   activeRun: null as WorkflowRunResult | null,
@@ -291,12 +331,14 @@ export const useAgentStore = create<AgentState>()(
           }
         }
         if (Object.keys(slotUpdates).length === 0) return flatUpdates;
+        const newConnections = {
+          ...state.connections,
+          [id]: { ...state.connections[id], ...slotUpdates },
+        };
         return {
           ...flatUpdates,
-          connections: {
-            ...state.connections,
-            [id]: { ...state.connections[id], ...slotUpdates },
-          },
+          connections: newConnections,
+          projectSlots: newConnections,   // keep in sync (Project-First)
         };
       };
 
@@ -314,6 +356,7 @@ export const useAgentStore = create<AgentState>()(
             ...state.connections,
             [slotId]: { ...state.connections[slotId], [field]: value },
           };
+          result.projectSlots = result.connections;
         }
         return result;
       };
@@ -347,7 +390,7 @@ export const useAgentStore = create<AgentState>()(
           availableModels: state.availableModels,
           activeModel: state.activeModel,
         };
-        set({ connections: { ...state.connections, [id]: updated } });
+        set({ connections: { ...state.connections, [id]: updated }, projectSlots: { ...state.projectSlots, [id]: updated } });
       },
 
       _updateSlot: (slotId, updater) => {
@@ -360,6 +403,7 @@ export const useAgentStore = create<AgentState>()(
           // Active slot — mirror heavy fields to flat proxy so UI reacts
           set({
             connections: updated,
+            projectSlots: updated,   // keep in sync (Project-First)
             messages: updatedSlot.messages,
             toolCalls: updatedSlot.toolCalls,
             pendingConfirmations: updatedSlot.pendingConfirmations,
@@ -385,7 +429,7 @@ export const useAgentStore = create<AgentState>()(
           });
         } else {
           // Inactive slot — only update the connections map
-          set({ connections: updated });
+          set({ connections: updated, projectSlots: updated });
         }
       },
 
@@ -404,7 +448,7 @@ export const useAgentStore = create<AgentState>()(
             workdir: state.workdir,
           };
         }
-        set({ connections: updated });
+        set({ connections: updated, projectSlots: updated });
       },
 
       removeConnectionSlot: (id) => {
@@ -419,7 +463,9 @@ export const useAgentStore = create<AgentState>()(
             const nextSlot = rest[nextId];
             set({
               connections: rest,
+              projectSlots: rest,
               activeConnectionId: nextId,
+              activeProjectId: nextId,
               // Populate flat proxy from next slot
               connectionStatus: nextSlot.connectionStatus,
               serverUrl: nextSlot.serverUrl,
@@ -450,7 +496,9 @@ export const useAgentStore = create<AgentState>()(
             const emptySlot = createEmptySlot(defaultId, '', '');
             set({
               connections: { [defaultId]: emptySlot },
+              projectSlots: { [defaultId]: emptySlot },
               activeConnectionId: defaultId,
+              activeProjectId: defaultId,
               connectionStatus: 'disconnected',
               serverUrl: '',
               workdir: undefined,
@@ -479,7 +527,8 @@ export const useAgentStore = create<AgentState>()(
           }
         } else {
           // Just remove the inactive slot
-          set({ connections: rest });
+          const { [id]: _psRemoved, ...psRest } = state.projectSlots;
+          set({ connections: rest, projectSlots: psRest });
         }
       },
 
@@ -520,7 +569,9 @@ export const useAgentStore = create<AgentState>()(
         // Populate flat proxy from target slot
         set({
           connections: updated,
+          projectSlots: updated,   // keep in sync (Project-First)
           activeConnectionId: id,
+          activeProjectId: id,     // keep in sync (Project-First)
           connectionStatus: target.connectionStatus,
           serverUrl: target.serverUrl,
           workdir: target.workdir,
@@ -545,6 +596,36 @@ export const useAgentStore = create<AgentState>()(
           availableModels: target.availableModels,
           activeModel: target.activeModel,
         });
+      },
+
+      // ── Project lifecycle actions (Phase 2.4) ──────────────────────
+      // These are wrappers around the existing connection actions.
+      // During transition, they operate on BOTH old and new field names.
+
+      openProject: (projectId) => {
+        const state = get();
+        const project = state.projects[projectId];
+        if (!project) {
+          console.warn('[openProject] Unknown project:', projectId);
+          return;
+        }
+        // Create slot if not already present
+        if (!state.connections[projectId]) {
+          state.createConnectionSlot(projectId, project.label, project.serverUrl, project.workdir);
+        }
+        // Switch to the project tab
+        state.setActiveConnection(projectId);
+      },
+
+      closeProject: (projectId) => {
+        const state = get();
+        if (state.connections[projectId]) {
+          state.removeConnectionSlot(projectId);
+        }
+      },
+
+      setActiveProject: (projectId) => {
+        get().setActiveConnection(projectId);
       },
 
       // ── Light setters (sync to both flat proxy + active slot) ──
@@ -798,6 +879,26 @@ export const useAgentStore = create<AgentState>()(
         set(syncActiveSlot(updates));
       },
 
+      // ── Project CRUD (Project-First Architecture) ──────────────
+      addProject: (project) =>
+        set((state) => ({
+          projects: { ...state.projects, [project.id]: project },
+        })),
+
+      updateProject: (id, updates) =>
+        set((state) => ({
+          projects: {
+            ...state.projects,
+            [id]: { ...state.projects[id], ...updates, updatedAt: new Date().toISOString() },
+          },
+        })),
+
+      deleteProject: (id) =>
+        set((state) => {
+          const { [id]: _removed, ...rest } = state.projects;
+          return { projects: rest };
+        }),
+
       clearSession: () =>
         set((state) => {
           const slotId = state.activeConnectionId;
@@ -836,6 +937,8 @@ export const useAgentStore = create<AgentState>()(
                 activeModel: state.connections[slotId].activeModel,
               },
             };
+            // Keep projectSlots in sync — ChatArea reads from projectSlots
+            result.projectSlots = result.connections;
           }
           return result;
         }),
@@ -844,31 +947,33 @@ export const useAgentStore = create<AgentState>()(
 
       addConnectionHistory: (serverUrl, workdir) =>
         set((state) => {
+          const MAX_HISTORY = 50;
           const existing = state.connectionHistory.find(
             (h) => h.serverUrl === serverUrl && h.workdir === workdir
           );
+          let updated: typeof state.connectionHistory;
           if (existing) {
-            return {
-              connectionHistory: state.connectionHistory.map((h) =>
-                h.id === existing.id
-                  ? { ...h, lastConnectedAt: Date.now(), connectionCount: h.connectionCount + 1 }
-                  : h
-              ),
+            updated = state.connectionHistory.map((h) =>
+              h.id === existing.id
+                ? { ...h, lastConnectedAt: Date.now(), connectionCount: h.connectionCount + 1 }
+                : h
+            );
+          } else {
+            const entry = {
+              id: `hist_${Date.now()}`,
+              serverUrl,
+              workdir,
+              connectedAt: Date.now(),
+              lastConnectedAt: Date.now(),
+              connectionCount: 1,
             };
+            updated = [...state.connectionHistory, entry];
           }
-          return {
-            connectionHistory: [
-              ...state.connectionHistory,
-              {
-                id: `hist_${Date.now()}`,
-                serverUrl,
-                workdir,
-                connectedAt: Date.now(),
-                lastConnectedAt: Date.now(),
-                connectionCount: 1,
-              },
-            ],
-          };
+          // Trim to max length
+          if (updated.length > MAX_HISTORY) {
+            updated = updated.slice(updated.length - MAX_HISTORY);
+          }
+          return { connectionHistory: updated };
         }),
 
       removeConnectionHistory: (id) =>
@@ -907,29 +1012,28 @@ export const useAgentStore = create<AgentState>()(
     },
     {
       name: 'rust-agent-connections',
-      version: 3,
+      version: 3,  // Keep at 3 — data structure is backward-compatible
       partialize: (state) => ({
-        connections: state.connections,
-        activeConnectionId: state.activeConnectionId,
+        // Do NOT persist connections / projectSlots — tabs are ephemeral.
+        // Projects list is persisted so users see their saved projects.
+        // activeConnectionId / activeProjectId are also ephemeral.
         serverUrl: state.serverUrl,
         workdir: state.workdir,
         config: state.config,
         presets: state.presets,
+        projects: state.projects,
         connectionHistory: state.connectionHistory,
         clusterToken: state.clusterToken,
       }),
       merge: (persisted: any, current) => ({
         ...current,
         ...persisted,
-        // Ensure connections map is properly hydrated with full slot objects
-        connections: persisted.connections
-          ? Object.fromEntries(
-              Object.entries(persisted.connections as Record<string, any>).map(([k, v]: [string, any]) => {
-                const empty = createEmptySlot(k, v.label ?? '', v.serverUrl ?? '', v.workdir);
-                return [k, { ...empty, ...v }];
-              })
-            )
-          : current.connections,
+        // Never restore tabs/slots — always start fresh
+        connections: {},
+        projectSlots: {},
+        activeConnectionId: null,
+        activeProjectId: null,
+        projects: persisted.projects || current.projects || {},
       }),
     }
   ))

@@ -11,8 +11,8 @@ import { NodesPanel } from './components/NodesPanel';
 import { TaskPanelList } from './components/TaskPanelList';
 import { PluginsPanel } from './components/PluginsPanel';
 import { WorkflowPanel } from './components/WorkflowPanel';
-import { ConnectionTabs } from './components/ConnectionTabs';
-import { ConnectModal } from './components/ConnectModal';
+import { ProjectTabs } from './components/ProjectTabs';
+import { ProjectDialog } from './components/ProjectDialog';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
@@ -33,19 +33,18 @@ function App() {
   const { dispatchTask } = useAgentPool();
 
   // Per-tab rendering: only the active ChatArea is mounted
-  const activeConnectionId = useAgentStore(s => s.activeConnectionId);
+  const activeProjectId = useAgentStore(s => s.activeProjectId);
 
   const handleConnect = useCallback(() => {
     const st = useAgentStore.getState();
-    // setActiveConnection + createConnectionSlot handle state saving internally
+    // flat proxy fields are set by ProjectDialog (or SettingsPanel) before connecting
 
-    // Read the target URL/workdir from the flat proxy (set by ConnectModal/applyPreset)
+    // Read the target URL/workdir from the flat proxy
     const targetUrl = st.serverUrl;
     const targetWorkdir = st.workdir;
 
-    // Create a new connection slot — every connection gets its own isolated slot
+    // Create a new slot for this connection
     const slotId = `conn_${Date.now()}`;
-    // Label: last workdir component if set, otherwise host:port
     const hostLabel = (() => {
       if (targetWorkdir) {
         return targetWorkdir.split('/').filter(Boolean).pop() || targetWorkdir;
@@ -279,7 +278,7 @@ function App() {
     }}>
       <ErrorBoundary>
         <Header
-          activeConnectionId={activeConnectionId}
+          activeProjectId={activeProjectId}
           onOpenConnect={() => setShowConnect(true)}
           onDisconnect={handleDisconnect}
           onNewSession={newSession}
@@ -288,7 +287,7 @@ function App() {
       </ErrorBoundary>
 
       <ErrorBoundary>
-        <ConnectionTabs onNewConnection={() => setShowConnect(true)} switchToConnection={switchToConnection} disconnectSlot={disconnect} connectSlot={connect} />
+        <ProjectTabs onNewProject={() => setShowConnect(true)} disconnectProject={disconnect} connectProject={connect} />
       </ErrorBoundary>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -297,8 +296,11 @@ function App() {
             activeTab={activeTab}
             onTabChange={setActiveTab}
             onOpenConnect={() => setShowConnect(true)}
-            onQuickConnect={handleConnect}  // 添加快速连接支持
+            onQuickConnect={handleConnect}
             onNewSession={newSession}
+            onSwitchLocalSession={switchLocalSession}
+            onNewLocalSession={newLocalSession}
+            onConnectProject={(id: string) => connect(id)}
           />
         </ErrorBoundary>
 
@@ -310,7 +312,7 @@ function App() {
               {/* Only the active ChatArea is mounted — inactive slots update via _updateSlot in the background. */}
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 <ChatArea
-                  slotId={activeConnectionId ?? 'default'}
+                  slotId={activeProjectId ?? 'default'}
                   onConfirm={confirmToolCall}
                   onAnswer={(id, answer) => { answerQuestion(answer); useAgentStore.getState().removePendingConfirmation(id); }}
                   onReviewPlan={(id, approved, feedback) => { reviewPlan(approved, feedback); useAgentStore.getState().removePendingConfirmation(id); }}
@@ -352,7 +354,7 @@ function App() {
 
       {showConnect && (
         <ErrorBoundary>
-          <ConnectModal
+          <ProjectDialog
             onConnect={handleConnect}
             onClose={() => setShowConnect(false)}
           />

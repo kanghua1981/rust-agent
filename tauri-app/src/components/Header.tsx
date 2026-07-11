@@ -25,7 +25,7 @@ async function tauriWindowAction(action: 'minimize' | 'toggleMaximize' | 'close'
 }
 
 interface HeaderProps {
-  activeConnectionId: string | null;
+  activeProjectId: string | null;
   onOpenConnect: () => void;
   onDisconnect: () => void;
   onNewSession?: () => void;
@@ -88,7 +88,7 @@ function winCtrlBtnStyle(color: string): React.CSSProperties {
   };
 }
 
-export const Header: React.FC<HeaderProps> = ({ activeConnectionId, onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
+export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
   // ── Tauri window control callbacks (stable refs) ──────────────────
   const winMinimize = useCallback(() => { tauriWindowAction('minimize'); }, []);
   const winToggleMax = useCallback(() => { tauriWindowAction('toggleMaximize'); }, []);
@@ -98,9 +98,9 @@ export const Header: React.FC<HeaderProps> = ({ activeConnectionId, onOpenConnec
   //     during inactive-tab event processing.
   const slot = useAgentStore(
     useShallow((s) => {
-      const id = activeConnectionId;
-      if (!id || !s.connections[id]) return emptySlot;
-      const c = s.connections[id];
+      const id = activeProjectId;
+      if (!id || !s.projectSlots[id]) return emptySlot;
+      const c = s.projectSlots[id];
       return {
         connectionStatus: c.connectionStatus,
         serverUrl: c.serverUrl,

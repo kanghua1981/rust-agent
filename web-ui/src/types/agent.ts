@@ -1053,6 +1053,7 @@ export interface FileInfo {
 }
 
 // 配置预设
+/** @deprecated Use ProjectDefinition instead. Preserved for backward compat with server-side presets table. */
 export interface ConfigPreset {
   id: string;
   name: string;
@@ -1073,28 +1074,51 @@ export interface ConfigPreset {
   updatedAt?: string;
 }
 
+// ── Project-First Architecture ─────────────────────────────────────
+
+/** 项目的完整定义（持久化到 localStorage）。取代 ConfigPreset 作为前端主导的项目模型。 */
+export interface ProjectDefinition {
+  id: string;                    // uuid
+  label: string;                 // 显示名称（默认取 workdir basename）
+  serverUrl: string;             // ws://host:port
+  workdir: string;               // 工程目录绝对路径
+  isolation: 'normal' | 'container' | 'sandbox';
+  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+  autoApprove: boolean;
+  newSessionOnConnect: boolean;
+  createdAt: string;             // ISO timestamp
+  updatedAt: string;
+}
+
 // 连接历史记录
 export interface ConnectionHistory {
   id: string;
   serverUrl: string;
   workdir?: string;
+  projectId?: string;                 // 反向引用 ProjectDefinition.id
   connectedAt: number;
   lastConnectedAt: number;
   connectionCount: number;
 }
 
-// ── 多工程 Tab 系统：每个连接槽位的独立状态 ──
-export interface ConnectionSlot {
-  id: string;                          // 唯一连接 ID
-  label: string;                       // Tab 标签（如 "project-name :8080"）
+// ── 多工程 Tab 系统：每个项目槽位的独立状态 ──
+
+/** @deprecated Use ProjectSlot instead. */
+export type ConnectionSlot = ProjectSlot;
+
+/** 一个已打开的项目 + 其活跃运行时状态（取代 ConnectionSlot）。 */
+export interface ProjectSlot {
+  id: string;                          // 唯一槽位 ID（对应 ProjectDefinition.id）
+  projectId: string;                   // 反向引用 ProjectDefinition.id
+  label: string;                       // Tab 标签（如 "my-frontend"）
   connectionStatus: ConnectionStatus;
   serverUrl: string;
   workdir?: string;
   connectedWorkdir: string | null;
   messages: Message[];
   toolCalls: ToolCall[];
-  pendingConfirmations: PendingConfirmation[];  // stored here only for type; kept in store level
-  diffs: DiffEntry[];                 // stored here only for type
+  pendingConfirmations: PendingConfirmation[];
+  diffs: DiffEntry[];
   isProcessing: boolean;
   streamingMessageId: string | null;
   thinkingMessageId: string | null;

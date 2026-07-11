@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useMemo } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useAgentStore } from '../stores/agentStore';
 import { MessageItem } from './MessageItem';
@@ -102,8 +102,8 @@ export const VirtualMessageList: React.FC<Props> = ({
     [messageDataMap, streamingMessageId, thinkingMessageId],
   );
 
-  const Footer = useCallback(() => {
-    return (
+  const Footer = useMemo(() => {
+    const FooterInner: React.FC = () => (
       <>
         {/* Inline confirmations */}
         {pendingConfirmations.length > 0 && (
@@ -120,7 +120,7 @@ export const VirtualMessageList: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Processing indicator */}
+        {/* Processing indicator — only when waiting (not streaming) */}
         {isProcessing && pendingConfirmations.length === 0 && !streamingMessageId && (
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '6px 24px', justifyContent: 'center' }}>
             <div style={{
@@ -141,7 +141,10 @@ export const VirtualMessageList: React.FC<Props> = ({
         )}
       </>
     );
-  }, [pendingConfirmations, isProcessing, streamingMessageId, onConfirm, onAnswer, onReviewPlan]);
+    return React.memo(FooterInner);
+    // Only re-create memo component when callbacks or confirmation count change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingConfirmations.length, isProcessing, streamingMessageId, onConfirm, onAnswer, onReviewPlan]);
 
   const EmptyPlaceholder = useCallback(() => {
     return (

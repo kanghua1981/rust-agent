@@ -2,14 +2,13 @@ import React from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { useShallow } from 'zustand/react/shallow';
 
-interface ConnectionTabsProps {
-  onNewConnection: () => void;
-  /** Switch to a different tab without disconnecting (keeps all WS alive) */
-  switchToConnection: (id: string) => void;
-  /** Disconnect a specific slot's WebSocket */
-  disconnectSlot: (slotId: string) => void;
-  /** Connect a specific slot's WebSocket */
-  connectSlot: (slotId: string) => void;
+interface ProjectTabsProps {
+  /** Open the project dialog to add a new project */
+  onNewProject: () => void;
+  /** Disconnect a project's WebSocket */
+  disconnectProject: (projectId: string) => void;
+  /** Connect a project's WebSocket */
+  connectProject: (projectId: string) => void;
 }
 
 const statusDot = (status: string) => {
@@ -21,64 +20,59 @@ const statusDot = (status: string) => {
   }
 };
 
-export const ConnectionTabs: React.FC<ConnectionTabsProps> = ({
-  onNewConnection,
-  switchToConnection,
-  disconnectSlot,
-  connectSlot,
+export const ProjectTabs: React.FC<ProjectTabsProps> = ({
+  onNewProject,
+  disconnectProject,
+  connectProject,
 }) => {
-  // ── Subscriptions ──────────────────────────────────────────────────────
-  // ❌  OLD: subscribing to full connections map caused re-renders on EVERY
-  //          inactive-slot update (streaming token flush every 80ms, event
-  //          batch every 200ms).
-  // ✅  NEW: subscribe to a single summary string that only changes when
-  //          tab-display-relevant fields change.
-  const activeConnectionId = useAgentStore(s => s.activeConnectionId);
+  // ── Subscriptions ─────────────────────────────────────────────────
+  const activeProjectId = useAgentStore(s => s.activeProjectId);
   const tabSummary = useAgentStore(
     useShallow(s => {
-      const entries = Object.values(s.connections ?? {})
+      const entries = Object.values(s.projectSlots ?? {})
         .filter(c => c.id !== 'default')
         .sort((a, b) => a.id.localeCompare(b.id));
-      // Flat string that changes ONLY on tab-relevant mutations
       return entries.map(c =>
         `${c.id}|${c.label ?? ''}|${c.serverUrl}|${c.connectionStatus}|${c.isProcessing ? '1' : '0'}`
       ).join('\n');
     })
   );
-  // Read full slot data from state snapshot (does NOT create a subscription)
-  const removeConnectionSlot = useAgentStore(s => s.removeConnectionSlot);
+  const closeProject = useAgentStore(s => s.closeProject);
+  const setActiveProject = useAgentStore(s => s.setActiveProject);
 
-  // Derive entries from summary string lazily — only recomputes on real tab change
+  // Derive entries from summary string lazily
   const entries = React.useMemo(() => {
-    const conns = useAgentStore.getState().connections;
-    return Object.values(conns).filter(s => s.id !== 'default');
-  }, [tabSummary]);  // tabSummary captures all tab-relevant mutations
-  const activeId = activeConnectionId;
+    const slots = useAgentStore.getState().projectSlots ?? {};
+    return Object.values(slots).filter(s => s.id !== 'default');
+  }, [tabSummary]);
 
-  // Hide tab bar only when there are no visible connections
+  // Hide tab bar when no active projects
   if (entries.length === 0) {
     return null;
   }
 
   const handleTabClick = (id: string) => {
-    if (id === activeId) return;
-    // Just swap display — all WS connections stay alive
-    switchToConnection(id);
+    if (id === activeProjectId) return;
+    const slot = useAgentStore.getState().projectSlots[id];
+    setActiveProject(id);
+    // Auto-connect if the slot has been created but never connected
+    if (slot && slot.connectionStatus === 'disconnected' && slot.serverUrl) {
+      connectProject(id);
+    }
   };
 
   const handleClose = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (id === activeId) {
-      // Closing the active tab: disconnect its WS, remove, auto-switch
-      disconnectSlot(id);
-      removeConnectionSlot(id);
-      // Connect the newly active slot (removeConnectionSlot auto-switches)
-      const nextId = useAgentStore.getState().activeConnectionId;
-      if (nextId) connectSlot(nextId);
+    if (id === activeProjectId) {
+      // Closing active tab: disconnect WS, remove slot, connect next
+      disconnectProject(id);
+      closeProject(id);
+      const nextId = useAgentStore.getState().activeProjectId;
+      if (nextId) connectProject(nextId);
     } else {
-      // Closing an inactive tab: disconnect its WS, remove it
-      disconnectSlot(id);
-      removeConnectionSlot(id);
+      // Closing inactive tab
+      disconnectProject(id);
+      closeProject(id);
     }
   };
 
@@ -96,8 +90,17 @@ export const ConnectionTabs: React.FC<ConnectionTabsProps> = ({
       gap: '2px',
     }}>
       {entries.map(slot => {
-        const isActive = slot.id === activeId;
+        const isActive = slot.id === activeProjectId;
         const dot = statusDot(slot.connectionStatus);
+        // Label: prefer project label, fallback to hostname
+        const label = slot.label || (() => {
+          try {
+            return new URL(slot.serverUrl.replace(/^ws(s?):/, 'http$1:')).host;
+          } catch {
+            return slot.serverUrl.replace(/^wss?:\/\//, '').split(':')[0];
+          }
+        })();
+
         return (
           <div
             key={slot.id}
@@ -133,7 +136,7 @@ export const ConnectionTabs: React.FC<ConnectionTabsProps> = ({
             }} />
 
             {/* Label */}
-            <span>{slot.label || (() => { try { return new URL(slot.serverUrl.replace(/^ws(s?):/, 'http$1:')).host; } catch { return slot.serverUrl.replace(/^wss?:\/\//, '').split(':')[0]; } })()}</span>
+            <span>{label}</span>
 
             {/* Processing spinner */}
             {slot.isProcessing && (
@@ -164,7 +167,7 @@ export const ConnectionTabs: React.FC<ConnectionTabsProps> = ({
                 e.currentTarget.style.background = 'transparent';
                 e.currentTarget.style.color = 'var(--text3)';
               }}
-              title="关闭此连接"
+              title="关闭此项目"
             >
               ✕
             </button>
@@ -172,9 +175,9 @@ export const ConnectionTabs: React.FC<ConnectionTabsProps> = ({
         );
       })}
 
-      {/* New connection button */}
+      {/* New project button */}
       <button
-        onClick={onNewConnection}
+        onClick={onNewProject}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -201,7 +204,7 @@ export const ConnectionTabs: React.FC<ConnectionTabsProps> = ({
           e.currentTarget.style.color = 'var(--text3)';
           e.currentTarget.style.borderColor = 'var(--border)';
         }}
-        title="新建连接"
+        title="新建项目"
       >
         +
       </button>

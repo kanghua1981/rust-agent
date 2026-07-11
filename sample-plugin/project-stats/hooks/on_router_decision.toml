@@ -13,7 +13,7 @@ mode        = "intercepting"      # 必须是 intercepting 才能覆盖决策
 description = "根据任务关键词将高风险操作升级为完整流水线"
 script      = "hooks/scripts/on_router_decision.sh"
 priority    = 50
-timeout     = 3   # 务必设置较短超时，避免阻塞响应
+timeout     = 10   # 务必设置较短超时，避免阻塞响应
 
 # 过滤：仅在 proposed_mode 不是 full_pipeline 时才介入
 # （已经是 full_pipeline 则无需干预）
