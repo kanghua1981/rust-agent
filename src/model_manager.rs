@@ -85,10 +85,15 @@ pub struct RoleConfig {
     pub extra_instructions: Option<String>,
 }
 
-/// Multi-role pipeline configuration.
+/// Multi-role pipeline configuration (in models.toml).
+///
+/// NOTE: With the DAG-based pipeline system, the pipeline stage definitions
+/// have moved to `.agent/pipelines/*.toml`. This struct now only holds the
+/// routing preferences and which pipeline to use by default.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PipelineConfig {
     /// When true every user message is routed through the full pipeline.
+    /// Deprecated: prefer using `router = "always_pipeline"`.
     #[serde(default)]
     pub enabled: bool,
     /// Routing strategy: "auto" (adaptive), "always_pipeline", "always_simple".
@@ -97,17 +102,19 @@ pub struct PipelineConfig {
     /// Defaults to following the `enabled` flag for backward compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub router: Option<String>,
-    /// Ordered list of role names that form the pipeline stages.
-    /// Must all have entries in `[roles]`. Defaults to
-    /// `["planner", "executor", "checker"]` when empty.
-    #[serde(default)]
+    /// Name of the default pipeline to load from `.agent/pipelines/`.
+    /// Defaults to `"default"` (the built-in 3-stage pipeline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_pipeline: Option<String>,
+
+    // ── Deprecated: moved to .agent/pipelines/*.toml ──────────────────────
+    /// @deprecated Use stage definitions in `.agent/pipelines/*.toml` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<String>,
-    /// How many times the executor may retry after a checker FAIL.
-    /// Defaults to 2.
+    /// @deprecated Use `max_retries` in `.agent/pipelines/*.toml` stage definitions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_checker_retries: Option<u32>,
-    /// If true the pipeline pauses after planning to show the plan and
-    /// ask the user for confirmation before executing. Defaults to true.
+    /// @deprecated Not supported in DAG pipeline yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub require_plan_confirm: Option<bool>,
 }

@@ -511,8 +511,21 @@ impl Agent {
     }
 
     /// Return the pipeline config from models.toml (if any).
+    /// Kept for backward compatibility — new code should use `load_pipeline()`.
     pub fn pipeline_config(&self) -> Option<&model_manager::PipelineConfig> {
         self.models_cfg.pipeline.as_ref()
+    }
+
+    /// Load the active pipeline definition from `.agent/pipelines/`.
+    /// Falls back to the built-in default if no pipeline files exist.
+    pub fn load_pipeline(&self) -> Result<crate::pipeline::dag::PipelineDef> {
+        let pipeline_name = self
+            .models_cfg
+            .pipeline
+            .as_ref()
+            .and_then(|p| p.default_pipeline.as_deref())
+            .unwrap_or("default");
+        crate::pipeline::loader::load_pipeline(&self.project_dir, pipeline_name)
     }
 
     /// Return true when the multi-role pipeline is enabled in models.toml.
@@ -752,15 +765,25 @@ impl Agent {
 
         match mode {
             crate::router::ExecutionMode::FullPipeline => {
-                // Pipeline stages now write directly to self.conversation.
-                // The full execution history stays in the conversation so
-                // follow-up messages have complete context.
+                // Use the configurable DAG pipeline from .agent/pipelines/.
                 self.conversation.add_message(Message::user(&enriched_input));
-                return crate::pipeline::PipelineRunner::run(self, &enriched_input).await;
+                let pipeline = self.load_pipeline()?;
+                return crate::pipeline::runner::run(self, &pipeline, &enriched_input).await;
             }
             crate::router::ExecutionMode::PlanAndExecute => {
+                // Plan+Execute: use a lightweight 2-stage pipeline (planner→executor, no checker).
+                // This is auto-generated from the default pipeline minus the checker stage.
                 self.conversation.add_message(Message::user(&enriched_input));
-                return crate::pipeline::PipelineRunner::run_plan_and_execute(self, &enriched_input).await;
+                let mut pipeline = self.load_pipeline()?;
+                // Remove checker-related stages, keep only planner + executor
+                pipeline.stages.retain(|s| s.id != "checker");
+                // Rewire executor's on_pass to "done"
+                if let Some(exec) = pipeline.stages.iter_mut().find(|s| s.id == "executor") {
+                    exec.on_pass = "done".to_string();
+                    exec.on_fail = "done".to_string();
+                    exec.max_retries = None;
+                }
+                return crate::pipeline::runner::run(self, &pipeline, &enriched_input).await;
             }
             crate::router::ExecutionMode::BasicLoop => {
                 // Fall through to the basic loop below

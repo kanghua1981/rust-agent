@@ -26,9 +26,7 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::db::GlobalDb;
-use crate::db::Preset;
 use crate::db::StageResult;
-use crate::db::Workflow;
 use crate::db::WorkflowRun;
 use crate::db::WorkflowStage;
 use crate::output::AgentOutput;
@@ -483,20 +481,6 @@ fn resolve_stage_target(
             stage.model.clone(),
             stage.agent_mode.clone(),
         ));
-    }
-
-    // Backward compat: look up preset
-    if let Some(ref pid) = stage.preset_id {
-        if let Some(p) = db.get_preset(pid)? {
-            return Ok((
-                p.server_url.clone(),
-                p.workdir.clone(),
-                p.model.clone(),
-                p.agent_mode.clone(),
-            ));
-        }
-        // Preset not found — return empty so caller can skip
-        return Ok((String::new(), None, None, "auto".into()));
     }
 
     // No target at all

@@ -20,20 +20,27 @@ import { useAgentPool } from './hooks/useAgentPool';
 
 import { ModelsPanel } from './components/ModelsPanel';
 import { CommandPalette, CommandAction } from './components/CommandPalette';
+import { PipelinePanel } from './components/PipelinePanel';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [showConnect, setShowConnect] = useState(false);
+  const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listPresets, savePreset: savePresetWs, deletePreset: deletePresetWs, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow, listLocalSessions, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession } = useWebSocket();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow, listLocalSessions, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listPipelines, getPipeline, savePipeline, deletePipeline } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
   // Per-tab rendering: only the active ChatArea is mounted
   const activeProjectId = useAgentStore(s => s.activeProjectId);
+
+  const handleOpenConnect = useCallback((editId?: string) => {
+    setEditProjectId(editId || null);
+    setShowConnect(true);
+  }, []);
 
   const handleConnect = useCallback(() => {
     const st = useAgentStore.getState();
@@ -97,7 +104,7 @@ function App() {
       // Cmd/Ctrl + K 打开连接模态框
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setShowConnect(true);
+        handleOpenConnect();
       }
       // Ctrl+Shift+P: 命令面板
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p' && !e.metaKey && !e.altKey) {
@@ -167,7 +174,7 @@ function App() {
         description: '打开连接配置面板',
         category: '连接',
         keywords: 'connect',
-        action: () => setShowConnect(true),
+        action: () => handleOpenConnect(),
       },
       {
         id: 'connect.disconnect',
@@ -279,7 +286,7 @@ function App() {
       <ErrorBoundary>
         <Header
           activeProjectId={activeProjectId}
-          onOpenConnect={() => setShowConnect(true)}
+          onOpenConnect={() => handleOpenConnect()}
           onDisconnect={handleDisconnect}
           onNewSession={newSession}
           onSetModelRemote={setModelRemote}
@@ -287,7 +294,7 @@ function App() {
       </ErrorBoundary>
 
       <ErrorBoundary>
-        <ProjectTabs onNewProject={() => setShowConnect(true)} disconnectProject={disconnect} connectProject={connect} />
+        <ProjectTabs onNewProject={() => handleOpenConnect()} disconnectProject={disconnect} connectProject={connect} />
       </ErrorBoundary>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -295,12 +302,13 @@ function App() {
           <Sidebar
             activeTab={activeTab}
             onTabChange={setActiveTab}
-            onOpenConnect={() => setShowConnect(true)}
+            onOpenConnect={() => handleOpenConnect()}
             onQuickConnect={handleConnect}
             onNewSession={newSession}
             onSwitchLocalSession={switchLocalSession}
             onNewLocalSession={newLocalSession}
             onConnectProject={(id: string) => connect(id)}
+            onEditProject={(id) => handleOpenConnect(id)}
           />
         </ErrorBoundary>
 
@@ -326,7 +334,7 @@ function App() {
           {activeTab === 'tools' && <ToolsPanel />}
           {activeTab === 'nodes' && <NodesPanel isConnected={connectionStatus === 'connected'} onListNodes={listNodes} onAddNode={addNode} onUpdateNode={updateNode} onDeleteNode={deleteNode} onListPeers={listPeers} onAddPeer={addPeer} onUpdatePeer={updatePeer} onDeletePeer={deletePeer} />}
           {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} isConnected={connectionStatus === 'connected'} onListSessions={listSessions} onDeleteSession={deleteSession} onLoadSessionById={loadSessionById} onListLocalSessions={listLocalSessions} onSwitchLocalSession={switchLocalSession} onNewLocalSession={newLocalSession} onDeleteLocalSession={deleteLocalSession} onRenameLocalSession={renameLocalSession} />}
-          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} onSavePreset={savePresetWs} onDeletePreset={deletePresetWs} />}
+          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />}
           {activeTab === 'plugins' && <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />}
           {activeTab === 'workflows' && <WorkflowPanel
             isConnected={connectionStatus === 'connected'}
@@ -334,6 +342,13 @@ function App() {
             saveWorkflowWs={saveWorkflowWs}
             deleteWorkflowWs={deleteWorkflowWs}
             runWorkflowWs={runWorkflow}
+          />}
+          {activeTab === 'pipelines' && <PipelinePanel
+            isConnected={connectionStatus === 'connected'}
+            listPipelinesWs={listPipelines}
+            getPipelineWs={getPipeline}
+            savePipelineWs={savePipeline}
+            deletePipelineWs={deletePipeline}
           />}
           {activeTab === 'models' && <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />}
           {activeTab === 'sandbox' && (
@@ -356,7 +371,8 @@ function App() {
         <ErrorBoundary>
           <ProjectDialog
             onConnect={handleConnect}
-            onClose={() => setShowConnect(false)}
+            onClose={() => { setShowConnect(false); setEditProjectId(null); }}
+            editProjectId={editProjectId}
           />
         </ErrorBoundary>
       )}

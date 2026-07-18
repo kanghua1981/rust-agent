@@ -4,66 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 
-// ── Preset ──────────────────────────────────────────────────────────────
-
-/// A saved connection preset (replaces localStorage presets).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Preset {
-    pub id: String,
-    pub name: String,
-    pub server_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workdir: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    pub auto_approve: bool,
-    pub agent_mode: String,
-    pub isolation: String,
-    #[serde(default)]
-    pub new_session: bool,
-    #[serde(default = "default_icon")]
-    pub icon: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub sort_order: i32,
-    /// If set, this preset references a server-side Node for workdir/isolation/exec_mode.
-    /// When resolved, the Node's values take precedence over the preset's own fields.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_ref: Option<String>,
-    pub created_at: String,
-    #[serde(default)]
-    pub updated_at: String,
-}
-
-fn default_icon() -> String { "🔧".into() }
-
-impl Default for Preset {
-    fn default() -> Self {
-        Self {
-            id:           uuid::Uuid::new_v4().to_string(),
-            name:         String::new(),
-            server_url:   String::new(),
-            workdir:      None,
-            model:        None,
-            auto_approve: false,
-            agent_mode:   "auto".into(),
-            isolation:    "container".into(),
-            new_session:  false,
-            icon:         default_icon(),
-            color:        None,
-            tags:         vec![],
-            sort_order:   0,
-            node_ref:     None,
-            created_at:   String::new(),
-            updated_at:   String::new(),
-        }
-    }
-}
-
 // ── Workflow ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -40,6 +40,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "embed_stage_conn",
         sql: include_str!("../../sql/migrations/005_embed_stage_conn.sql"),
     },
+    Migration {
+        version: 6,
+        name: "drop_presets",
+        sql: include_str!("../../sql/migrations/006_drop_presets.sql"),
+    },
 ];
 
 /// Run any pending migrations on `conn`.

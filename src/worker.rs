@@ -1264,58 +1264,6 @@ fn dispatch_ws_message(
             }
         }
 
-        // ── Preset CRUD (global.db) ────────────────────────────────────────
-        "list_presets" => {
-            match global_db.list_presets() {
-                Ok(presets) => {
-                    output.emit_public("presets_list", serde_json::json!({
-                        "presets": presets,
-                    }));
-                }
-                Err(e) => output.emit_public("error", serde_json::json!({
-                    "message": format!("list_presets failed: {:#}", e)
-                })),
-            }
-        }
-
-        "save_preset" => {
-            match msg.get("data").cloned() {
-                Some(data) => match serde_json::from_value::<crate::db::models::Preset>(data) {
-                    Ok(preset) => match global_db.save_preset(&preset) {
-                        Ok(()) => {
-                            output.emit_public("preset_saved", serde_json::json!({
-                                "preset": preset,
-                            }));
-                        }
-                        Err(e) => output.emit_public("error", serde_json::json!({
-                            "message": format!("save_preset failed: {:#}", e)
-                        })),
-                    },
-                    Err(e) => output.emit_public("error", serde_json::json!({
-                        "message": format!("save_preset: invalid preset data: {}", e)
-                    })),
-                },
-                None => output.emit_public("error", serde_json::json!({
-                    "message": "save_preset: missing 'data' field"
-                })),
-            }
-        }
-
-        "delete_preset" => {
-            if let Some(id) = msg.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()) {
-                match global_db.delete_preset(id) {
-                    Ok(()) => output.emit_public("preset_deleted", serde_json::json!({ "id": id })),
-                    Err(e) => output.emit_public("error", serde_json::json!({
-                        "message": format!("delete_preset failed: {:#}", e)
-                    })),
-                }
-            } else {
-                output.emit_public("error", serde_json::json!({
-                    "message": "delete_preset: missing 'data.id'"
-                }));
-            }
-        }
-
         // ── Node CRUD (server-managed workspaces) ────────────────────────────
         "list_nodes" => {
             let cached = crate::workspaces::load_vnodes();
@@ -1597,6 +1545,87 @@ fn dispatch_ws_message(
                 output.emit_public("workflow_started", serde_json::json!({
                     "workflowId": wf_id,
                     "task": task,
+                }));
+            }
+        }
+
+        // ── Pipeline CRUD (project-local .agent/pipelines/*.toml) ─────────
+        "list_pipelines" => {
+            let project_dir = shared_workdir.lock().ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| PathBuf::from("."));
+            match crate::pipeline::loader::list_pipelines(&project_dir) {
+                Ok(pipelines) => {
+                    output.emit_public("pipelines_list", serde_json::json!({
+                        "pipelines": pipelines,
+                    }));
+                }
+                Err(e) => output.emit_public("error", serde_json::json!({
+                    "message": format!("list_pipelines failed: {:#}", e)
+                })),
+            }
+        }
+
+        "get_pipeline" => {
+            let project_dir = shared_workdir.lock().ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| PathBuf::from("."));
+            if let Some(name) = msg.get("data").and_then(|d| d.get("name")).and_then(|v| v.as_str()) {
+                match crate::pipeline::loader::load_pipeline(&project_dir, name) {
+                    Ok(def) => output.emit_public("pipeline_loaded", serde_json::json!({
+                        "pipeline": def,
+                    })),
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("get_pipeline failed: {:#}", e)
+                    })),
+                }
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "get_pipeline: missing 'data.name'"
+                }));
+            }
+        }
+
+        "save_pipeline" => {
+            let project_dir = shared_workdir.lock().ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| PathBuf::from("."));
+            match msg.get("data").cloned() {
+                Some(data) => match serde_json::from_value::<crate::pipeline::dag::PipelineDef>(data) {
+                    Ok(def) => match crate::pipeline::loader::save_pipeline(&project_dir, &def) {
+                        Ok(()) => {
+                            output.emit_public("pipeline_saved", serde_json::json!({
+                                "name": def.name,
+                            }));
+                        }
+                        Err(e) => output.emit_public("error", serde_json::json!({
+                            "message": format!("save_pipeline failed: {:#}", e)
+                        })),
+                    },
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("save_pipeline: invalid pipeline data: {}", e)
+                    })),
+                },
+                None => output.emit_public("error", serde_json::json!({
+                    "message": "save_pipeline: missing 'data' field"
+                })),
+            }
+        }
+
+        "delete_pipeline" => {
+            let project_dir = shared_workdir.lock().ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| PathBuf::from("."));
+            if let Some(name) = msg.get("data").and_then(|d| d.get("name")).and_then(|v| v.as_str()) {
+                match crate::pipeline::loader::delete_pipeline(&project_dir, name) {
+                    Ok(()) => output.emit_public("pipeline_deleted", serde_json::json!({ "name": name })),
+                    Err(e) => output.emit_public("error", serde_json::json!({
+                        "message": format!("delete_pipeline failed: {:#}", e)
+                    })),
+                }
+            } else {
+                output.emit_public("error", serde_json::json!({
+                    "message": "delete_pipeline: missing 'data.name'"
                 }));
             }
         }

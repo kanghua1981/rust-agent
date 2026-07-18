@@ -10,9 +10,6 @@
 //!
 //! ```ignore
 //! let db = GlobalDb::open_or_create()?;
-//! let presets = db.list_presets()?;
-//! db.save_preset(&Preset { name: "test".into(), ..Default::default() })?;
-//! ```
 
 pub mod models;
 pub mod migration;
@@ -77,112 +74,6 @@ impl GlobalDb {
     /// Return the database file path.
     pub fn path(&self) -> &PathBuf {
         &self.path
-    }
-
-    // ── Preset CRUD ───────────────────────────────────────────────────
-
-    pub fn list_presets(&self) -> rusqlite::Result<Vec<Preset>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, server_url, workdir, model, auto_approve,
-                    agent_mode, isolation, new_session, icon, color,
-                    tags, sort_order, node_ref, created_at, updated_at
-             FROM presets ORDER BY sort_order, name"
-        )?;
-        let rows: Vec<Preset> = stmt.query_map([], |row| {
-            let tags_str: String = row.get(11)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            Ok(Preset {
-                id:           row.get(0)?,
-                name:         row.get(1)?,
-                server_url:   row.get(2)?,
-                workdir:      row.get(3)?,
-                model:        row.get(4)?,
-                auto_approve: row.get::<_, i32>(5)? != 0,
-                agent_mode:   row.get(6)?,
-                isolation:    row.get(7)?,
-                new_session:  row.get::<_, i32>(8)? != 0,
-                icon:         row.get(9)?,
-                color:        row.get(10)?,
-                tags,
-                sort_order:   row.get(12)?,
-                node_ref:     row.get(13)?,
-                created_at:   row.get(14)?,
-                updated_at:   row.get(15)?,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn get_preset(&self, id: &str) -> rusqlite::Result<Option<Preset>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, server_url, workdir, model, auto_approve,
-                    agent_mode, isolation, new_session, icon, color,
-                    tags, sort_order, node_ref, created_at, updated_at
-             FROM presets WHERE id = ?1"
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            let tags_str: String = row.get(11)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            Ok(Preset {
-                id:           row.get(0)?,
-                name:         row.get(1)?,
-                server_url:   row.get(2)?,
-                workdir:      row.get(3)?,
-                model:        row.get(4)?,
-                auto_approve: row.get::<_, i32>(5)? != 0,
-                agent_mode:   row.get(6)?,
-                isolation:    row.get(7)?,
-                new_session:  row.get::<_, i32>(8)? != 0,
-                icon:         row.get(9)?,
-                color:        row.get(10)?,
-                tags,
-                sort_order:   row.get(12)?,
-                node_ref:     row.get(13)?,
-                created_at:   row.get(14)?,
-                updated_at:   row.get(15)?,
-            })
-        })?;
-        rows.next().transpose()
-    }
-
-    pub fn save_preset(&self, preset: &Preset) -> rusqlite::Result<()> {
-        let tags_json = serde_json::to_string(&preset.tags).unwrap_or_default();
-        let conn = self.conn.lock().unwrap();
-        with_retry(|| {
-            conn.execute(
-                "INSERT INTO presets (id, name, server_url, workdir, model, auto_approve,
-                     agent_mode, isolation, new_session, icon, color, tags, sort_order,
-                     node_ref, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,
-                         ?14, datetime('now'), datetime('now'))
-                 ON CONFLICT(id) DO UPDATE SET
-                     name=excluded.name, server_url=excluded.server_url,
-                     workdir=excluded.workdir, model=excluded.model,
-                     auto_approve=excluded.auto_approve, agent_mode=excluded.agent_mode,
-                     isolation=excluded.isolation, new_session=excluded.new_session,
-                     icon=excluded.icon, color=excluded.color, tags=excluded.tags,
-                     sort_order=excluded.sort_order, node_ref=excluded.node_ref,
-                     updated_at=datetime('now')",
-                params![
-                    preset.id, preset.name, preset.server_url,
-                    preset.workdir, preset.model,
-                    preset.auto_approve as i32, preset.agent_mode,
-                    preset.isolation, preset.new_session as i32,
-                    preset.icon, preset.color, tags_json,
-                    preset.sort_order,
-                    preset.node_ref,
-                ],
-            )
-        })?;
-        Ok(())
-    }
-
-    pub fn delete_preset(&self, id: &str) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        with_retry(|| conn.execute("DELETE FROM presets WHERE id = ?1", params![id]))?;
-        Ok(())
     }
 
     // ── Node CRUD (server-managed workspaces) ───────────────────────────

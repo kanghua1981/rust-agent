@@ -45,7 +45,7 @@ export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
   deleteWorkflowWs,
   runWorkflowWs,
 }) => {
-  const { workflows, presets, activeRun } = useAgentStore();
+  const { workflows, projects, activeRun } = useAgentStore();
   const [editing, setEditing] = useState<WorkflowDef | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [runTask, setRunTask] = useState('');
@@ -337,20 +337,19 @@ export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
                         onChange={e => {
                           const pid = e.target.value;
                           if (!pid) return;
-                          const p = presets.find(x => x.id === pid);
+                          const p = Object.values(projects).find(x => x.id === pid);
                           if (p) {
                             updateStage(stage.id, {
                               serverUrl: p.serverUrl,
                               workdir: p.workdir,
-                              model: p.model,
                               agentMode: p.agentMode || 'auto',
                             });
                           }
                         }}
                       >
-                        <option value="">从 Preset 快速填充…</option>
-                        {presets.map(p => (
-                          <option key={p.id} value={p.id}>{p.name} ({p.serverUrl})</option>
+                        <option value="">从项目快速填充…</option>
+                        {Object.values(projects).map(p => (
+                          <option key={p.id} value={p.id}>{p.label} ({p.serverUrl})</option>
                         ))}
                       </select>
                     </div>

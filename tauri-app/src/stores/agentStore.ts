@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ConfigPreset, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult, PipelineInfo, PipelineDef } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 import { runMigration } from '../utils/migration';
 
@@ -115,7 +115,6 @@ interface AgentState {
   currentPath: string;
   fileList: FileInfo[];
   config: AgentConfig;
-  presets: ConfigPreset[];
 
   // ── Project-First Architecture ──
   /** All known projects, persisted to localStorage. */
@@ -124,6 +123,10 @@ interface AgentState {
   connectionHistory: ConnectionHistory[];
   workflows: WorkflowDef[];
   activeRun: WorkflowRunResult | null;
+  /** Available pipelines from .agent/pipelines/ */
+  pipelines: PipelineInfo[];
+  /** Currently loaded pipeline for editing */
+  editingPipeline: PipelineDef | null;
 
   // ── Connection lifecycle actions ──
   createConnectionSlot: (id: string, label: string, serverUrl: string, workdir?: string) => void;
@@ -172,11 +175,6 @@ interface AgentState {
   setLocalSessions: (list: SessionMeta[]) => void;
   setActiveSessionName: (name: string | null) => void;
   setConfig: (config: Partial<AgentConfig>) => void;
-  addPreset: (preset: ConfigPreset) => void;
-  updatePreset: (id: string, preset: Partial<ConfigPreset>) => void;
-  deletePreset: (id: string) => void;
-  setPresets: (presets: ConfigPreset[]) => void;
-  applyPreset: (id: string) => void;
 
   // ── Project CRUD (Project-First Architecture) ──
   addProject: (project: ProjectDefinition) => void;
@@ -187,6 +185,9 @@ interface AgentState {
   addWorkflow: (wf: WorkflowDef) => void;
   updateWorkflow: (id: string, wf: Partial<WorkflowDef>) => void;
   deleteWorkflow: (id: string) => void;
+  // Pipeline CRUD
+  setPipelines: (pipelines: PipelineInfo[]) => void;
+  setEditingPipeline: (pipeline: PipelineDef | null) => void;
   clearSession: () => void;
   setNodeList: (nodes: VirtualNodeInfo[]) => void;
   setPeerList: (peers: any[]) => void;
@@ -205,7 +206,7 @@ interface AgentState {
 
 // ── Persisted config loader ──
 
-const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; workdir?: string; presets: ConfigPreset[] }> => {
+const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; workdir?: string }> => {
   const defaultServerUrl = getDefaultServerUrl();
 
   try {
@@ -218,7 +219,6 @@ const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; workd
         autoApprove: data.config?.autoApprove ?? false,
         agentMode: data.config?.agentMode || 'auto',
         workdir: data.workdir,
-        presets: data.presets || [],
       };
     }
   } catch (e) {
@@ -226,7 +226,6 @@ const loadPersistedConfig = (): Partial<AgentConfig & { serverUrl: string; workd
   }
   return {
     serverUrl: defaultServerUrl,
-    presets: []
   };
 };
 
@@ -290,7 +289,6 @@ const initialState = {
   clusterToken: '',
   currentPath: '.',
   fileList: [] as FileInfo[],
-  presets: (persistedConfig.presets || []) as ConfigPreset[],
 
   // ── Project-First Architecture ──
   projects: (() => {
@@ -303,6 +301,8 @@ const initialState = {
 
   connectionHistory: [] as ConnectionHistory[],
   workflows: [] as WorkflowDef[],
+  pipelines: [] as PipelineInfo[],
+  editingPipeline: null as PipelineDef | null,
   activeRun: null as WorkflowRunResult | null,
   config: {
     serverUrl: defaultUrl,
@@ -795,33 +795,6 @@ export const useAgentStore = create<AgentState>()(
       setConfig: (partial) =>
         set((state) => ({ config: { ...state.config, ...partial } })),
 
-      addPreset: (preset) =>
-        set((state) => ({
-          presets: [
-            ...state.presets,
-            {
-              ...preset,
-              id: preset.id || `preset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              createdAt: preset.createdAt || new Date().toISOString(),
-            },
-          ],
-        })),
-
-      updatePreset: (id, preset) =>
-        set((state) => ({
-          presets: state.presets.map((p) =>
-            p.id === id ? { ...p, ...preset } : p
-          ),
-        })),
-
-      deletePreset: (id) =>
-        set((state) => ({
-          presets: state.presets.filter((p) => p.id !== id),
-        })),
-
-      setPresets: (presets) =>
-        set({ presets }),
-
       setWorkflows: (workflows) =>
         set({ workflows }),
 
@@ -842,42 +815,15 @@ export const useAgentStore = create<AgentState>()(
           workflows: state.workflows.filter((w) => w.id !== id),
         })),
 
+      // Pipeline CRUD
+      setPipelines: (pipelines) =>
+        set({ pipelines }),
+
+      setEditingPipeline: (editingPipeline) =>
+        set({ editingPipeline }),
+
       setActiveRun: (run) =>
         set({ activeRun: run }),
-
-      applyPreset: (id) => {
-        const state = get();
-        const preset = state.presets.find((p) => p.id === id);
-        if (!preset) return;
-
-        // Resolve nodeRef if preset references a server-side Node
-        let resolvedWorkdir = preset.workdir;
-        let resolvedIsolation = preset.isolation ?? state.config.isolation;
-        let resolvedExecMode = preset.agentMode;
-
-        if (preset.nodeRef && state.nodeList.length > 0) {
-          const node = state.nodeList.find(n => n.id === preset.nodeRef);
-          if (node) {
-            resolvedWorkdir = node.workdir;               // Node overrides workdir
-            resolvedIsolation = node.isolation ?? (node.sandbox ? 'sandbox' : 'container');
-            resolvedExecMode = (node.exec_mode || preset.agentMode) as 'auto' | 'simple' | 'plan' | 'pipeline';
-          }
-        }
-
-        const updates: any = {
-          serverUrl: preset.serverUrl,
-          workdir: resolvedWorkdir,
-          config: {
-            ...state.config,
-            model: preset.model ?? state.config.model,
-            autoApprove: preset.autoApprove,
-            agentMode: resolvedExecMode as 'auto' | 'simple' | 'plan' | 'pipeline',
-            isolation: resolvedIsolation,
-            newSessionOnConnect: preset.newSessionOnConnect ?? state.config.newSessionOnConnect,
-          },
-        };
-        set(syncActiveSlot(updates));
-      },
 
       // ── Project CRUD (Project-First Architecture) ──────────────
       addProject: (project) =>
@@ -1020,7 +966,6 @@ export const useAgentStore = create<AgentState>()(
         serverUrl: state.serverUrl,
         workdir: state.workdir,
         config: state.config,
-        presets: state.presets,
         projects: state.projects,
         connectionHistory: state.connectionHistory,
         clusterToken: state.clusterToken,

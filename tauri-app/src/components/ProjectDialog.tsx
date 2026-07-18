@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { v4 as uuidv4 } from 'uuid';
 import type { ProjectDefinition } from '../types/agent';
@@ -6,6 +6,8 @@ import type { ProjectDefinition } from '../types/agent';
 interface Props {
   onConnect: () => void;
   onClose: () => void;
+  /** If set, auto-edit the given project on open. */
+  editProjectId?: string | null;
 }
 
 /** Generate a label from workdir path */
@@ -23,7 +25,7 @@ function shortUrl(url: string): string {
   }
 }
 
-export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose }) => {
+export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProjectId }) => {
   const store = useAgentStore();
 
   const projects = store.projects ?? {};
@@ -44,6 +46,15 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose }) => {
 
   // Editing mode
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Auto-edit when editProjectId is provided
+  useEffect(() => {
+    if (editProjectId && projects[editProjectId]) {
+      handleEdit(projects[editProjectId]);
+    }
+    // Only run when the dialog opens with a specific project
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editProjectId]);
 
   const handleWorkdirChange = (dir: string) => {
     setLocalWorkdir(dir);

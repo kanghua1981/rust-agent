@@ -1,29 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { isDesktopApp, getEnvironmentInfo } from '../utils/environment';
-import type { ConfigPreset } from '../types/agent';
 
 interface SettingsPanelProps {
   isConnected: boolean;
   onSetWorkdirRemote: (workdir: string) => void;
-  /** Save preset to server (global.db) via WebSocket */
-  onSavePreset: (preset: any) => void;
-  /** Delete preset from server (global.db) via WebSocket */
-  onDeletePreset: (id: string) => void;
 }
 
-export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote, onSavePreset, onDeletePreset }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSetWorkdirRemote }) => {
   const { 
     serverUrl, setServerUrl, workdir, setWorkdir, config, setConfig, reset,
     clusterToken, setClusterToken, connectionStatus,
-    presets, addPreset, updatePreset, deletePreset, applyPreset,
-    availableModels, nodeList,
+    availableModels,
   } = useAgentStore();
   
-  const [activeTab, setActiveTab] = useState<'current' | 'presets'>('current');
-  const [showNewPreset, setShowNewPreset] = useState(false);
-  const [editingPreset, setEditingPreset] = useState<string | null>(null);
-
   // Current config form state
   const [urlDraft, setUrlDraft] = useState(serverUrl);
   const [dirDraft, setDirDraft] = useState(workdir ?? '');
@@ -31,34 +21,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
   const [modelDraft, setModelDraft] = useState(config.model ?? '');  
 
   // Keep draft in sync with store when workdir changes externally
-  // (e.g. applyPreset, or Zustand persist async rehydration on first load)
   useEffect(() => {
     setDirDraft(workdir ?? '');
   }, [workdir]);
   const [saved, setSaved] = useState(false);
-
-  // New preset form state
-  const [presetForm, setPresetForm] = useState<{
-    name: string;
-    serverUrl: string;
-    workdir: string;
-    model: string;
-    autoApprove: boolean;
-    agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
-    isolation: 'normal' | 'container' | 'sandbox';
-    newSession: boolean;
-    nodeRef: string;
-  }>({
-    name: '',
-    serverUrl: 'ws://localhost:9527',
-    workdir: '',
-    model: '',
-    autoApprove: false,
-    agentMode: 'auto',
-    isolation: 'container',
-    newSession: false,
-    nodeRef: '',
-  });
 
   const handleIsolationChange = (mode: 'normal' | 'container' | 'sandbox') => {
     setConfig({ isolation: mode });
@@ -66,7 +32,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
 
   const saveCurrentConfig = () => {
     setServerUrl(urlDraft.trim() || 'ws://localhost:9527');
-    // Allow saving empty string to clear workdir
     const newWorkdir = dirDraft.trim();
     setWorkdir(newWorkdir);
     if (isConnected && newWorkdir) {
@@ -76,92 +41,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
     if (modelDraft.trim()) setConfig({ model: modelDraft.trim() });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-  };
-
-  const savePreset = () => {
-    if (!presetForm.name.trim()) return;
-    
-    const now = Date.now();
-    const nowIso = new Date().toISOString();
-    const presetData: any = {
-      ...presetForm,
-      id: editingPreset || `preset_${now}_${Math.random().toString(36).slice(2, 6)}`,
-      nodeRef: presetForm.nodeRef.trim() || null,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-    
-    if (editingPreset) {
-      updatePreset(editingPreset, presetData);
-      setEditingPreset(null);
-    } else {
-      addPreset(presetData);
-    }
-    
-    // Also sync to server if connected
-    if (isConnected) {
-      onSavePreset(presetData);
-    }
-    
-    resetPresetForm();
-    setShowNewPreset(false);
-  };
-
-  const resetPresetForm = () => {
-    setPresetForm({
-      name: '',
-      serverUrl: 'ws://localhost:9527',
-      workdir: '',
-      model: '',
-      autoApprove: false,
-      agentMode: 'auto' as 'auto' | 'simple' | 'plan' | 'pipeline',
-      isolation: 'container',
-      newSession: false,
-      nodeRef: '',
-    });
-  };
-
-  const editPreset = (preset: ConfigPreset) => {
-    setPresetForm({
-      name: preset.name,
-      serverUrl: preset.serverUrl,
-      workdir: preset.workdir || '',
-      model: preset.model || '',
-      autoApprove: preset.autoApprove,
-      agentMode: preset.agentMode,
-      isolation: preset.isolation || 'container',
-      newSession: preset.newSession ?? preset.newSessionOnConnect ?? false,
-      nodeRef: preset.nodeRef || '',
-    });
-    setEditingPreset(preset.id);
-    setShowNewPreset(true);
-  };
-
-  const handleApplyPreset = (presetId: string) => {
-    const preset = presets.find(p => p.id === presetId);
-    if (preset) {
-      setServerUrl(preset.serverUrl);
-      if (preset.workdir) {
-        setWorkdir(preset.workdir);
-        if (isConnected) {
-          onSetWorkdirRemote(preset.workdir);
-        }
-      }
-      setConfig({
-        model: preset.model,
-        autoApprove: preset.autoApprove,
-        agentMode: preset.agentMode,
-        isolation: preset.isolation || 'container',
-      });
-    }
-    // 应用预设后保持当前标签页为"预设"标签页
-    setActiveTab('presets');
-  };
-
-  const cancelEdit = () => {
-    setEditingPreset(null);
-    setShowNewPreset(false);
-    resetPresetForm();
   };
 
   return (
@@ -191,407 +70,121 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
         </div>
       )}
 
-      {/* Tab Navigation */}
-      <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', background: 'var(--bg2)', padding: '4px', borderRadius: '10px' }}>
-        {[
-          { key: 'current', label: '当前配置' },
-          { key: 'presets', label: `配置预设 (${presets.length})` },
-        ].map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key as any)}
-            style={{
-              flex: 1, padding: '8px 12px',
-              background: activeTab === tab.key ? 'var(--surface)' : 'transparent',
-              color: activeTab === tab.key ? 'var(--text)' : 'var(--text2)',
-              borderRadius: '8px', fontSize: '13px', fontWeight: '500',
-              border: activeTab === tab.key ? '1px solid var(--border)' : '1px solid transparent',
-              transition: 'all 0.15s',
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      <div>
+        <Section title="服务器">
+          <Field label="WebSocket 地址">
+            <input
+              value={urlDraft}
+              onChange={(e) => setUrlDraft(e.target.value)}
+              placeholder="ws://localhost:9527"
+              disabled={connectionStatus === 'connected'}
+              style={inputStyle}
+            />
+          </Field>
+          <Field label="工作目录">
+            <input
+              value={dirDraft}
+              onChange={(e) => setDirDraft(e.target.value)}
+              placeholder="/path/to/project"
+              style={inputStyle}
+            />
+          </Field>
+          <Field label="集群 Token（认证，留空则无需鉴权）">
+            <input
+              type="password"
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+              placeholder="无 token 则留空"
+              style={inputStyle}
+            />
+          </Field>
+        </Section>
 
-      {activeTab === 'current' && (
-        <div>
-          <Section title="服务器">
-            <Field label="WebSocket 地址">
-              <input
-                value={urlDraft}
-                onChange={(e) => setUrlDraft(e.target.value)}
-                placeholder="ws://localhost:9527"
-                disabled={connectionStatus === 'connected'}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="工作目录">
-              <input
-                value={dirDraft}
-                onChange={(e) => setDirDraft(e.target.value)}
-                placeholder="/path/to/project"
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="集群 Token（认证，留空则无需鉴权）">
-              <input
-                type="password"
-                value={tokenDraft}
-                onChange={(e) => setTokenDraft(e.target.value)}
-                placeholder="无 token 则留空"
-                style={inputStyle}
-              />
-            </Field>
-          </Section>
-
-          <Section title="模型">
-            <Field label="模型名称（留空使用服务器默认）">
-              {availableModels.length > 0 ? (
-                <select
-                  value={modelDraft}
-                  onChange={(e) => setModelDraft(e.target.value)}
-                  style={selectStyle}
-                >
-                  <option value="">使用服务器默认</option>
-                  {availableModels.map(m => (
-                    <option key={m.alias} value={m.alias}>{m.alias} — {m.model}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  value={modelDraft}
-                  onChange={(e) => setModelDraft(e.target.value)}
-                  placeholder="claude-opus-4-5"
-                  style={inputStyle}
-                />
-              )}
-            </Field>
-          </Section>
-
-          <Section title="行为">
-            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={!!config.autoApprove}
-                onChange={(e) => setConfig({ autoApprove: e.target.checked })}
-                style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
-              />
-              <div>
-                <p style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>自动确认工具调用</p>
-                <p style={{ fontSize: '12px', color: 'var(--text3)' }}>跳过每次工具执行前的人工确认</p>
-              </div>
-            </label>
-
-            <Field label="执行模式">
+        <Section title="模型">
+          <Field label="模型名称（留空使用服务器默认）">
+            {availableModels.length > 0 ? (
               <select
-                value={config.agentMode || 'auto'}
-                onChange={(e) => setConfig({ agentMode: e.target.value as any })}
+                value={modelDraft}
+                onChange={(e) => setModelDraft(e.target.value)}
                 style={selectStyle}
               >
-                <option value="auto">自动</option>
-                <option value="simple">单层</option>
-                <option value="plan">计划</option>
-                <option value="pipeline">流水线</option>
+                <option value="">使用服务器默认</option>
+                {availableModels.map(m => (
+                  <option key={m.alias} value={m.alias}>{m.alias} — {m.model}</option>
+                ))}
               </select>
-            </Field>
-          </Section>
-
-          <Section title="隔离模式">
-            <Field label="隔离模式（连接时生效）">
-              <select
-                value={config.isolation ?? 'container'}
-                onChange={(e) => handleIsolationChange(e.target.value as 'normal' | 'container' | 'sandbox')}
-                style={selectStyle}
-              >
-                <option value="normal">🕑3 直接运行（无容器，完全兼容）</option>
-                <option value="container">🔲 容器模式（namespace 隔离，默认）</option>
-                <option value="sandbox">🔒 沙盒模式（overlayfs 保护，支持回滚）</option>
-              </select>
-            </Field>
-          </Section>
-
-          <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
-            <button onClick={saveCurrentConfig} style={{
-              flex: 2, padding: '10px',
-              background: saved ? 'var(--green)' : 'var(--accent)',
-              color: '#fff', borderRadius: '8px', fontWeight: '600', fontSize: '13px',
-              transition: 'background 0.2s',
-            }}>
-              {saved ? '✓ 已保存' : '保存设置'}
-            </button>
-            <button onClick={reset} style={{
-              flex: 1, padding: '10px',
-              background: 'var(--red-dim)', color: 'var(--red)',
-              borderRadius: '8px', fontWeight: '500', fontSize: '13px',
-              border: '1px solid rgba(239,68,68,0.3)',
-            }}>
-              重置全部
-            </button>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'presets' && (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <p style={{ fontSize: '14px', color: 'var(--text2)' }}>保存多组配置，快速切换不同环境</p>
-            <button
-              onClick={() => setShowNewPreset(true)}
-              style={{
-                padding: '6px 12px',
-                background: 'var(--accent)', color: '#fff',
-                borderRadius: '6px', fontSize: '12px', fontWeight: '600',
-              }}
-            >
-              ➕ 新建预设
-            </button>
-          </div>
-
-          {/* Preset List */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {presets.map(preset => (
-              <div key={preset.id} style={{
-                background: 'var(--surface)', border: '1px solid var(--border)',
-                borderRadius: '8px', padding: '12px',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                  <div style={{ flex: 1 }}>
-                    <h4 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text)', marginBottom: '4px' }}>
-                      {preset.name}
-                    </h4>
-                    <p style={{ fontSize: '12px', color: 'var(--text3)', fontFamily: 'monospace' }}>
-                      {preset.serverUrl}
-                    </p>
-                    {preset.workdir && (
-                      <p style={{ fontSize: '12px', color: 'var(--text3)', fontFamily: 'monospace' }}>
-                        📁 {preset.workdir}
-                      </p>
-                    )}
-                    <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
-                      <span style={{
-                        fontSize: '10px', color: 'var(--text3)', background: 'var(--bg3)',
-                        padding: '2px 6px', borderRadius: '4px',
-                      }}>
-                        {preset.agentMode}
-                      </span>
-                      <span style={{
-                        fontSize: '10px', color: 'var(--text3)', background: 'var(--bg3)',
-                        padding: '2px 6px', borderRadius: '4px',
-                      }}>
-                        {preset.isolation || 'container'}
-                      </span>
-                      {preset.autoApprove && (
-                        <span style={{
-                          fontSize: '10px', color: 'var(--green)', background: 'var(--green-dim)',
-                          padding: '2px 6px', borderRadius: '4px',
-                        }}>
-                          自动确认
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      onClick={() => handleApplyPreset(preset.id)}
-                      style={{
-                        padding: '4px 8px', background: 'var(--accent)', color: '#fff',
-                        borderRadius: '4px', fontSize: '11px', fontWeight: '600',
-                      }}
-                    >
-                      应用
-                    </button>
-                    <button
-                      onClick={() => editPreset(preset)}
-                      style={{
-                        padding: '4px 8px', background: 'var(--bg3)', color: 'var(--text2)',
-                        borderRadius: '4px', fontSize: '11px',
-                      }}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      onClick={() => {
-                        deletePreset(preset.id);
-                        if (isConnected) onDeletePreset(preset.id);
-                      }}
-                      style={{
-                        padding: '4px 8px', background: 'var(--red-dim)', color: 'var(--red)',
-                        borderRadius: '4px', fontSize: '11px',
-                      }}
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {presets.length === 0 && (
-              <div style={{
-                textAlign: 'center', padding: '32px',
-                color: 'var(--text3)', fontSize: '13px',
-              }}>
-                <p>暂无保存的配置预设</p>
-                <p style={{ marginTop: '4px' }}>点击上方"新建预设"来保存当前配置</p>
-              </div>
+            ) : (
+              <input
+                value={modelDraft}
+                onChange={(e) => setModelDraft(e.target.value)}
+                placeholder="claude-opus-4-5"
+                style={inputStyle}
+              />
             )}
-          </div>
+          </Field>
+        </Section>
 
-          {/* New/Edit Preset Form */}
-          {showNewPreset && (
-            <div style={{
-              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-              background: 'rgba(0,0,0,0.5)', zIndex: 1000,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: '20px',
-            }}>
-              <div style={{
-                background: 'var(--bg)', borderRadius: '12px',
-                padding: '20px', width: '100%', maxWidth: '400px',
-                border: '1px solid var(--border)',
-              }}>
-                <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '16px' }}>
-                  {editingPreset ? '编辑预设' : '新建预设'}
-                </h3>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <Field label="预设名称">
-                    <input
-                      value={presetForm.name}
-                      onChange={(e) => setPresetForm(p => ({ ...p, name: e.target.value }))}
-                      placeholder="开发环境、测试环境等"
-                      style={inputStyle}
-                    />
-                  </Field>
-
-                  <Field label="服务器地址">
-                    <input
-                      value={presetForm.serverUrl}
-                      onChange={(e) => setPresetForm(p => ({ ...p, serverUrl: e.target.value }))}
-                      placeholder="ws://localhost:9527"
-                      style={inputStyle}
-                    />
-                  </Field>
-
-                  <Field label="工作目录">
-                    <input
-                      value={presetForm.workdir}
-                      onChange={(e) => setPresetForm(p => ({ ...p, workdir: e.target.value }))}
-                      placeholder="/path/to/project"
-                      style={inputStyle}
-                    />
-                  </Field>
-
-                  {nodeList.length > 0 && (
-                    <Field label="引用节点（可选，覆盖工作目录和隔离模式）">
-                      <select
-                        value={presetForm.nodeRef}
-                        onChange={(e) => setPresetForm(p => ({ ...p, nodeRef: e.target.value }))}
-                        style={selectStyle}
-                      >
-                        <option value="">不使用节点引用</option>
-                        {nodeList.map(n => (
-                          <option key={n.id} value={n.id}>
-                            {n.name} — {n.workdir}
-                          </option>
-                        ))}
-                      </select>
-                      {presetForm.nodeRef && (() => {
-                        const node = nodeList.find(n => n.id === presetForm.nodeRef);
-                        return node ? (
-                          <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--accent)' }}>
-                            🔗 将使用节点 "{node.name}" 的配置: workdir={node.workdir}, isolation={node.isolation || (node.sandbox ? 'sandbox' : 'container')}
-                          </p>
-                        ) : null;
-                      })()}
-                    </Field>
-                  )}
-
-                  <Field label="模型">
-                    <input
-                      value={presetForm.model}
-                      onChange={(e) => setPresetForm(p => ({ ...p, model: e.target.value }))}
-                      placeholder="claude-opus-4-5"
-                      style={inputStyle}
-                    />
-                  </Field>
-
-                  <Field label="执行模式">
-                    <select
-                      value={presetForm.agentMode}
-                      onChange={(e) => setPresetForm(p => ({ ...p, agentMode: e.target.value as any }))}
-                      style={selectStyle}
-                    >
-                      <option value="auto">自动</option>
-                      <option value="simple">单层</option>
-                      <option value="plan">计划</option>
-                      <option value="pipeline">流水线</option>
-                    </select>
-                  </Field>
-
-                  <Field label="隔离模式">
-                    <select
-                      value={presetForm.isolation}
-                      onChange={(e) => setPresetForm(p => ({ ...p, isolation: e.target.value as any }))}
-                      style={selectStyle}
-                    >
-                      <option value="normal">直接运行（无容器）</option>
-                      <option value="container">容器模式（默认）</option>
-                      <option value="sandbox">沙盒模式</option>
-                    </select>
-                  </Field>
-
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={presetForm.autoApprove}
-                      onChange={(e) => setPresetForm(p => ({ ...p, autoApprove: e.target.checked }))}
-                      style={{ accentColor: 'var(--accent)' }}
-                    />
-                    <span style={{ fontSize: '13px' }}>自动确认工具调用</span>
-                  </label>
-
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={presetForm.newSession}
-                      onChange={(e) => setPresetForm(p => ({ ...p, newSession: e.target.checked }))}
-                      style={{ accentColor: 'var(--accent)' }}
-                    />
-                    <span style={{ fontSize: '13px' }}>新会话（每次连接独立对话历史）</span>
-                  </label>
-                </div>
-
-                <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
-                  <button
-                    onClick={savePreset}
-                    disabled={!presetForm.name.trim()}
-                    style={{
-                      flex: 1, padding: '8px',
-                      background: presetForm.name.trim() ? 'var(--accent)' : 'var(--bg3)',
-                      color: presetForm.name.trim() ? '#fff' : 'var(--text3)',
-                      borderRadius: '6px', fontSize: '13px', fontWeight: '600',
-                    }}
-                  >
-                    {editingPreset ? '更新' : '保存'}
-                  </button>
-                  <button
-                    onClick={cancelEdit}
-                    style={{
-                      flex: 1, padding: '8px',
-                      background: 'var(--bg3)', color: 'var(--text2)',
-                      borderRadius: '6px', fontSize: '13px',
-                    }}
-                  >
-                    取消
-                  </button>
-                </div>
-              </div>
+        <Section title="行为">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={!!config.autoApprove}
+              onChange={(e) => setConfig({ autoApprove: e.target.checked })}
+              style={{ accentColor: 'var(--accent)', cursor: 'pointer', width: '14px', height: '14px' }}
+            />
+            <div>
+              <p style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>自动确认工具调用</p>
+              <p style={{ fontSize: '12px', color: 'var(--text3)' }}>跳过每次工具执行前的人工确认</p>
             </div>
-          )}
+          </label>
+
+          <Field label="执行模式">
+            <select
+              value={config.agentMode || 'auto'}
+              onChange={(e) => setConfig({ agentMode: e.target.value as any })}
+              style={selectStyle}
+            >
+              <option value="auto">自动</option>
+              <option value="simple">单层</option>
+              <option value="plan">计划</option>
+              <option value="pipeline">流水线</option>
+            </select>
+          </Field>
+        </Section>
+
+        <Section title="隔离模式">
+          <Field label="隔离模式（连接时生效）">
+            <select
+              value={config.isolation ?? 'container'}
+              onChange={(e) => handleIsolationChange(e.target.value as 'normal' | 'container' | 'sandbox')}
+              style={selectStyle}
+            >
+              <option value="normal">🕑3 直接运行（无容器，完全兼容）</option>
+              <option value="container">🔲 容器模式（namespace 隔离，默认）</option>
+              <option value="sandbox">🔒 沙盒模式（overlayfs 保护，支持回滚）</option>
+            </select>
+          </Field>
+        </Section>
+
+        <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+          <button onClick={saveCurrentConfig} style={{
+            flex: 2, padding: '10px',
+            background: saved ? 'var(--green)' : 'var(--accent)',
+            color: '#fff', borderRadius: '8px', fontWeight: '600', fontSize: '13px',
+            transition: 'background 0.2s',
+          }}>
+            {saved ? '✓ 已保存' : '保存设置'}
+          </button>
+          <button onClick={reset} style={{
+            flex: 1, padding: '10px',
+            background: 'var(--red-dim)', color: 'var(--red)',
+            borderRadius: '8px', fontWeight: '500', fontSize: '13px',
+            border: '1px solid rgba(239,68,68,0.3)',
+          }}>
+            重置全部
+          </button>
         </div>
-      )}
+      </div>
     </div>
   );
 };

@@ -7,6 +7,8 @@ interface ProjectTreeProps {
   onSwitchLocalSession?: (name: string) => void;
   onNewLocalSession?: (name: string) => void;
   onConnectProject?: (id: string) => void;
+  /** Edit a project — opens the connection dialog in edit mode */
+  onEditProject?: (id: string) => void;
 }
 
 /** Abbreviate workdir to last two segments */
@@ -40,7 +42,7 @@ interface ContextMenuState {
   projectId: string;
 }
 
-export const ProjectTree: React.FC<ProjectTreeProps> = ({ collapsed, onOpenConnect, onSwitchLocalSession, onNewLocalSession, onConnectProject }) => {
+export const ProjectTree: React.FC<ProjectTreeProps> = ({ collapsed, onOpenConnect, onSwitchLocalSession, onNewLocalSession, onConnectProject, onEditProject }) => {
   const [expanded, setExpanded] = useState(true);
   // Per-project session-list expand state: projectId → boolean
   const [sessionsExpanded, setSessionsExpanded] = useState<Record<string, boolean>>({});
@@ -348,10 +350,28 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({ collapsed, onOpenConne
           }}
         >
           {projectSlots[contextMenu.projectId] && (
+            <>
+              <ContextMenuItem
+                label="编辑项目"
+                onClick={() => {
+                  onEditProject?.(contextMenu.projectId);
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              />
+              <ContextMenuItem
+                label="断开连接"
+                onClick={() => {
+                  closeProject(contextMenu.projectId);
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+              />
+            </>
+          )}
+          {!projectSlots[contextMenu.projectId] && (
             <ContextMenuItem
-              label="断开连接"
+              label="编辑项目"
               onClick={() => {
-                closeProject(contextMenu.projectId);
+                onEditProject?.(contextMenu.projectId);
                 setContextMenu(prev => ({ ...prev, visible: false }));
               }}
             />

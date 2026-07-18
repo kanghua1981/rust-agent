@@ -323,9 +323,11 @@ fn build_checker_prompt(task: &str, plan: &str, result: &str) -> String {
     )
 }
 
+use super::dag::StageVerdict;
+
 /// Parse the ## REVIEW_ARTIFACT section to determine PASS or FAIL.
 /// Only looks inside the artifact block to avoid false matches in the analysis text.
-fn is_pass(review: &str) -> bool {
+pub fn parse_verdict(review: &str) -> StageVerdict {
     let upper = review.to_uppercase();
     // Find the REVIEW_ARTIFACT marker; fall back to whole text if absent.
     let start = upper.find("REVIEW_ARTIFACT").unwrap_or(0);
@@ -333,8 +335,15 @@ fn is_pass(review: &str) -> bool {
     let pass_pos = section.find("### PASS").or_else(|| section.find("PASS ✅"));
     let fail_pos = section.find("### FAIL").or_else(|| section.find("FAIL ❌"));
     match (pass_pos, fail_pos) {
-        (Some(_), None) => true,           // PASS present, no FAIL
-        (Some(pp), Some(fp)) => pp < fp,   // PASS comes before any FAIL mention
-        _ => false,
+        (Some(_), None) => StageVerdict::Pass,
+        (Some(pp), Some(fp)) if pp < fp => StageVerdict::Pass,
+        (None, Some(_)) => StageVerdict::Fail { reason: "FAIL marker found".to_string() },
+        (Some(_), Some(_)) => StageVerdict::Fail { reason: "FAIL marker found before PASS".to_string() },
+        _ => StageVerdict::Pass, // No markers → default PASS
     }
+}
+
+/// Legacy bool-only variant for backward compatibility within deprecated module.
+fn is_pass(review: &str) -> bool {
+    matches!(parse_verdict(review), StageVerdict::Pass)
 }

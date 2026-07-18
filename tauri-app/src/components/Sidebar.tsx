@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ProjectTree } from './ProjectTree';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows';
+type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
 
 interface SidebarProps {
   activeTab: Tab;
@@ -13,6 +13,7 @@ interface SidebarProps {
   onSwitchLocalSession?: (name: string) => void;
   onNewLocalSession?: (name: string) => void;
   onConnectProject?: (id: string) => void;
+  onEditProject?: (id: string) => void;
 }
 
 const NavItem: React.FC<{
@@ -72,7 +73,7 @@ const NavItem: React.FC<{
 );
 
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onNewSession, onSwitchLocalSession, onNewLocalSession, onConnectProject }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onNewSession, onSwitchLocalSession, onNewLocalSession, onConnectProject, onEditProject }) => {
   // Collapse state — persisted in localStorage
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar-collapsed') === 'true'; } catch { return false; }
@@ -181,6 +182,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
                 { tab: 'sandbox' as Tab, icon: '🔒', label: '沙盒' },
                 { tab: 'plugins' as Tab, icon: '🧩', label: '插件' },
                 { tab: 'workflows' as Tab, icon: '🔄', label: '工作流' },
+                { tab: 'pipelines' as Tab, icon: '🚀', label: '流水线' },
                 { tab: 'models' as Tab, icon: '🧠', label: '模型' },
                 { tab: 'settings' as Tab, icon: '⚙️', label: '设置' },
               ];
@@ -205,23 +207,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
                 >{item.icon}</button>
               ));
             })()}
-            {/* Expand toggle */}
-            <button
-              onClick={(e) => { e.stopPropagation(); toggleNavCollapsed(); }}
-              title="展开导航"
-              style={{
-                width: '28px', height: '28px',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                borderRadius: '6px',
-                fontSize: '12px',
-                background: 'transparent',
-                border: '1px solid transparent',
-                cursor: 'pointer',
-                color: 'var(--text3)',
-              }}
-              onMouseOver={(e) => { e.currentTarget.style.background = 'var(--bg3)'; }}
-              onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; }}
-            >▼</button>
           </div>
         ) : (
           // Expanded nav: full items
@@ -233,13 +218,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
             <NavItem icon="🔒" label="沙盒" active={activeTab === 'sandbox'} badge={pendingChanges || undefined} collapsed={collapsed} onClick={() => onTabChange('sandbox')} />
             <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} collapsed={collapsed} onClick={() => onTabChange('plugins')} />
             <NavItem icon="🔄" label="工作流" active={activeTab === 'workflows'} collapsed={collapsed} onClick={() => onTabChange('workflows')} />
+            <NavItem icon="🚀" label="流水线" active={activeTab === 'pipelines'} collapsed={collapsed} onClick={() => onTabChange('pipelines')} />
             <NavItem icon="🧠" label="模型" active={activeTab === 'models'} collapsed={collapsed} onClick={() => onTabChange('models')} />
             <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} collapsed={collapsed} onClick={() => onTabChange('settings')} />
           </div>
         )}
 
         {/* ── Project Tree (Project-First) ── */}
-        <ProjectTree collapsed={collapsed} onOpenConnect={onOpenConnect} onSwitchLocalSession={onSwitchLocalSession} onNewLocalSession={onNewLocalSession} onConnectProject={onConnectProject} />
+        <ProjectTree collapsed={collapsed} onOpenConnect={onOpenConnect} onSwitchLocalSession={onSwitchLocalSession} onNewLocalSession={onNewLocalSession} onConnectProject={onConnectProject} onEditProject={onEditProject} />
 
       </div>
 

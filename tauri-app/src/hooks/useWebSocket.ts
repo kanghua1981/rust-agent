@@ -160,7 +160,6 @@ export const useWebSocket = () => {
     setPlugins,
     setAvailableModels,
     setActiveModel,
-    setPresets,
     setWorkflows,
     addWorkflow,
     updateWorkflow,
@@ -312,25 +311,6 @@ export const useWebSocket = () => {
     sendRaw({ type: 'rename_local_session', data: { old_name: oldName, new_name: newName } });
   }, [sendRaw]);
 
-  // ── Preset CRUD (global.db) ───────────────────────────────────────
-  const listPresets = useCallback(() => {
-    sendRaw({ type: 'list_presets', data: {} });
-  }, [sendRaw]);
-
-  const savePreset = useCallback((preset: any) => {
-    // Map newSessionOnConnect → newSession for the Rust backend
-    const serverPreset = { ...preset };
-    if (preset.newSessionOnConnect !== undefined) {
-      serverPreset.newSession = preset.newSessionOnConnect;
-      delete serverPreset.newSessionOnConnect;
-    }
-    sendRaw({ type: 'save_preset', data: serverPreset });
-  }, [sendRaw]);
-
-  const deletePreset = useCallback((id: string) => {
-    sendRaw({ type: 'delete_preset', data: { id } });
-  }, [sendRaw]);
-
   // ── Node CRUD (global.db) ──────────────────────────────────────────
   const listNodes = useCallback(() => {
     sendRaw({ type: 'list_nodes', data: {} });
@@ -389,6 +369,23 @@ export const useWebSocket = () => {
 
   const runWorkflow = useCallback((workflowId: string, task: string) => {
     sendRaw({ type: 'run_workflow', data: { workflowId, task } });
+  }, [sendRaw]);
+
+  // ── Pipeline CRUD (project-local .agent/pipelines/*.toml) ─────────
+  const listPipelines = useCallback(() => {
+    sendRaw({ type: 'list_pipelines', data: {} });
+  }, [sendRaw]);
+
+  const getPipeline = useCallback((name: string) => {
+    sendRaw({ type: 'get_pipeline', data: { name } });
+  }, [sendRaw]);
+
+  const savePipeline = useCallback((pipeline: any) => {
+    sendRaw({ type: 'save_pipeline', data: pipeline });
+  }, [sendRaw]);
+
+  const deletePipeline = useCallback((name: string) => {
+    sendRaw({ type: 'delete_pipeline', data: { name } });
   }, [sendRaw]);
 
   const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
@@ -477,47 +474,6 @@ export const useWebSocket = () => {
           timestamp: Date.now(),
         });
         break;
-
-      // ── Preset events (global.db) ─────────────────────────────────────
-      case 'presets_list': {
-        const serverPresets: any[] = event.data.presets || [];
-        // Map Rust field names → TS ConfigPreset (newSession → newSessionOnConnect)
-        const mapped = serverPresets.map((p: any) => ({
-          ...p,
-          newSessionOnConnect: p.newSession ?? p.newSessionOnConnect ?? false,
-        }));
-        // Merge with local presets (upsert by id) — never wipe local-only presets
-        const st = useAgentStore.getState();
-        const localPresets = st.presets;
-        const merged = new Map<string, any>();
-        for (const p of localPresets) merged.set(p.id, p);
-        for (const p of mapped) merged.set(p.id, p); // server wins on conflict
-        setPresets(Array.from(merged.values()));
-        break;
-      }
-
-      case 'preset_saved': {
-        const p = event.data.preset;
-        if (!p) break;
-        const mapped = {
-          ...p,
-          newSessionOnConnect: p.newSession ?? p.newSessionOnConnect ?? false,
-        };
-        const st = useAgentStore.getState();
-        const existing = st.presets.findIndex((x: any) => x.id === mapped.id);
-        if (existing >= 0) {
-          st.updatePreset(mapped.id, mapped);
-        } else {
-          st.addPreset(mapped);
-        }
-        break;
-      }
-
-      case 'preset_deleted': {
-        const st = useAgentStore.getState();
-        st.deletePreset(event.data.id);
-        break;
-      }
 
       // ── Node events (server-managed workspaces) ─────────────────────────
       case 'nodes_list': {
@@ -626,6 +582,33 @@ export const useWebSocket = () => {
           stageResults: [],
           errorMessage: event.data.message,
         } as any);
+        break;
+      }
+
+      // ── Pipeline events (project-local .agent/pipelines/*.toml) ──────
+      case 'pipelines_list': {
+        const st = useAgentStore.getState();
+        st.setPipelines(event.data.pipelines || []);
+        break;
+      }
+
+      case 'pipeline_loaded': {
+        const st = useAgentStore.getState();
+        st.setEditingPipeline(event.data.pipeline || null);
+        break;
+      }
+
+      case 'pipeline_saved': {
+        // Refresh the list
+        const st = useAgentStore.getState();
+        if (st.activeProjectId) {
+          // Re-fetch will be triggered by caller, or send a list_pipelines
+        }
+        break;
+      }
+
+      case 'pipeline_deleted': {
+        // Refresh the list
         break;
       }
 
@@ -1178,7 +1161,6 @@ export const useWebSocket = () => {
     }
 
     // Defensive: sync flat proxy → slot so the slot always has the latest serverUrl/workdir
-    // (e.g. when applyPreset updated the flat proxy but not the legacy 'default' slot)
     if (id === st.activeProjectId) {
       st._saveActiveSlot();  // sync metadata to slot before connecting
     }
@@ -1455,9 +1437,6 @@ export const useWebSocket = () => {
     newLocalSession,
     deleteLocalSession,
     renameLocalSession,
-    listPresets,
-    savePreset,
-    deletePreset,
     listNodes,
     addNode,
     updateNode,
@@ -1471,6 +1450,11 @@ export const useWebSocket = () => {
     saveWorkflow: sendSaveWorkflow,
     deleteWorkflow: sendDeleteWorkflow,
     runWorkflow,
+    // Pipeline CRUD
+    listPipelines,
+    getPipeline,
+    savePipeline,
+    deletePipeline,
     uploadFile,
     listPlugins,
     enablePlugin,

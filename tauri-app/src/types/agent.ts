@@ -30,14 +30,15 @@ export type ClientMessage =
   | ListEndpointsMessage
   | AddEndpointMessage
   | DeleteEndpointMessage
-  | ListPresetsMessage
-  | SavePresetMessage
-  | DeletePresetMessage
   | ListWorkflowsMessage
   | GetWorkflowMessage
   | SaveWorkflowMessage
   | DeleteWorkflowMessage
   | RunWorkflowMessage
+  | ListPipelinesMessage
+  | GetPipelineMessage
+  | SavePipelineMessage
+  | DeletePipelineMessage
   | ListNodesMessage
   | AddNodeMessage
   | UpdateNodeMessage
@@ -173,9 +174,6 @@ export type ServerEvent =
   | ModelDeletedEvent
   | EndpointAddedEvent
   | EndpointDeletedEvent
-  | PresetsListEvent
-  | PresetSavedEvent
-  | PresetDeletedEvent
   | NodesListEvent
   | NodeSavedEvent
   | NodeDeletedEvent
@@ -188,7 +186,11 @@ export type ServerEvent =
   | WorkflowDeletedEvent
   | WorkflowStartedEvent
   | WorkflowCompleteEvent
-  | WorkflowErrorEvent;
+  | WorkflowErrorEvent
+  | PipelinesListEvent
+  | PipelineLoadedEvent
+  | PipelineSavedEvent
+  | PipelineDeletedEvent;
 
 export interface SessionMeta {
   id: string;
@@ -715,22 +717,6 @@ export interface DeleteEndpointMessage extends BaseMessage {
   data: { name: string };
 }
 
-// ── Preset CRUD messages ───────────────────────────────────────────
-export interface ListPresetsMessage extends BaseMessage {
-  type: 'list_presets';
-  data: {};
-}
-
-export interface SavePresetMessage extends BaseMessage {
-  type: 'save_preset';
-  data: Record<string, any>;  // Preset fields (camelCase)
-}
-
-export interface DeletePresetMessage extends BaseMessage {
-  type: 'delete_preset';
-  data: { id: string };
-}
-
 // ── Workflow CRUD messages ─────────────────────────────────────────
 export interface ListWorkflowsMessage extends BaseMessage {
   type: 'list_workflows';
@@ -755,6 +741,56 @@ export interface DeleteWorkflowMessage extends BaseMessage {
 export interface RunWorkflowMessage extends BaseMessage {
   type: 'run_workflow';
   data: { workflowId: string; task: string };
+}
+
+// ── Pipeline types ─────────────────────────────────────────────────
+export interface StageDef {
+  id: string;
+  name: string;
+  role?: string;
+  model?: string;
+  tools?: 'read_only' | 'all';
+  context?: 'shared' | 'isolated';
+  system_prompt?: string;
+  initial_message?: string;
+  inputs?: string[];
+  artifact?: string;
+  on_pass?: string;
+  on_fail?: string;
+  max_retries?: number;
+}
+
+export interface PipelineDef {
+  name: string;
+  description: string;
+  stages: StageDef[];
+}
+
+export interface PipelineInfo {
+  name: string;
+  description: string;
+  stage_count: number;
+}
+
+// ── Pipeline CRUD messages ─────────────────────────────────────────
+export interface ListPipelinesMessage extends BaseMessage {
+  type: 'list_pipelines';
+  data: {};
+}
+
+export interface GetPipelineMessage extends BaseMessage {
+  type: 'get_pipeline';
+  data: { name: string };
+}
+
+export interface SavePipelineMessage extends BaseMessage {
+  type: 'save_pipeline';
+  data: PipelineDef;
+}
+
+export interface DeletePipelineMessage extends BaseMessage {
+  type: 'delete_pipeline';
+  data: { name: string };
 }
 
 export interface PluginsListEvent extends BaseMessage {
@@ -813,22 +849,6 @@ export interface EndpointAddedEvent extends BaseMessage {
 export interface EndpointDeletedEvent extends BaseMessage {
   type: 'endpoint_deleted';
   data: { name: string };
-}
-
-// ── Preset events ───────────────────────────────────────────────────
-export interface PresetsListEvent extends BaseMessage {
-  type: 'presets_list';
-  data: { presets: any[] };
-}
-
-export interface PresetSavedEvent extends BaseMessage {
-  type: 'preset_saved';
-  data: { preset: any };
-}
-
-export interface PresetDeletedEvent extends BaseMessage {
-  type: 'preset_deleted';
-  data: { id: string };
 }
 
 // ── Node CRUD client messages (server-managed workspaces) ─────────────
@@ -965,6 +985,27 @@ export interface WorkflowErrorEvent extends BaseMessage {
   data: { message: string };
 }
 
+// ── Pipeline events ─────────────────────────────────────────────────
+export interface PipelinesListEvent extends BaseMessage {
+  type: 'pipelines_list';
+  data: { pipelines: PipelineInfo[] };
+}
+
+export interface PipelineLoadedEvent extends BaseMessage {
+  type: 'pipeline_loaded';
+  data: { pipeline: PipelineDef };
+}
+
+export interface PipelineSavedEvent extends BaseMessage {
+  type: 'pipeline_saved';
+  data: { name: string };
+}
+
+export interface PipelineDeletedEvent extends BaseMessage {
+  type: 'pipeline_deleted';
+  data: { name: string };
+}
+
 // ── Workflow data types ─────────────────────────────────────────────
 export interface WorkflowStage {
   id: string;
@@ -1050,28 +1091,6 @@ export interface FileInfo {
   type: 'file' | 'directory';
   size?: number;
   modified?: number;
-}
-
-// 配置预设
-/** @deprecated Use ProjectDefinition instead. Preserved for backward compat with server-side presets table. */
-export interface ConfigPreset {
-  id: string;
-  name: string;
-  serverUrl: string;
-  workdir?: string;
-  model?: string;
-  autoApprove: boolean;
-  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
-  isolation?: 'normal' | 'container' | 'sandbox';
-  nodeRef?: string;                      // reference a server-side Node for workdir/isolation
-  newSessionOnConnect?: boolean;
-  newSession?: boolean;  // from Rust backend (camelCase of new_session)
-  icon?: string;
-  color?: string;
-  tags?: string[];
-  sortOrder?: number;
-  createdAt: string;
-  updatedAt?: string;
 }
 
 // ── Project-First Architecture ─────────────────────────────────────
