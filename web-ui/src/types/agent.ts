@@ -355,8 +355,9 @@ export interface UserMessage extends BaseMessage {
   type: 'user_message';
   data: {
     text: string;
-    workdir?: string;  // 可选的工作目录
-    model?: string;    // 可选的模型
+    workdir?: string;     // 可选的工作目录
+    model?: string;       // 可选的模型
+    pipeline_name?: string; // 可选：指定执行的 pipeline 名称
   };
 }
 

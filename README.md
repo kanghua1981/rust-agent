@@ -4,18 +4,16 @@
 
 ## ✨ 特性
 
-- **🔧 工具系统**: 内置 22 种工具 — 文件读写、多文件批量读取、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF/电子书读取、浏览器自动化、内部推理、外部服务连接；另支持动态脚本工具（tool.json）
+- **🔧 工具系统**: 内置 26 种工具 — 文件读写、批量文件操作、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF 读取、浏览器自动化、内部推理、外部服务连接、多 Agent 协作、任务管理、技能与记忆管理；另支持动态脚本工具（`tool.json`）
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
-- **🔀 多角色流水线**: 配置独立的 Planner / Executor / Checker 角色各用不同模型，自动路由，完全透明
-- **⚡ 执行前背景注入**: approve 计划时可附带背景上下文，直达 Executor 初始 prompt
-- **🛑 执行中实时指导**: Pipeline 运行时按 `Ctrl+\` 随时暂停并向 Executor 注入补充信息
-- **�🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
+- **🔀 自定义流水线**: 通过 `.agent/pipelines/*.toml` 定义 DAG 多阶段流水线，每个阶段独立配置角色、模型、工具集、上下文隔离模式（shared/isolated）、artifact 传递与自定义跳转（`on_pass`/`on_fail`）；Web UI 可视化编辑，发送消息时一键选择
+- **🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
 - **📡 四种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器、**MCP 工具服务器**（Claude Desktop / Cursor 直接接入）
 - **🔌 MCP 双向支持**: **作为 MCP 服务器**（`--mode mcp`）向任何 MCP 主机暴露全部内置工具；**作为 MCP 客户端**（`mcp.toml`）自动连接外部 MCP 服务器并将其工具注册到 Agent 工具列表，LLM 透明调用
 - **🌐 多 Provider 支持**: Anthropic Claude、OpenAI GPT、以及任何兼容的 API
 - **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换
-- **📜 对话持久化**: 支持上下文保持、会话保存与恢复
+- **📜 对话持久化**: 支持上下文保持、多会话管理、会话保存与恢复
 - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识；兼容 [OpenClaw AgentSkills](https://agentskills.io/) 格式（`SKILL.md`），可直接使用社区发布的技能包
 - **🧩 动态工具**: 在 Skill 目录加一个 `tool.json` 即可注册新工具，参数 JSON 通过 stdin 传递给任意 shell 脚本/可执行文件
 - **🔌 插件系统**: 在 `.agent/plugins/` 下放置独立插件目录，每个插件可携带工具、技能、Hooks 和自定义系统提示词；三种 Hook 模式（`fire_and_forget` / `blocking` / `intercepting`）覆盖 `agent.start`、`tool.before/after`、`router.decision`、`plan.complete` 等所有关键节点，无需修改任何 Rust 代码
@@ -115,41 +113,118 @@ api_key = "sk-xxxxx"  # 可选，不设则 fallback 到环境变量
 
 > **提示**: `.env` 文件仍然有效，推荐只放 API Key；模型/provider/base_url 的管理交给 `models.toml`。
 
-### 多角色流水线（可选）
+### 自定义流水线（`.agent/pipelines/*.toml`）
 
-在 `models.toml` 中配置角色，让不同 LLM 分别负责**规划 / 实施 / 审核**：
+通过 `.agent/pipelines/` 下的 TOML 文件定义**多阶段 DAG 流水线**，每个阶段（stage）可独立配置模型、角色、工具集和上下文策略，阶段之间通过 artifact 传递结果并支持自定义跳转。
+
+#### 核心概念
+
+| 概念 | 说明 |
+|---|---|
+| `stages` | 流水线阶段列表，每个阶段有唯一 `id` |
+| `role` | 阶段角色，引用 `models.toml` 中的 `[roles.<name>]` 定义 |
+| `tools` | 工具集：`"all"` 全部工具 / `"read_only"` 只读工具 |
+| `context` | 上下文隔离：`"shared"` 共享全对话 / `"isolated"` 只继承 artifact |
+| `initial_message` | 阶段初始 prompt，支持 `{{task}}` 和 `{{inputs.xxx}}` 模板变量 |
+| `inputs` | 从上游阶段 artifact 注入的数据，模板中引用 `{{inputs.xxx}}` |
+| `artifact` | 阶段产出文件路径（如 `.agent/artifacts/analysis.md`） |
+| `on_pass` / `on_fail` | 自定义 DAG 跳转：可指向下一阶段 `id` 或 `"done"` |
+| `max_retries` | 失败重试次数（默认 0） |
+
+#### 示例：四阶段代码评审流水线
 
 ```toml
-# 开启流水线（设为 true 后所有用户输入自动走三角色流程，无需新命令）
-[pipeline]
-enabled = false
-stages = ["planner", "executor", "checker"]
-max_checker_retries = 2       # Checker 审核失败后允许 Executor 重试次数
-require_plan_confirm = true   # Planner 完成后展示计划，等待用户确认再执行
+# .agent/pipelines/review.toml
+name = "review"
+description = "分析→编码→自查→独立评审"
 
-# 规划者：使用顶配推理模型，只读探索代码库，产出带风险提示的执行计划
-[roles.planner]
-model = "sonnet"
-extra_instructions = """
-优先关注 Rust 所有权规则和借用检查器可能引发的问题。
+[[stages]]
+id = "analyze"
+name = "需求分析"
+role = "planner"
+tools = "read_only"
+context = "shared"
+initial_message = """
+分析以下任务并输出结构化报告：
+{{task}}
+
+请从以下维度分析：
+1. 影响范围  2. 技术方案  3. 风险评估  4. 建议步骤（不执行）
+将分析报告写入 artifact 文件。
 """
+artifact = ".agent/artifacts/analysis.md"
+on_pass = "code"
+on_fail = "done"
 
-# 实施者：使用成本更低的编码模型，按计划严格执行，产出修改摘要
-[roles.executor]
-model = "deepseek"
-extra_instructions = """
-每次修改后运行 cargo build 验证编译通过。
+[[stages]]
+id = "code"
+name = "代码实现"
+role = "executor"
+tools = "all"
+context = "isolated"
+system_prompt = "你是高效的代码实现专家。直接动手改，不要重复分析。"
+initial_message = """
+分析报告：{{inputs.analysis}}
+原始任务：{{task}}
+请按照分析报告中的步骤逐一实现。每完成一步，read_file 确认改动。
 """
+inputs = ["analysis.md"]
+artifact = ".agent/artifacts/implementation.md"
+on_pass = "self_check"
+on_fail = "self_check"
 
-# 审核者：独立阅读实际文件内容，不依赖实施者自述，运行测试后给出 PASS/FAIL
-[roles.checker]
-model = "sonnet"
+[[stages]]
+id = "self_check"
+name = "代码自查"
+role = "executor"
+tools = "all"
+context = "shared"
+initial_message = """
+对照分析报告，自查实现是否完整。
+如果发现遗漏，立即补上。完成后输出 PASS 或 FAIL。
+"""
+inputs = ["analysis.md", "implementation.md"]
+artifact = ".agent/artifacts/self_check.md"
+on_pass = "review"
+on_fail = "code"
+max_retries = 2
+
+[[stages]]
+id = "review"
+name = "独立代码评审"
+tools = "read_only"
+context = "isolated"
+system_prompt = "你是独立的代码评审专家。只基于事实说话——亲自读取文件验证。"
+initial_message = """
+独立评审实现：读取被修改的文件，运行构建验证，对照分析报告检查。
+最终输出 REVIEW_ARTIFACT — PASS ✅ 或 FAIL ❌。
+"""
+inputs = ["analysis.md", "implementation.md", "self_check.md"]
+artifact = ".agent/artifacts/review.md"
+on_pass = "done"
+on_fail = "code"
+max_retries = 3
 ```
 
-**如何查看当前角色配置**：运行 `/model` 命令，会显示流水线状态和各角色绑定的模型。
+#### 角色定义（`models.toml`）
 
-**自定义角色提示词**：提示词优先级为：
-`内置默认` → `~/.config/rust_agent/roles/<role>.md` → `.agent/roles/<role>.md` → `models.toml extra_instructions`
+Stage 的 `role` 引用全局 `~/.config/rust_agent/models.toml` 中的角色定义：
+
+```toml
+[roles.planner]
+model = "sonnet"
+extra_instructions = "使用只读工具探索代码库，输出可执行计划。"
+
+[roles.executor]
+model = "deepseek"
+extra_instructions = "每次修改后运行 cargo build 验证。"
+```
+
+#### 使用方式
+
+- **Web UI**：消息输入框旁的 🚀 Pipeline 下拉菜单，选择后发送消息即按所选流水线执行；支持在 PipelinePanel 中可视化创建/编辑流水线
+- **CLI**：`/mode pipeline` 切换后输入消息自动走默认流水线
+- **老版本兼容**：`models.toml` 的 `[pipeline]` 三阶段固定模式仍可用，但推荐迁移到 `.agent/pipelines/` 自定义格式
 
 详细设计见 [docs/MULTI_ROLE_DESIGN.md](docs/MULTI_ROLE_DESIGN.md)。
 
@@ -811,8 +886,13 @@ src/
 ├── model_manager.rs # 模型管理（models.toml 读写、RoleConfig、PipelineConfig）
 ├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput / WsOutput 实现
 ├── cli.rs           # 交互式 REPL 循环 (rustyline)，斜杠命令处理
-├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式 + 角色分发
-├── pipeline.rs      # (Phase 3) 多角色流水线 Runner，Artifact 传递与反馈环
+├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式 + 流水线角色分发
+├── pipeline/         # 自定义 DAG 流水线引擎
+│   ├── mod.rs        # 模块入口
+│   ├── loader.rs     # 流水线 TOML 加载与验证
+│   ├── dag.rs        # DAG 阶段图构建与拓扑排序
+│   ├── runner.rs     # 流水线执行引擎（shared/isolated 上下文、artifact 传递）
+│   └── deprecated.rs # 旧版三阶段固定流水线（向后兼容）
 ├── conversation.rs  # 对话历史：Message / ContentBlock 数据模型，system prompt 构建
 ├── context.rs       # 上下文窗口管理、自动截断（保持 tool_use/tool_result 配对完整）
 ├── streaming.rs     # Anthropic SSE 流式输出（通过 &dyn AgentOutput 解耦）
@@ -994,37 +1074,6 @@ Plan 阶段允许使用只读工具和**只读 shell 命令**（`git status/log/
 
 ---
 
-## ⚡ Pipeline 执行干预
-
-使用自动 Pipeline（Planner → Executor → Checker）时，有两个时机可以向执行器注入你的知识：
-
-### 1. Approve 时附带背景（最推荐）
-
-计划审核输入 `y` 后，系统会追加询问背景信息：
-
-```
-   Review: [y] approve  [n] reject  [type feedback to refine]
-   > y
-   Context: add background info for the executor (Enter to skip)
-   > 新分支已将 module.rs 重构为 foo/mod.rs + foo/types.rs + foo/handler.rs，旧路径已删除
-```
-
-这段内容以最高优先级注入 Executor 的初始 prompt，LLM 在第一步就能感知到。
-
-### 2. 执行中随时打断（Ctrl+\）
-
-Executor 运行期间，在任意 LLM 迭代之间按 `Ctrl+\` 暂停并追加指导：
-
-```
-⚡ Guidance: type a note for the executor (or press Enter to continue)
-   > 等一下，那个文件已经被删了，应该去看 src/driver/new_gpio.c
-💡 Guidance injected into executor context.
-```
-
-> `Ctrl+C` 中断执行 | `Ctrl+\` 暂停注入后继续
-
----
-
 ## ✏️ 自定义系统提示词
 
 可以通过 Markdown 文件自定义 LLM 的系统提示词：
@@ -1111,6 +1160,11 @@ your-project/
     │   ├── planner.md
     │   ├── executor.md
     │   └── checker.md
+    ├── pipelines/                  # 自定义 DAG 流水线定义
+    │   └── example.toml            # 流水线配置（多阶段编排）
+    ├── artifacts/                  # 流水线阶段产物（自动生成）
+    │   ├── analysis.md
+    │   └── implementation.md
     ├── skills/                     # 项目级 Skills
     │   ├── coding-style.md
     │   └── my-tool/                # 目录 Skill（SKILL.md + tool.json + 脚本）
@@ -1127,6 +1181,7 @@ your-project/
 ```
 .agent/memory.md
 .agent/sessions/
+.agent/artifacts/
 ```
 
 ---

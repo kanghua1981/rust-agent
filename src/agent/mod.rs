@@ -67,6 +67,9 @@ pub struct Agent {
     /// When set, overrides the adaptive router for every message.
     /// `None` means use the normal router logic.
     pub force_mode: Option<crate::router::ExecutionMode>,
+    /// When set, overrides the pipeline name from models.toml for this request.
+    /// Set by worker.rs from the `user_message.pipeline_name` field.
+    pub force_pipeline_name: Option<String>,
     /// Plugin manager for plugin system integration
     pub plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
     /// Hook 事件总线（与 PluginManager 共享同一 Arc）
@@ -254,6 +257,7 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+            force_pipeline_name: None,
             plugin_manager,
             hook_bus: None,
             knowledge_extract_turns: 0,
@@ -329,6 +333,7 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
+            force_pipeline_name: None,
             plugin_manager,
             hook_bus: None,
             knowledge_extract_turns: 0,
@@ -518,12 +523,18 @@ impl Agent {
 
     /// Load the active pipeline definition from `.agent/pipelines/`.
     /// Falls back to the built-in default if no pipeline files exist.
+    ///
+    /// Priority: `force_pipeline_name` → `models.toml [pipeline] default_pipeline` → `"default"`
     pub fn load_pipeline(&self) -> Result<crate::pipeline::dag::PipelineDef> {
         let pipeline_name = self
-            .models_cfg
-            .pipeline
-            .as_ref()
-            .and_then(|p| p.default_pipeline.as_deref())
+            .force_pipeline_name
+            .as_deref()
+            .or_else(|| {
+                self.models_cfg
+                    .pipeline
+                    .as_ref()
+                    .and_then(|p| p.default_pipeline.as_deref())
+            })
             .unwrap_or("default");
         crate::pipeline::loader::load_pipeline(&self.project_dir, pipeline_name)
     }

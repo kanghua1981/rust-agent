@@ -180,7 +180,7 @@ export const useWebSocket = () => {
 
     const ok = sendRaw({
       type: 'user_message',
-      data: { text, workdir: st.workdir, model: st.config.model },
+      data: { text, workdir: st.workdir, model: st.config.model, pipeline_name: st.selectedPipeline },
       id: userMsgId,
     });
 

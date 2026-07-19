@@ -126,7 +126,7 @@ export const WorkflowPanel: React.FC<WorkflowPanelProps> = ({
     accent: 'var(--accent, #7c3aed)',
     green: 'var(--green, #22c55e)',
     red: 'var(--red, #ef4444)',
-    inputBg: 'var(--input-bg, #0f0f23)',
+    inputBg: 'var(--bg3, #1a1d2a)',
   };
 
   const inputStyle: React.CSSProperties = {

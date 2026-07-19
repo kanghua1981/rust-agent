@@ -9,7 +9,7 @@ interface Props {
 }
 
 export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpload }) => {
-  const { connectionStatus, isProcessing, currentMessage, setCurrentMessage } = useAgentStore();
+  const { connectionStatus, isProcessing, currentMessage, setCurrentMessage, pipelines, selectedPipeline, setSelectedPipeline } = useAgentStore();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // sendDisabled: blocks regular ↑ send when agent is busy
@@ -147,6 +147,32 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
           </button>
         ) : (
           <>
+            {/* ── Pipeline selector ── */}
+            {pipelines.length > 0 && (
+              <select
+                value={selectedPipeline}
+                onChange={(e) => setSelectedPipeline(e.target.value)}
+                title="选择执行的 Pipeline"
+                style={{
+                  height: '36px',
+                  background: 'var(--bg3)',
+                  color: 'var(--text2)',
+                  border: '1px solid var(--border2)',
+                  borderRadius: '9px',
+                  fontSize: '13px',
+                  padding: '0 8px',
+                  flexShrink: 0,
+                  cursor: 'pointer',
+                  maxWidth: '140px',
+                }}
+              >
+                {pipelines.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    🚀 {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
             {onUpload && (
               <>
                 <input

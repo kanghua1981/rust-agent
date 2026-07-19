@@ -219,7 +219,7 @@ export const NodesPanel: React.FC<NodesPanelProps> = ({
 
   const inputStyle: React.CSSProperties = {
     width: '100%', padding: '8px 10px', fontSize: '12px',
-    background: 'var(--bg2)', border: '1px solid var(--border)',
+    background: 'var(--bg3)', border: '1px solid var(--border2)',
     borderRadius: '6px', color: 'var(--text)', outline: 'none',
     boxSizing: 'border-box',
   };

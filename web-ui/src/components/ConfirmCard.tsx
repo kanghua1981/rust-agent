@@ -35,7 +35,7 @@ export const ConfirmCard: React.FC<Props> = ({ confirmation, onConfirm, onAnswer
             onKeyDown={(e) => { if (e.key === 'Enter' && answer.trim()) { onAnswer?.(confirmation.id, answer); setAnswer(''); } }}
             placeholder="输入回答…"
             style={{
-              flex: 1, padding: '7px 10px', background: 'var(--bg)',
+              flex: 1, padding: '7px 10px', background: 'var(--bg3)',
               border: '1px solid var(--border)', borderRadius: '7px',
               color: 'var(--text)', outline: 'none',
             }}
@@ -71,7 +71,7 @@ export const ConfirmCard: React.FC<Props> = ({ confirmation, onConfirm, onAnswer
         </div>
         {confirmation.details && (
           <pre style={{
-            background: 'var(--bg)', border: '1px solid var(--border)',
+            background: 'var(--bg3)', border: '1px solid var(--border)',
             borderRadius: '6px', padding: '10px', fontSize: '12px',
             overflowX: 'auto', maxHeight: '200px', overflowY: 'auto',
             color: 'var(--text)', margin: '0 0 10px', whiteSpace: 'pre-wrap',
@@ -85,7 +85,7 @@ export const ConfirmCard: React.FC<Props> = ({ confirmation, onConfirm, onAnswer
           placeholder="可选：对计划的反馈意见…"
           rows={2}
           style={{
-            width: '100%', padding: '7px 10px', background: 'var(--bg)',
+            width: '100%', padding: '7px 10px', background: 'var(--bg3)',
             border: '1px solid var(--border)', borderRadius: '7px',
             color: 'var(--text)', resize: 'vertical', outline: 'none', marginBottom: '10px',
           }}
@@ -126,7 +126,7 @@ export const ConfirmCard: React.FC<Props> = ({ confirmation, onConfirm, onAnswer
           <p style={{ fontSize: '13px', color: 'var(--text)' }}>{confirmation.action}</p>
           {confirmation.details && (
             <pre style={{
-              marginTop: '8px', background: 'var(--bg)',
+              marginTop: '8px', background: 'var(--bg3)',
               border: '1px solid var(--border)', borderRadius: '6px',
               padding: '8px', fontSize: '12px',
               overflowX: 'auto', maxHeight: '150px', overflowY: 'auto',

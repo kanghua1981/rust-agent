@@ -127,6 +127,8 @@ interface AgentState {
   pipelines: PipelineInfo[];
   /** Currently loaded pipeline for editing */
   editingPipeline: PipelineDef | null;
+  /** Currently selected pipeline name for task dispatch */
+  selectedPipeline: string;
 
   // ── Connection lifecycle actions ──
   createConnectionSlot: (id: string, label: string, serverUrl: string, workdir?: string) => void;
@@ -188,6 +190,7 @@ interface AgentState {
   // Pipeline CRUD
   setPipelines: (pipelines: PipelineInfo[]) => void;
   setEditingPipeline: (pipeline: PipelineDef | null) => void;
+  setSelectedPipeline: (name: string) => void;
   clearSession: () => void;
   setNodeList: (nodes: VirtualNodeInfo[]) => void;
   setPeerList: (peers: any[]) => void;
@@ -303,6 +306,7 @@ const initialState = {
   workflows: [] as WorkflowDef[],
   pipelines: [] as PipelineInfo[],
   editingPipeline: null as PipelineDef | null,
+  selectedPipeline: 'default',
   activeRun: null as WorkflowRunResult | null,
   config: {
     serverUrl: defaultUrl,
@@ -821,6 +825,9 @@ export const useAgentStore = create<AgentState>()(
 
       setEditingPipeline: (editingPipeline) =>
         set({ editingPipeline }),
+
+      setSelectedPipeline: (selectedPipeline) =>
+        set({ selectedPipeline }),
 
       setActiveRun: (run) =>
         set({ activeRun: run }),

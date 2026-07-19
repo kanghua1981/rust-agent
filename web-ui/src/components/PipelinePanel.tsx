@@ -125,12 +125,12 @@ export const PipelinePanel: React.FC<PipelinePanelProps> = ({
       background: 'var(--red)', color: '#fff', cursor: 'pointer', fontSize: '12px',
     } as React.CSSProperties,
     input: {
-      width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border)',
-      background: 'var(--bg)', color: 'var(--text)', fontSize: '12px', boxSizing: 'border-box' as any,
+      width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border2)',
+      background: 'var(--bg3)', color: 'var(--text)', fontSize: '12px', boxSizing: 'border-box' as any,
     },
     textarea: {
-      width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border)',
-      background: 'var(--bg)', color: 'var(--text)', fontSize: '11px', minHeight: '60px',
+      width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border2)',
+      background: 'var(--bg3)', color: 'var(--text)', fontSize: '11px', minHeight: '60px',
       fontFamily: 'monospace', boxSizing: 'border-box' as any, resize: 'vertical' as any,
     },
     label: { fontSize: '11px', fontWeight: 600, color: 'var(--text3)', marginBottom: '4px', display: 'block' } as React.CSSProperties,
