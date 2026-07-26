@@ -1,6 +1,18 @@
 use super::{Tool, ToolDefinition, ToolResult};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::fs;
+
+/// Structured directory entry for JSON serialization (Web UI directory tree).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<DirEntry>,
+}
 
 pub struct ListDirTool;
 
@@ -180,6 +192,85 @@ impl ListDirTool {
         );
 
         ToolResult::success(result)
+    }
+
+    /// Structured directory list for the Web UI file explorer.
+    /// Returns a tree of `DirEntry` nodes suitable for JSON serialization.
+    /// Skips hidden files, `target/`, and `node_modules/` — same policy as the LLM tool.
+    pub async fn list_structured(path: &Path, project_dir: &Path) -> Result<Vec<DirEntry>, String> {
+        let resolved = resolve_path(path, project_dir);
+        if !resolved.exists() {
+            return Err(format!("Directory '{}' does not exist", resolved.display()));
+        }
+        if !resolved.is_dir() {
+            return Err(format!("'{}' is not a directory", resolved.display()));
+        }
+        let children = list_entries(project_dir, &resolved).await
+            .map_err(|e| format!("Failed to list directory: {}", e))?;
+        Ok(children)
+    }
+}
+
+/// List a single directory level, returning structured entries.
+/// Directories first, then files. Skips hidden, target/, node_modules/.
+async fn list_entries(base: &Path, dir: &Path) -> std::io::Result<Vec<DirEntry>> {
+    let mut read_dir = fs::read_dir(dir).await?;
+    let mut items: Vec<DirEntry> = Vec::new();
+
+    while let Some(entry) = read_dir.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip hidden files and common ignored directories
+        if name.starts_with('.') || name == "target" || name == "node_modules" {
+            continue;
+        }
+
+        let metadata = entry.metadata().await?;
+        let relative = entry
+            .path()
+            .strip_prefix(base)
+            .unwrap_or(&entry.path())
+            .display()
+            .to_string();
+
+        if metadata.is_dir() {
+            items.push(DirEntry {
+                name,
+                path: relative,
+                is_dir: true,
+                size: None,
+                children: Vec::new(),
+            });
+        } else {
+            items.push(DirEntry {
+                name,
+                path: relative,
+                is_dir: false,
+                size: Some(metadata.len()),
+                children: Vec::new(),
+            });
+        }
+    }
+
+    // Sort: directories first, then by name
+    items.sort_by(|a, b| {
+        if a.is_dir == b.is_dir {
+            a.name.cmp(&b.name)
+        } else if a.is_dir {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    });
+
+    Ok(items)
+}
+
+fn resolve_path(path: &Path, project_dir: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_dir.join(path)
     }
 }
 

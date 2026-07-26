@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult, PipelineInfo, PipelineDef } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult, PipelineInfo, PipelineDef, DirEntry } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 import { runMigration } from '../utils/migration';
 
@@ -110,6 +110,11 @@ interface AgentState {
   activeModel: string | null;
   endpoints: EndpointInfo[];
 
+  // ── File browser (per-project, not persisted) ──
+  dirCache: Record<string, DirEntry[]>;
+  expandedDirs: Set<string>;
+  changedFilesMap: Record<string, string>;
+
   // ── Global shared state (not per-connection) ──
   clusterToken: string;
   currentPath: string;
@@ -204,6 +209,12 @@ interface AgentState {
   setAvailableModels: (models: ModelInfo[]) => void;
   setActiveModel: (alias: string | null) => void;
   setActiveRun: (run: WorkflowRunResult | null) => void;
+
+  // ── File browser actions ──
+  setDirEntries: (path: string, entries: DirEntry[]) => void;
+  toggleDirExpanded: (path: string) => void;
+  clearDirCache: () => void;
+
   reset: () => void;
 }
 
@@ -287,6 +298,11 @@ const initialState = {
   availableModels: [] as ModelInfo[],
   activeModel: null as string | null,
   endpoints: [] as import('../types/agent').EndpointInfo[],
+
+  // ── File browser ──
+  dirCache: {} as Record<string, DirEntry[]>,
+  expandedDirs: new Set<string>(),
+  changedFilesMap: {} as Record<string, string>,
 
   // ── Global shared ──
   clusterToken: '',
@@ -574,6 +590,9 @@ export const useAgentStore = create<AgentState>()(
         set({
           connections: updated,
           projectSlots: updated,   // keep in sync (Project-First)
+          // Clear file browser cache (per-project state)
+          dirCache: {},
+          expandedDirs: new Set(),
           activeConnectionId: id,
           activeProjectId: id,     // keep in sync (Project-First)
           connectionStatus: target.connectionStatus,
@@ -663,8 +682,15 @@ export const useAgentStore = create<AgentState>()(
       setPendingChanges: (count) =>
         set(syncActiveSlot({ pendingChanges: count })),
 
-      setSandboxChangesData: (data) =>
-        set(syncActiveSlot({ sandboxChangesData: data })),
+      setSandboxChangesData: (data) => {
+        const changedFilesMap: Record<string, string> = {};
+        if (data) {
+          for (const f of data) {
+            changedFilesMap[f.path] = f.kind;
+          }
+        }
+        set(syncActiveSlot({ sandboxChangesData: data, changedFilesMap }));
+      },
 
       setSessionInfo: (info) =>
         set(syncActiveSlot({ sessionInfo: info })),
@@ -831,6 +857,22 @@ export const useAgentStore = create<AgentState>()(
 
       setActiveRun: (run) =>
         set({ activeRun: run }),
+
+      // ── File browser actions ────────────────────────────────────
+      setDirEntries: (path, entries) =>
+        set((state) => ({
+          dirCache: { ...state.dirCache, [path]: entries },
+        })),
+
+      toggleDirExpanded: (path) =>
+        set((state) => {
+          const next = new Set(state.expandedDirs);
+          if (next.has(path)) { next.delete(path); } else { next.add(path); }
+          return { expandedDirs: next };
+        }),
+
+      clearDirCache: () =>
+        set({ dirCache: {}, expandedDirs: new Set() }),
 
       // ── Project CRUD (Project-First Architecture) ──────────────
       addProject: (project) =>

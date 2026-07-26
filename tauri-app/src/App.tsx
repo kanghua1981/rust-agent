@@ -3,17 +3,14 @@ import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { InputArea } from './components/InputArea';
-import { ToolsPanel } from './components/ToolsPanel';
 import { SettingsPanel } from './components/SettingsPanel';
-import { SessionsPanel } from './components/SessionsPanel';
-import { SandboxPanel } from './components/SandboxPanel';
 import { NodesPanel } from './components/NodesPanel';
-import { TaskPanelList } from './components/TaskPanelList';
 import { PluginsPanel } from './components/PluginsPanel';
 import { WorkflowPanel } from './components/WorkflowPanel';
 import { ProjectTabs } from './components/ProjectTabs';
 import { ProjectDialog } from './components/ProjectDialog';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { RightPanel } from './components/RightPanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './stores/agentStore';
 import { useAgentPool } from './hooks/useAgentPool';
@@ -22,15 +19,17 @@ import { ModelsPanel } from './components/ModelsPanel';
 import { CommandPalette, CommandAction } from './components/CommandPalette';
 import { PipelinePanel } from './components/PipelinePanel';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
+type Tab = 'chat' | 'settings' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
+type RightTab = 'browse' | 'changes' | 'tasks';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
+  const [rightTab, setRightTab] = useState<RightTab>('browse');
   const [showConnect, setShowConnect] = useState(false);
   const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow, listLocalSessions, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listPipelines, getPipeline, savePipeline, deletePipeline } = useWebSocket();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow, listLocalSessions, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listPipelines, getPipeline, savePipeline, deletePipeline, listDir, openFileExternal } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -188,10 +187,7 @@ function App() {
       // 面板导航
       ...([
         ['chat', '对话', '💬'],
-        ['tools', '工具调用', '🔨'],
         ['nodes', '节点', '🌐'],
-        ['sessions', '会话管理', '📚'],
-        ['sandbox', '沙盒', '🔒'],
         ['plugins', '插件', '🧩'],
         ['models', '模型管理', '🧠'],
         ['settings', '设置', '⚙️'],
@@ -304,7 +300,6 @@ function App() {
             onTabChange={setActiveTab}
             onOpenConnect={() => handleOpenConnect()}
             onQuickConnect={handleConnect}
-            onNewSession={newSession}
             onSwitchLocalSession={switchLocalSession}
             onNewLocalSession={newLocalSession}
             onConnectProject={(id: string) => connect(id)}
@@ -331,9 +326,7 @@ function App() {
               <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} onUpload={handleUpload} />
             </>
           )}
-          {activeTab === 'tools' && <ToolsPanel />}
           {activeTab === 'nodes' && <NodesPanel isConnected={connectionStatus === 'connected'} onListNodes={listNodes} onAddNode={addNode} onUpdateNode={updateNode} onDeleteNode={deleteNode} onListPeers={listPeers} onAddPeer={addPeer} onUpdatePeer={updatePeer} onDeletePeer={deletePeer} />}
-          {activeTab === 'sessions' && <SessionsPanel onSwitchToChat={() => setActiveTab('chat')} isConnected={connectionStatus === 'connected'} onListSessions={listSessions} onDeleteSession={deleteSession} onLoadSessionById={loadSessionById} onListLocalSessions={listLocalSessions} onSwitchLocalSession={switchLocalSession} onNewLocalSession={newLocalSession} onDeleteLocalSession={deleteLocalSession} onRenameLocalSession={renameLocalSession} />}
           {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />}
           {activeTab === 'plugins' && <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />}
           {activeTab === 'workflows' && <WorkflowPanel
@@ -351,18 +344,19 @@ function App() {
             deletePipelineWs={deletePipeline}
           />}
           {activeTab === 'models' && <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />}
-          {activeTab === 'sandbox' && (
-            <SandboxPanel
-              onSandboxListChanges={sandboxListChanges}
-              onCommit={sandboxCommit}
-              onCommitFile={sandboxCommitFile}
-              onRollback={sandboxRollback}
-            />
-          )}
           </ErrorBoundary>
         </main>
         <ErrorBoundary>
-          <TaskPanelList />
+          <RightPanel
+            activeTab={rightTab}
+            onTabChange={setRightTab}
+            onListDir={listDir}
+            onOpenFile={openFileExternal}
+            onSandboxListChanges={sandboxListChanges}
+            onCommit={sandboxCommit}
+            onCommitFile={sandboxCommitFile}
+            onRollback={sandboxRollback}
+          />
         </ErrorBoundary>
         </div>
       </div>

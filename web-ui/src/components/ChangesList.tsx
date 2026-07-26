@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { useAgentStore } from '../stores/agentStore';
+import React, { useState } from 'react';
+import { useAgentStore, SandboxFileChange } from '../stores/agentStore';
 import { DiffViewer } from './DiffViewer';
-import { SandboxFileChange } from '../stores/agentStore';
 
 interface Props {
   onSandboxListChanges: () => void;
@@ -26,24 +25,10 @@ const formatSize = (n: number | null): string => {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 
-export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, onCommitFile, onRollback }) => {
-  const { sandboxBackend, pendingChanges, sandboxChangesData, connectionStatus, config, isProcessing } = useAgentStore();
+export const ChangesList: React.FC<Props> = ({ onSandboxListChanges, onCommit, onCommitFile, onRollback }) => {
+  const { sandboxBackend, pendingChanges, sandboxChangesData } = useAgentStore();
   const [confirmAction, setConfirmAction] = useState<'commit' | 'rollback' | null>(null);
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
-
-  // Auto-fetch when tab becomes active (sandbox state or connection changes)
-  useEffect(() => {
-    if (connectionStatus === 'connected' && config.isolation === 'sandbox' && sandboxBackend !== 'disabled') {
-      onSandboxListChanges();
-    }
-  }, [connectionStatus, config.isolation, sandboxBackend]);
-
-  // Auto-fetch when agent finishes processing (files may have been written)
-  useEffect(() => {
-    if (!isProcessing && connectionStatus === 'connected' && config.isolation === 'sandbox' && sandboxBackend !== 'disabled') {
-      onSandboxListChanges();
-    }
-  }, [isProcessing]);
 
   const toggleDiff = (path: string) => {
     setExpandedDiffs(prev => {
@@ -59,52 +44,35 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
     setConfirmAction(null);
   };
 
-  const isDisabled = sandboxBackend === 'disabled' || config.isolation !== 'sandbox';
-
-  if (connectionStatus !== 'connected') {
-    return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', padding: '40px' }}>
-        <p style={{ textAlign: 'center', fontSize: '14px' }}>未连接到服务器</p>
-      </div>
-    );
-  }
-
-  if (isDisabled) {
-    return (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', padding: '40px', gap: '12px' }}>
-        <span style={{ fontSize: '40px' }}>🚧</span>
-        <p style={{ textAlign: 'center', fontSize: '14px' }}>沙盒未启用</p>
-        <p style={{ textAlign: 'center', fontSize: '12px', color: 'var(--text3)' }}>在设置中开启沙盒后，此面板显示所有文件变更</p>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Toolbar */}
       <div style={{
-        padding: '12px 16px',
+        padding: '10px 12px',
         borderBottom: '1px solid var(--border)',
         display: 'flex',
         alignItems: 'center',
-        gap: '10px',
+        gap: '8px',
         background: 'var(--bg2)',
         flexShrink: 0,
+        flexWrap: 'wrap',
       }}>
-        <div style={{ flex: 1 }}>
-          <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text)' }}>沙盒变更</span>
+        <div style={{ flex: 1, minWidth: '120px' }}>
+          <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)' }}>
+            沙盒变更
+          </span>
           {sandboxChangesData !== null && (
-            <span style={{ marginLeft: '8px', fontSize: '12px', color: 'var(--text3)' }}>
+            <span style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--text3)' }}>
               {sandboxChangesData.length} 个文件
             </span>
           )}
           <span style={{
-            marginLeft: '8px',
+            marginLeft: '6px',
             background: sandboxBackend === 'overlay' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
             color: sandboxBackend === 'overlay' ? '#10b981' : '#f59e0b',
             borderRadius: '6px',
-            padding: '1px 7px',
-            fontSize: '11px',
+            padding: '1px 6px',
+            fontSize: '10px',
             fontWeight: '600',
           }}>
             {sandboxBackend === 'overlay' ? 'overlay' : '快照'}
@@ -114,13 +82,9 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
         <button
           onClick={onSandboxListChanges}
           style={{
-            padding: '5px 11px',
-            borderRadius: '6px',
-            background: 'var(--bg3)',
-            color: 'var(--text2)',
-            border: '1px solid var(--border)',
-            fontSize: '12px',
-            cursor: 'pointer',
+            padding: '4px 10px', borderRadius: '6px',
+            background: 'var(--bg3)', color: 'var(--text2)',
+            border: '1px solid var(--border)', fontSize: '11px', cursor: 'pointer',
           }}
         >
           🔄 刷新
@@ -129,12 +93,9 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
         <button
           onClick={() => setConfirmAction('rollback')}
           style={{
-            padding: '5px 11px',
-            borderRadius: '6px',
-            background: 'rgba(239,68,68,0.15)',
-            color: '#f87171',
-            border: '1px solid rgba(239,68,68,0.3)',
-            fontSize: '12px',
+            padding: '4px 10px', borderRadius: '6px',
+            background: 'rgba(239,68,68,0.15)', color: '#f87171',
+            border: '1px solid rgba(239,68,68,0.3)', fontSize: '11px',
             cursor: pendingChanges === 0 ? 'not-allowed' : 'pointer',
             opacity: pendingChanges === 0 ? 0.5 : 1,
           }}
@@ -146,12 +107,9 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
         <button
           onClick={() => setConfirmAction('commit')}
           style={{
-            padding: '5px 11px',
-            borderRadius: '6px',
-            background: 'rgba(99,102,241,0.15)',
-            color: '#818cf8',
-            border: '1px solid rgba(99,102,241,0.3)',
-            fontSize: '12px',
+            padding: '4px 10px', borderRadius: '6px',
+            background: 'rgba(99,102,241,0.15)', color: '#818cf8',
+            border: '1px solid rgba(99,102,241,0.3)', fontSize: '11px',
             cursor: pendingChanges === 0 ? 'not-allowed' : 'pointer',
             opacity: pendingChanges === 0 ? 0.5 : 1,
           }}
@@ -213,7 +171,7 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
       )}
 
       {/* File list */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px' }}>
         {sandboxChangesData === null ? (
           <div style={{ textAlign: 'center', color: 'var(--text3)', paddingTop: '40px', fontSize: '13px' }}>
             点击"刷新"查看变更列表
@@ -240,34 +198,31 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
                   <div
                     onClick={() => hasDiff && toggleDiff(file.path)}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: '10px',
-                      padding: '9px 12px',
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                      padding: '7px 10px',
                       cursor: hasDiff ? 'pointer' : 'default',
                     }}
                     onMouseOver={e => { if (hasDiff) (e.currentTarget as HTMLElement).style.background = 'var(--bg3)'; }}
                     onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = ''; }}
                   >
-                    {/* Kind badge */}
                     <span style={{
                       background: badge.bg, color: badge.color,
-                      borderRadius: '4px', padding: '1px 6px',
-                      fontSize: '11px', fontWeight: '700',
+                      borderRadius: '4px', padding: '1px 5px',
+                      fontSize: '10px', fontWeight: '700',
                       flexShrink: 0,
                     }}>
                       {badge.label}
                     </span>
 
-                    {/* Path */}
                     <span style={{
-                      flex: 1, fontFamily: 'monospace', fontSize: '12px',
+                      flex: 1, fontFamily: 'monospace', fontSize: '11px',
                       color: 'var(--text)', wordBreak: 'break-all',
                     }}>
                       {file.path}
                     </span>
 
-                    {/* Size info */}
                     {(file.original_size !== null || file.current_size !== null) && (
-                      <span style={{ fontSize: '11px', color: 'var(--text3)', flexShrink: 0 }}>
+                      <span style={{ fontSize: '10px', color: 'var(--text3)', flexShrink: 0 }}>
                         {file.kind === 'created'
                           ? formatSize(file.current_size)
                           : file.kind === 'deleted'
@@ -277,7 +232,6 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
                       </span>
                     )}
 
-                    {/* Commit file button */}
                     {file.kind !== 'deleted' && (
                       <button
                         onClick={(e) => {
@@ -286,7 +240,7 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
                         }}
                         title={`提交 ${file.path}`}
                         style={{
-                          padding: '2px 8px',
+                          padding: '2px 7px',
                           borderRadius: '4px',
                           background: 'rgba(99,102,241,0.15)',
                           color: '#818cf8',
@@ -301,7 +255,7 @@ export const SandboxPanel: React.FC<Props> = ({ onSandboxListChanges, onCommit, 
                     )}
 
                     {hasDiff && (
-                      <span style={{ fontSize: '12px', color: 'var(--text3)', flexShrink: 0 }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text3)', flexShrink: 0 }}>
                         {isExpanded ? '▲' : '▼'}
                       </span>
                     )}

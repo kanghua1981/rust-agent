@@ -257,6 +257,8 @@ async fn run_async(
     let shared_workdir: Arc<std::sync::Mutex<Option<PathBuf>>> =
         Arc::new(std::sync::Mutex::new(None));
     let shared_workdir_reader = shared_workdir.clone();
+    let shared_project_dir: Arc<PathBuf> = Arc::new(project_dir.clone());
+    let shared_project_dir_reader = shared_project_dir.clone();
     let shared_mode: Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>> =
         Arc::new(std::sync::Mutex::new(None));
     let shared_mode_reader = shared_mode.clone();
@@ -288,7 +290,8 @@ async fn run_async(
                         &shared_mode_reader,
                         &ctrl_tx_reader,
                         &global_db,
-                    );
+                        &shared_project_dir_reader,
+                    ).await;
                 }
                 Message::Close(_) => break,
                 Message::Ping(_) => {
@@ -1112,7 +1115,7 @@ async fn handle_control_cmd(
 //  WebSocket message dispatcher
 // ═══════════════════════════════════════════════════════════════════
 
-fn dispatch_ws_message(
+async fn dispatch_ws_message(
     text: &str,
     user_tx: &mpsc::Sender<(String, Option<serde_json::Value>, Option<String>, Option<String>)>,
     confirm_tx: &std::sync::mpsc::Sender<crate::confirm::ConfirmResult>,
@@ -1122,6 +1125,7 @@ fn dispatch_ws_message(
     shared_mode: &Arc<std::sync::Mutex<Option<crate::router::ExecutionMode>>>,
     ctrl_tx: &mpsc::UnboundedSender<ControlCmd>,
     global_db: &Arc<GlobalDb>,
+    project_dir: &PathBuf,
 ) {
     let msg: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -1431,6 +1435,213 @@ fn dispatch_ws_message(
                 output.emit_public("error", serde_json::json!({
                     "message": "delete_peer: missing 'data.id'"
                 }));
+            }
+        }
+
+        // ── Directory & file browsing ─────────────────────────────────────
+        "list_dir" => {
+            let path_str = msg.get("data")
+                .and_then(|d| d.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            let path = std::path::Path::new(path_str);
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                project_dir.join(path)
+            };
+            // Path security: canonicalize and ensure within project_dir
+            let canonical = match resolved.canonicalize() {
+                Ok(c) => c,
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("list_dir: cannot resolve path '{}': {}", path_str, e)
+                    }));
+                    return;
+                }
+            };
+            let canonical_pd = project_dir.canonicalize().unwrap_or_else(|_| project_dir.clone());
+            if !canonical.starts_with(&canonical_pd) {
+                output.emit_public("error", serde_json::json!({
+                    "message": format!("Access denied: '{}' is outside the project directory.", path_str)
+                }));
+                return;
+            }
+            match crate::tools::list_dir::ListDirTool::list_structured(&canonical, project_dir).await {
+                Ok(entries) => {
+                    output.emit_public("dir_list_result", serde_json::json!({
+                        "path": path_str,
+                        "entries": entries,
+                    }));
+                }
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("list_dir failed: {}", e)
+                    }));
+                }
+            }
+        }
+
+        "read_file_content" => {
+            let path_str = msg.get("data")
+                .and_then(|d| d.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if path_str.is_empty() {
+                output.emit_public("error", serde_json::json!({
+                    "message": "read_file_content: missing 'data.path'"
+                }));
+                return;
+            }
+            let path = std::path::Path::new(path_str);
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                project_dir.join(path)
+            };
+            // Path security check
+            let canonical = match resolved.canonicalize() {
+                Ok(c) => c,
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("read_file_content: cannot resolve path '{}': {}", path_str, e)
+                    }));
+                    return;
+                }
+            };
+            let canonical_pd = project_dir.canonicalize().unwrap_or_else(|_| project_dir.clone());
+            if !canonical.starts_with(&canonical_pd) {
+                output.emit_public("error", serde_json::json!({
+                    "message": format!("Access denied: '{}' is outside the project directory.", path_str)
+                }));
+                return;
+            }
+            // 2MB hard limit
+            const MAX_SIZE: u64 = 2 * 1024 * 1024;
+            match tokio::fs::metadata(&canonical).await {
+                Ok(meta) => {
+                    if meta.is_dir() {
+                        output.emit_public("error", serde_json::json!({
+                            "message": format!("'{}' is a directory, not a file.", path_str)
+                        }));
+                        return;
+                    }
+                    let size = meta.len();
+                    if size > MAX_SIZE {
+                        output.emit_public("file_content_result", serde_json::json!({
+                            "path": path_str,
+                            "content": format!("[File too large: {} (limit: 2MB)]", format_size(size)),
+                            "size": size,
+                            "truncated": true,
+                        }));
+                        return;
+                    }
+                    match tokio::fs::read_to_string(&canonical).await {
+                        Ok(content) => {
+                            output.emit_public("file_content_result", serde_json::json!({
+                                "path": path_str,
+                                "content": content,
+                                "size": size,
+                            }));
+                        }
+                        Err(e) => {
+                            // Try as binary if UTF-8 fails
+                            let content_preview = format!("[Binary file: {}]", format_size(size));
+                            output.emit_public("file_content_result", serde_json::json!({
+                                "path": path_str,
+                                "content": content_preview,
+                                "size": size,
+                                "binary": true,
+                                "error": format!("Failed to read as text: {}", e),
+                            }));
+                        }
+                    }
+                }
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("read_file_content: cannot access '{}': {}", path_str, e)
+                    }));
+                }
+            }
+        }
+
+        // ── Open file with external editor ───────────────────────────────
+        "open_file_external" => {
+            let path_str = msg.get("data")
+                .and_then(|d| d.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if path_str.is_empty() {
+                output.emit_public("error", serde_json::json!({
+                    "message": "open_file_external: missing 'data.path'"
+                }));
+                return;
+            }
+            let path = std::path::Path::new(path_str);
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                project_dir.join(path)
+            };
+            // Path security check
+            let canonical = match resolved.canonicalize() {
+                Ok(c) => c,
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("open_file_external: cannot resolve path '{}': {}", path_str, e)
+                    }));
+                    return;
+                }
+            };
+            let canonical_pd = project_dir.canonicalize().unwrap_or_else(|_| project_dir.clone());
+            if !canonical.starts_with(&canonical_pd) {
+                output.emit_public("error", serde_json::json!({
+                    "message": format!("Access denied: '{}' is outside the project directory.", path_str)
+                }));
+                return;
+            }
+            // Resolve editor: EDITOR_COMMAND env → EDITOR env → platform default
+            let editor = std::env::var("EDITOR_COMMAND")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| {
+                    if cfg!(target_os = "macos") {
+                        "open".to_string()
+                    } else {
+                        "xdg-open".to_string()
+                    }
+                });
+            // Handle editor commands with arguments (e.g. "code --goto {path}:{line}")
+            let task = if editor.contains("{path}") {
+                let cmd_str = editor.replace("{path}", &canonical.display().to_string());
+                let parts: Vec<&str> = if cfg!(windows) {
+                    // Windows: use cmd /c for shell parsing
+                    vec!["cmd", "/c", &cmd_str]
+                } else {
+                    vec!["sh", "-c", &cmd_str]
+                };
+                let (program, args) = parts.split_first().unwrap();
+                std::process::Command::new(program)
+                    .args(args)
+                    .spawn()
+            } else {
+                std::process::Command::new(&editor)
+                    .arg(&canonical)
+                    .spawn()
+            };
+            match task {
+                Ok(mut child) => {
+                    // Don't wait — detach the child process
+                    let _ = child.stdin.take();
+                    output.emit_public("file_opened_external", serde_json::json!({
+                        "path": path_str,
+                        "editor": editor,
+                    }));
+                }
+                Err(e) => {
+                    output.emit_public("error", serde_json::json!({
+                        "message": format!("open_file_external: failed to launch editor '{}': {}", editor, e)
+                    }));
+                }
             }
         }
 
@@ -2029,6 +2240,18 @@ fn save_uploaded_file(
         .to_string();
 
     Ok((rel_path, size))
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 // Required for TcpStream::from_raw_fd

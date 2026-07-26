@@ -40,3 +40,18 @@ export const getHomeDirectory = async (): Promise<string> => {
   }
   return '~';
 };
+
+// 在外部编辑器中打开文件（仅 Tauri 桌面环境有效）
+// 返回 true 表示已通过 Tauri 处理；返回 false 表示需走 WebSocket 回退
+export const openFileExternal = async (path: string): Promise<boolean> => {
+  if (typeof window !== 'undefined' && window.__TAURI__) {
+    try {
+      await window.__TAURI__.invoke<void>('open_file_external', { path });
+      return true;
+    } catch (error) {
+      console.error('Tauri open_file_external 失败:', error);
+      return false;
+    }
+  }
+  return false;
+};

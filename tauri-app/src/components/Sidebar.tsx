@@ -2,14 +2,13 @@ import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ProjectTree } from './ProjectTree';
 
-type Tab = 'chat' | 'tools' | 'settings' | 'sessions' | 'sandbox' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
+type Tab = 'chat' | 'settings' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
 
 interface SidebarProps {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenConnect: () => void;
   onQuickConnect?: () => void;  // 可选：快速连接函数
-  onNewSession: () => void;
   onSwitchLocalSession?: (name: string) => void;
   onNewLocalSession?: (name: string) => void;
   onConnectProject?: (id: string) => void;
@@ -73,7 +72,7 @@ const NavItem: React.FC<{
 );
 
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onNewSession, onSwitchLocalSession, onNewLocalSession, onConnectProject, onEditProject }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onSwitchLocalSession, onNewLocalSession, onConnectProject, onEditProject }) => {
   // Collapse state — persisted in localStorage
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar-collapsed') === 'true'; } catch { return false; }
@@ -106,7 +105,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
   const nodeList = useAgentStore(s => s.nodeList ?? []);
   const plugins = useAgentStore(s => s.plugins ?? []);
   // Derived values — primitive selectors only fire on actual value change
-  const runningTools = useAgentStore(s => (s.toolCalls ?? []).filter(t => t.status === 'executing').length);
   const pendingCount = useAgentStore(s => (s.pendingConfirmations ?? []).length);
 
   return (
@@ -176,10 +174,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
             {(() => {
               const items = [
                 { tab: 'chat' as Tab, icon: '💬', label: '对话' },
-                { tab: 'tools' as Tab, icon: '🔨', label: '工具' },
                 { tab: 'nodes' as Tab, icon: '🌐', label: '节点' },
-                { tab: 'sessions' as Tab, icon: '📚', label: '会话' },
-                { tab: 'sandbox' as Tab, icon: '🔒', label: '沙盒' },
                 { tab: 'plugins' as Tab, icon: '🧩', label: '插件' },
                 { tab: 'workflows' as Tab, icon: '🔄', label: '工作流' },
                 { tab: 'pipelines' as Tab, icon: '🚀', label: '流水线' },
@@ -212,10 +207,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
           // Expanded nav: full items
           <div style={{ display: 'flex', flexDirection: 'column', gap: collapsed ? '2px' : '3px' }}>
             <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingCount || undefined} collapsed={collapsed} onClick={() => onTabChange('chat')} />
-            <NavItem icon="🔨" label="工具调用" active={activeTab === 'tools'} badge={runningTools || undefined} collapsed={collapsed} onClick={() => onTabChange('tools')} />
             <NavItem icon="🌐" label="节点" active={activeTab === 'nodes'} badge={nodeList.length || undefined} collapsed={collapsed} onClick={() => onTabChange('nodes')} />
-            <NavItem icon="📚" label="会话管理" active={activeTab === 'sessions'} collapsed={collapsed} onClick={() => onTabChange('sessions')} />
-            <NavItem icon="🔒" label="沙盒" active={activeTab === 'sandbox'} badge={pendingChanges || undefined} collapsed={collapsed} onClick={() => onTabChange('sandbox')} />
             <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} collapsed={collapsed} onClick={() => onTabChange('plugins')} />
             <NavItem icon="🔄" label="工作流" active={activeTab === 'workflows'} collapsed={collapsed} onClick={() => onTabChange('workflows')} />
             <NavItem icon="🚀" label="流水线" active={activeTab === 'pipelines'} collapsed={collapsed} onClick={() => onTabChange('pipelines')} />

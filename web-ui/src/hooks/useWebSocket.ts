@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ClientMessage, ServerEvent, ToolCall } from '../types/agent';
 import { v4 as uuidv4 } from 'uuid';
+import { openFileExternal as tauriOpenFile } from '../utils/tauri-api';
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -402,6 +403,18 @@ export const useWebSocket = () => {
     });
   }, [sendRaw, addMessage]);
 
+  // ── File browser ──────────────────────────────────────────────────
+  const listDir = useCallback((path: string) => {
+    sendRaw({ type: 'list_dir', data: { path } });
+  }, [sendRaw]);
+
+  const openFileExternal = useCallback(async (path: string) => {
+    // Tauri desktop: open file directly via Rust command (no server round-trip)
+    if (await tauriOpenFile(path)) return;
+    // Web UI: send to backend via WebSocket
+    sendRaw({ type: 'open_file_external', data: { path } });
+  }, [sendRaw]);
+
   const listPlugins = useCallback(() => {
     sendRaw({ type: 'list_plugins', data: {} });
   }, [sendRaw]);
@@ -474,6 +487,15 @@ export const useWebSocket = () => {
           timestamp: Date.now(),
         });
         break;
+
+      // ── File browser events ────────────────────────────────────────
+      case 'dir_list_result': {
+        const store = useAgentStore.getState();
+        store.setDirEntries(event.data.path, event.data.entries);
+        // Auto-expand the directory that was just loaded
+        store.toggleDirExpanded(event.data.path);
+        break;
+      }
 
       // ── Node events (server-managed workspaces) ─────────────────────────
       case 'nodes_list': {
@@ -1456,6 +1478,8 @@ export const useWebSocket = () => {
     savePipeline,
     deletePipeline,
     uploadFile,
+    listDir,
+    openFileExternal,
     listPlugins,
     enablePlugin,
     disablePlugin,

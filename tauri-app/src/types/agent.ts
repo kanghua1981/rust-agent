@@ -51,6 +51,9 @@ export type ClientMessage =
   | SwitchLocalSessionMessage
   | NewLocalSessionMessage
   | DeleteLocalSessionMessage
+  | ListDirMessage
+  | ReadFileContentMessage
+  | OpenFileExternalMessage
   | RenameLocalSessionMessage;
 
 export interface CancelMessage extends BaseMessage {
@@ -190,6 +193,8 @@ export type ServerEvent =
   | PipelinesListEvent
   | PipelineLoadedEvent
   | PipelineSavedEvent
+  | DirListEvent
+  | FileContentEvent
   | PipelineDeletedEvent;
 
 export interface SessionMeta {
@@ -338,6 +343,61 @@ export interface SessionClearedEvent extends BaseMessage {
   type: 'session_cleared';
   data: {
     message: string;
+  };
+}
+
+// ── 文件浏览 ──
+export interface DirEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size?: number | null;
+  children: DirEntry[];
+}
+
+export interface OpenFile {
+  path: string;
+  content: string;
+  size: number;
+  loading: boolean;
+  error: string | null;
+  modified: boolean;
+  binary?: boolean;
+  truncated?: boolean;
+}
+
+export interface ListDirMessage extends BaseMessage {
+  type: 'list_dir';
+  data: { path: string };
+}
+
+export interface ReadFileContentMessage extends BaseMessage {
+  type: 'read_file_content';
+  data: { path: string };
+}
+
+export interface OpenFileExternalMessage extends BaseMessage {
+  type: 'open_file_external';
+  data: { path: string };
+}
+
+export interface DirListEvent extends BaseMessage {
+  type: 'dir_list_result';
+  data: {
+    path: string;
+    entries: DirEntry[];
+  };
+}
+
+export interface FileContentEvent extends BaseMessage {
+  type: 'file_content_result';
+  data: {
+    path: string;
+    content: string;
+    size: number;
+    binary?: boolean;
+    truncated?: boolean;
+    error?: string;
   };
 }
 

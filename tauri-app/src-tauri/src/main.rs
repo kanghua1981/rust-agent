@@ -66,6 +66,40 @@ fn run_command(command: String, args: Vec<String>, cwd: Option<String>) -> Resul
     }
 }
 
+// 在外部编辑器中打开文件（桌面端直接调用，无需走 WebSocket 到后端）
+#[tauri::command]
+fn open_file_external(path: String) -> Result<(), String> {
+    // 解析编辑器：EDITOR_COMMAND 环境变量 → EDITOR 环境变量 → 平台默认
+    let editor = std::env::var("EDITOR_COMMAND")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| {
+            if cfg!(target_os = "macos") {
+                "open".to_string()
+            } else {
+                "xdg-open".to_string()
+            }
+        });
+
+    if editor.contains("{path}") {
+        let cmd_str = editor.replace("{path}", &path);
+        let (program, args_str) = if cfg!(windows) {
+            ("cmd", vec!["/C", &cmd_str])
+        } else {
+            ("sh", vec!["-c", &cmd_str])
+        };
+        std::process::Command::new(program)
+            .args(args_str)
+            .spawn()
+            .map_err(|e| format!("Failed to launch editor '{}': {}", editor, e))?;
+    } else {
+        std::process::Command::new(&editor)
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to launch editor '{}': {}", editor, e))?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -76,7 +110,8 @@ pub fn run() {
             read_file,
             write_file,
             list_dir,
-            run_command
+            run_command,
+            open_file_external
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
