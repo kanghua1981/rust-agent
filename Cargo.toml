@@ -105,6 +105,9 @@ futures-util = "0.3"
 # SQLite global database (bundled = no system dep)
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+# PTY support (terminal feature)
+portable-pty = "0.8"
+
 # Serialization formats (browser protocol only)
 bson = { version = "2.8", optional = true }
 ciborium = { version = "0.2", optional = true }
