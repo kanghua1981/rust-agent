@@ -14,6 +14,7 @@ mod output;
 mod path_manager;
 mod persistence;
 mod plugin;
+mod pty;
 mod service;
 mod skills;
 mod streaming;

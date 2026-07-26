@@ -31,6 +31,7 @@ use crate::config::Config;
 use crate::container::IsolationMode;
 use crate::db::GlobalDb;
 use crate::output::{AgentOutput, WsCommand, WsOutput};
+use crate::pty::PtyHandle;
 use crate::sandbox::Sandbox;
 use crate::workspaces;
 
@@ -263,6 +264,11 @@ async fn run_async(
         Arc::new(std::sync::Mutex::new(None));
     let shared_mode_reader = shared_mode.clone();
 
+    // PTY terminal state
+    let pty_handle: Arc<std::sync::Mutex<Option<PtyHandle>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let pty_handle_reader = pty_handle.clone();
+
     let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ControlCmd>();
     let ctrl_tx_reader = ctrl_tx.clone();
 
@@ -291,6 +297,7 @@ async fn run_async(
                         &ctrl_tx_reader,
                         &global_db,
                         &shared_project_dir_reader,
+                        &pty_handle_reader,
                     ).await;
                 }
                 Message::Close(_) => break,
@@ -1126,6 +1133,7 @@ async fn dispatch_ws_message(
     ctrl_tx: &mpsc::UnboundedSender<ControlCmd>,
     global_db: &Arc<GlobalDb>,
     project_dir: &PathBuf,
+    pty_handle: &Arc<std::sync::Mutex<Option<PtyHandle>>>,
 ) {
     let msg: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -1643,6 +1651,94 @@ async fn dispatch_ws_message(
                     }));
                 }
             }
+        }
+
+        // ── PTY Terminal ─────────────────────────────────────────────────
+        "pty_open" => {
+            let data = msg.get("data");
+            let rows = data.and_then(|d| d.get("rows")).and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            let cols = data.and_then(|d| d.get("cols")).and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+            // Use requested workdir or fall back to project directory
+            let workdir = data
+                .and_then(|d| d.get("workdir"))
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| (*project_dir).clone());
+
+            // Close existing PTY if any
+            {
+                let mut guard = pty_handle.lock().unwrap();
+                if let Some(ref mut old) = *guard {
+                    let _ = old.close();
+                }
+                *guard = None;
+            }
+
+            match PtyHandle::spawn(workdir, rows, cols) {
+                Ok(mut pty) => {
+                    let mut output_rx = pty.take_output_rx();
+                    let output_clone = output.clone();
+
+                    // Spawn task to forward PTY output to WebSocket
+                    tokio::spawn(async move {
+                        while let Some(data) = output_rx.recv().await {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                            output_clone.emit_public("pty_output", serde_json::json!({
+                                "output": b64,
+                            }));
+                        }
+                        // Child exited
+                        output_clone.emit_public("pty_exit", serde_json::json!({ "code": 0 }));
+                    });
+
+                    *pty_handle.lock().unwrap() = Some(pty);
+                }
+                Err(e) => {
+                    output.emit_public("pty_error", serde_json::json!({
+                        "message": format!("Failed to open terminal: {}", e),
+                    }));
+                }
+            }
+        }
+
+        "pty_input" => {
+            let b64 = msg.get("data")
+                .and_then(|d| d.get("input"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap_or_default();
+            let mut guard = pty_handle.lock().unwrap();
+            if let Some(ref mut pty) = *guard {
+                if let Err(e) = pty.write(&data) {
+                    output.emit_public("pty_error", serde_json::json!({
+                        "message": format!("PTY write error: {}", e),
+                    }));
+                }
+            }
+        }
+
+        "pty_resize" => {
+            let data = msg.get("data");
+            let rows = data.and_then(|d| d.get("rows")).and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            let cols = data.and_then(|d| d.get("cols")).and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+            let mut guard = pty_handle.lock().unwrap();
+            if let Some(ref mut pty) = *guard {
+                if let Err(e) = pty.resize(rows, cols) {
+                    output.emit_public("pty_error", serde_json::json!({
+                        "message": format!("PTY resize error: {}", e),
+                    }));
+                }
+            }
+        }
+
+        "pty_close" => {
+            let mut guard = pty_handle.lock().unwrap();
+            if let Some(ref mut pty) = *guard {
+                let _ = pty.close();
+            }
+            *guard = None;
         }
 
         // ── Workflow CRUD (global.db) ──────────────────────────────────────

@@ -20,7 +20,7 @@ import { CommandPalette, CommandAction } from './components/CommandPalette';
 import { PipelinePanel } from './components/PipelinePanel';
 
 type Tab = 'chat' | 'settings' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
-type RightTab = 'browse' | 'changes' | 'tasks';
+type RightTab = 'browse' | 'changes' | 'tasks' | 'terminal';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -29,7 +29,7 @@ function App() {
   const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow, listLocalSessions, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listPipelines, getPipeline, savePipeline, deletePipeline, listDir, openFileExternal } = useWebSocket();
+  const { connect, disconnect, switchToConnection, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, listSessions, deleteSession, loadSessionById, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, listWorkflows, saveWorkflow: saveWorkflowWs, deleteWorkflow: deleteWorkflowWs, runWorkflow, listLocalSessions, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listPipelines, getPipeline, savePipeline, deletePipeline, listDir, openFileExternal, ptyOpen, ptyInput, ptyResize, ptyClose, registerPtyOutput } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -356,6 +356,11 @@ function App() {
             onCommit={sandboxCommit}
             onCommitFile={sandboxCommitFile}
             onRollback={sandboxRollback}
+            onPtyOpen={ptyOpen}
+            onPtyInput={ptyInput}
+            onPtyResize={ptyResize}
+            onPtyClose={ptyClose}
+            registerPtyOutput={registerPtyOutput}
           />
         </ErrorBoundary>
         </div>

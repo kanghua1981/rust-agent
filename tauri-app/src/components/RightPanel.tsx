@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { DirectoryTree } from './DirectoryTree';
 import { ChangesList } from './ChangesList';
 import { TaskPanel } from './TaskPanel';
+import { TerminalView } from './Terminal';
 import { useTaskStore } from '../stores/taskStore';
 import { useAgentStore } from '../stores/agentStore';
 import { useResizable } from '../hooks/useResizable';
 
-type RightTab = 'browse' | 'changes' | 'tasks';
+type RightTab = 'browse' | 'changes' | 'tasks' | 'terminal';
 
 interface Props {
   activeTab: RightTab;
@@ -17,6 +18,12 @@ interface Props {
   onCommit: () => void;
   onCommitFile: (filePath: string) => void;
   onRollback: () => void;
+  // ── Terminal ──
+  onPtyOpen: (workdir: string | undefined, rows: number, cols: number) => void;
+  onPtyInput: (input: string) => void;
+  onPtyResize: (rows: number, cols: number) => void;
+  onPtyClose: () => void;
+  registerPtyOutput: (cb: (data: string) => void) => void;
 }
 
 export const RightPanel: React.FC<Props> = ({
@@ -28,6 +35,11 @@ export const RightPanel: React.FC<Props> = ({
   onCommit,
   onCommitFile,
   onRollback,
+  onPtyOpen,
+  onPtyInput,
+  onPtyResize,
+  onPtyClose,
+  registerPtyOutput,
 }) => {
   const tasks = useTaskStore(s => s.tasks);
   const removeTask = useTaskStore(s => s.removeTask);
@@ -35,9 +47,9 @@ export const RightPanel: React.FC<Props> = ({
   const connectionStatus = useAgentStore(s => s.connectionStatus);
 
   const { width, onMouseDown } = useResizable({
-    initialWidth: 360,
-    minWidth: 200,
-    maxWidth: 600,
+    initialWidth: 480,
+    minWidth: 280,
+    maxWidth: 900,
     side: 'right',
   });
 
@@ -173,6 +185,7 @@ export const RightPanel: React.FC<Props> = ({
         }}>
           {([
             { id: 'browse' as RightTab, icon: '📂', label: '浏览' },
+            { id: 'terminal' as RightTab, icon: '🖥', label: '终端' },
             { id: 'changes' as RightTab, icon: '📝', label: '变更', badge: pendingChanges || undefined },
             { id: 'tasks' as RightTab, icon: '📋', label: '任务', badge: running.length || (done.length || undefined) },
           ]).map(tab => (
@@ -243,6 +256,17 @@ export const RightPanel: React.FC<Props> = ({
               collapsed={false}
               onListDir={onListDir}
               onOpenFile={onOpenFile}
+            />
+          )}
+
+          {activeTab === 'terminal' && (
+            <TerminalView
+              onPtyOpen={onPtyOpen}
+              onPtyInput={onPtyInput}
+              onPtyResize={onPtyResize}
+              onPtyClose={onPtyClose}
+              registerPtyOutput={registerPtyOutput}
+              isConnected={connectionStatus === 'connected'}
             />
           )}
 

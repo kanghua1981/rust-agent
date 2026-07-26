@@ -54,6 +54,10 @@ export type ClientMessage =
   | ListDirMessage
   | ReadFileContentMessage
   | OpenFileExternalMessage
+  | PtyOpenMessage
+  | PtyInputMessage
+  | PtyResizeMessage
+  | PtyCloseMessage
   | RenameLocalSessionMessage;
 
 export interface CancelMessage extends BaseMessage {
@@ -195,6 +199,9 @@ export type ServerEvent =
   | PipelineSavedEvent
   | DirListEvent
   | FileContentEvent
+  | PtyOutputEvent
+  | PtyExitEvent
+  | PtyErrorEvent
   | PipelineDeletedEvent;
 
 export interface SessionMeta {
@@ -399,6 +406,36 @@ export interface FileContentEvent extends BaseMessage {
     truncated?: boolean;
     error?: string;
   };
+}
+
+// ── 终端 ──
+export interface PtyOpenMessage extends BaseMessage {
+  type: 'pty_open';
+  data: { workdir?: string; rows: number; cols: number };
+}
+export interface PtyInputMessage extends BaseMessage {
+  type: 'pty_input';
+  data: { input: string };
+}
+export interface PtyResizeMessage extends BaseMessage {
+  type: 'pty_resize';
+  data: { rows: number; cols: number };
+}
+export interface PtyCloseMessage extends BaseMessage {
+  type: 'pty_close';
+  data: {};
+}
+export interface PtyOutputEvent extends BaseMessage {
+  type: 'pty_output';
+  data: { output: string };
+}
+export interface PtyExitEvent extends BaseMessage {
+  type: 'pty_exit';
+  data: { code: number };
+}
+export interface PtyErrorEvent extends BaseMessage {
+  type: 'pty_error';
+  data: { message: string };
 }
 
 // 基础消息结构

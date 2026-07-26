@@ -415,6 +415,30 @@ export const useWebSocket = () => {
     sendRaw({ type: 'open_file_external', data: { path } });
   }, [sendRaw]);
 
+  // ── PTY Terminal ───────────────────────────────────────────────────
+  const ptyOutputCbRef = useRef<((data: string) => void) | null>(null);
+
+  const ptyOpen = useCallback((workdir: string | undefined, rows: number, cols: number) => {
+    sendRaw({ type: 'pty_open', data: { workdir, rows, cols } });
+  }, [sendRaw]);
+
+  const ptyInput = useCallback((input: string) => {
+    sendRaw({ type: 'pty_input', data: { input } });
+  }, [sendRaw]);
+
+  const ptyResize = useCallback((rows: number, cols: number) => {
+    sendRaw({ type: 'pty_resize', data: { rows, cols } });
+  }, [sendRaw]);
+
+  const ptyClose = useCallback(() => {
+    sendRaw({ type: 'pty_close', data: {} });
+  }, [sendRaw]);
+
+  const registerPtyOutput = useCallback((cb: (data: string) => void) => {
+    ptyOutputCbRef.current = cb;
+  }, []);
+
+  // ── Plugins ────────────────────────────────────────────────────────
   const listPlugins = useCallback(() => {
     sendRaw({ type: 'list_plugins', data: {} });
   }, [sendRaw]);
@@ -494,6 +518,36 @@ export const useWebSocket = () => {
         store.setDirEntries(event.data.path, event.data.entries);
         // Auto-expand the directory that was just loaded
         store.toggleDirExpanded(event.data.path);
+        break;
+      }
+
+      // ── PTY Terminal events ─────────────────────────────────────────
+      case 'pty_output': {
+        ptyOutputCbRef.current?.(event.data.output);
+        break;
+      }
+      case 'pty_exit': {
+        // Write exit info to terminal before resetting callback
+        if (ptyOutputCbRef.current) {
+          try {
+            const exitMsg = event.data.code === 0
+              ? `\r\n\x1b[90m[进程已完成]\x1b[0m\r\n`
+              : `\r\n\x1b[31m[进程已退出, code: ${event.data.code}]\x1b[0m\r\n`;
+            ptyOutputCbRef.current(btoa(exitMsg));
+          } catch {}
+        }
+        ptyOutputCbRef.current = null;
+        break;
+      }
+      case 'pty_error': {
+        console.error('[pty]', event.data.message);
+        // Show error directly in the terminal (red text via ANSI)
+        if (ptyOutputCbRef.current) {
+          try {
+            const errMsg = `\r\n\x1b[31m[Error] ${event.data.message}\x1b[0m\r\n`;
+            ptyOutputCbRef.current(btoa(errMsg));
+          } catch {}
+        }
         break;
       }
 
@@ -1480,6 +1534,12 @@ export const useWebSocket = () => {
     uploadFile,
     listDir,
     openFileExternal,
+    // PTY Terminal
+    ptyOpen,
+    ptyInput,
+    ptyResize,
+    ptyClose,
+    registerPtyOutput,
     listPlugins,
     enablePlugin,
     disablePlugin,
