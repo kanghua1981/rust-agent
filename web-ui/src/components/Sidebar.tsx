@@ -98,10 +98,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
 
   // Selective subscriptions — subscribe only to what the component renders.
   // Avoids re-rendering on every streaming token / toolCall / message change.
-  const connectionStatus = useAgentStore(s => s.connectionStatus);
-  const serverUrl = useAgentStore(s => s.serverUrl);
-  const workdir = useAgentStore(s => s.workdir);
-  const pendingChanges = useAgentStore(s => s.pendingChanges);
   const nodeList = useAgentStore(s => s.nodeList ?? []);
   const plugins = useAgentStore(s => s.plugins ?? []);
   // Derived values — primitive selectors only fire on actual value change
@@ -221,86 +217,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
 
       </div>
 
-      {/* Bottom: connection status — dot only when collapsed */}
-      <div style={{ 
-        padding: collapsed ? '8px 0' : '8px 10px', 
-        borderTop: '1px solid var(--border)',
-        marginTop: 'auto',
-        flexShrink: 0,
-        display: 'flex', justifyContent: 'center',
-      }}>
-        {collapsed ? (
-          <span
-            onClick={onOpenConnect}
-            title={connectionStatus === 'connected' ? '已连接' : connectionStatus === 'connecting' ? '连接中…' : '未连接'}
-            style={{
-              width: '8px', height: '8px', borderRadius: '50%',
-              background: connectionStatus === 'connected' ? '#10b981' : 
-                        connectionStatus === 'connecting' ? '#f59e0b' : 
-                        connectionStatus === 'error' ? '#ef4444' : '#6b7280',
-              cursor: 'pointer',
-            }}
-          />
-        ) : (
-          <div 
-            onClick={onOpenConnect}
-            style={{
-              background: connectionStatus === 'connected' ? 'var(--green-dim)' : 'var(--yellow-dim)',
-              border: connectionStatus === 'connected' ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(245,158,11,0.3)',
-              borderRadius: '8px',
-              padding: '8px',
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-              flex: 1,
-            }}
-            onMouseOver={(e) => e.currentTarget.style.opacity = '0.9'}
-            onMouseOut={(e) => e.currentTarget.style.opacity = '1'}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{
-                  width: '6px', height: '6px', borderRadius: '50%',
-                  background: connectionStatus === 'connected' ? '#10b981' : 
-                            connectionStatus === 'connecting' ? '#f59e0b' : 
-                            connectionStatus === 'error' ? '#ef4444' : '#6b7280',
-                  flexShrink: 0,
-                }} />
-                <span style={{ 
-                  fontSize: '11px', 
-                  fontWeight: '500', 
-                  color: connectionStatus === 'connected' ? 'var(--green)' : 
-                        connectionStatus === 'connecting' ? 'var(--yellow)' : 
-                        connectionStatus === 'error' ? 'var(--red)' : 'var(--text3)'
-                }}>
-                  {connectionStatus === 'connected' ? '已连接' : 
-                   connectionStatus === 'connecting' ? '连接中…' : 
-                   connectionStatus === 'error' ? '连接错误' : '未连接'}
-                </span>
-              </div>
-              <span style={{ fontSize: '10px', color: 'var(--text3)' }}>点击管理</span>
-            </div>
-            
-            <p className="truncate" style={{ 
-              fontSize: '10px', 
-              color: 'var(--text2)', 
-              fontFamily: 'monospace',
-              marginBottom: '2px'
-            }}>
-              {serverUrl}
-            </p>
-            
-            {connectionStatus === 'connected' && workdir && (
-              <p className="truncate" style={{ 
-                fontSize: '10px', 
-                color: 'var(--text3)', 
-                fontFamily: 'monospace'
-              }}>
-                📂 {workdir}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
     </aside>
   );
 };

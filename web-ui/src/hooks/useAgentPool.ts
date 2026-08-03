@@ -400,12 +400,16 @@ export function useAgentPool() {
   // ── dispatchTask: launch a fully independent background task ─────────────
   const dispatchTask = useCallback(
     (prompt: string): string => {
+      const st = useAgentStore.getState();
+      const mode = st.activeConnectionId && st.projectSlots[st.activeConnectionId]
+        ? st.projectSlots[st.activeConnectionId].agentMode ?? 'auto'
+        : 'auto';
       const wsUrl = buildWsUrl(serverUrl, workdir, clusterToken || undefined);
       const taskId = createTask({ serverUrl, prompt, workdir });
-      openTaskWebSocket(taskId, wsUrl, prompt, config.agentMode ?? 'auto', workdir);
+      openTaskWebSocket(taskId, wsUrl, prompt, mode, workdir);
       return taskId;
     },
-    [serverUrl, workdir, clusterToken, config.agentMode, createTask],
+    [serverUrl, workdir, clusterToken, createTask],
   );
 
   // ── cancelTask ────────────────────────────────────────────────────────────

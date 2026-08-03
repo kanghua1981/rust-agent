@@ -214,6 +214,17 @@ pub async fn run(
                 });
                 continue;
             }
+            "/file" => {
+                // Plain HTTP GET — download a file from the project directory.
+                // Query: ?path=<url-encoded relative-or-absolute path>
+                // Token validation already passed above; safe to respond.
+                let path_str = parse_query_param(&peek_buf[..peek_n], "path");
+                let proj_dir = conn_project_dir.clone();
+                tokio::spawn(async move {
+                    handle_file_download(stream, proj_dir, path_str).await;
+                });
+                continue;
+            }
             "/agent" | "/" => {
                 // fall through to fork
             }
@@ -492,6 +503,99 @@ async fn handle_probe(
         Duration::from_secs(5),
         async { while read.next().await.map(|m| m.is_ok()).unwrap_or(false) {} },
     ).await;
+}
+
+/// Write a minimal plain-text HTTP error response and close the connection.
+async fn http_error(s: &mut tokio::net::TcpStream, status: &str, body: &str) {
+    use tokio::io::AsyncWriteExt;
+    let resp = format!(
+        "HTTP/1.1 {}\r\nContent-Type: text/plain; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status, body.len(), body
+    );
+    let _ = s.write_all(resp.as_bytes()).await;
+}
+
+/// Handle a `GET /file?path=<url-encoded>` request — stream a file from the
+/// project directory with proper download headers.
+///
+/// Security mirrors `read_file_content` in the worker:
+///   - the path is canonicalized and must resolve inside the project dir
+///   - directories and missing files get proper 4xx responses
+/// Cluster-token validation happens before routing (see accept loop), so any
+/// request reaching here is already authenticated.
+async fn handle_file_download(
+    stream: tokio::net::TcpStream,
+    project_dir: std::path::PathBuf,
+    path_str: Option<String>,
+) {
+    use tokio::io::AsyncWriteExt;
+
+    let mut s = stream;
+
+    let path_str = match path_str {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            http_error(&mut s, "400 Bad Request", "Missing 'path' query parameter. Usage: /file?path=<path>&token=<token>").await;
+            return;
+        }
+    };
+
+    let path = std::path::Path::new(&path_str);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_dir.join(path)
+    };
+
+    // Path security check — must stay inside the project directory.
+    let canonical = match resolved.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            http_error(&mut s, "404 Not Found", "File not found").await;
+            return;
+        }
+    };
+    let canonical_pd = project_dir.canonicalize().unwrap_or_else(|_| project_dir.clone());
+    if !canonical.starts_with(&canonical_pd) {
+        http_error(&mut s, "403 Forbidden", "Access denied: path is outside the project directory").await;
+        return;
+    }
+
+    // Must be a regular file (not a directory / symlink to one).
+    let meta = match tokio::fs::metadata(&canonical).await {
+        Ok(m) => m,
+        Err(_) => {
+            http_error(&mut s, "404 Not Found", "File not found").await;
+            return;
+        }
+    };
+    if meta.is_dir() {
+        http_error(&mut s, "400 Bad Request", "Path is a directory, not a file").await;
+        return;
+    }
+
+    // Headers: MIME type, size, download filename (RFC 5987 filename* for non-ASCII).
+    let size = meta.len();
+    let filename = canonical
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".to_string());
+    let mime = mime_guess::from_path(&canonical).first_or_octet_stream();
+    let encoded_name = url_encode(&filename);
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nContent-Disposition: attachment; filename=\"{}\"; filename*=UTF-8''{}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        mime, size, filename, encoded_name
+    );
+    if s.write_all(head.as_bytes()).await.is_err() {
+        return;
+    }
+
+    // Stream the file body.
+    let mut file = match tokio::fs::File::open(&canonical).await {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let _ = tokio::io::copy(&mut file, &mut s).await;
 }
 
 /// Build the JSON body for `GET /nodes`.

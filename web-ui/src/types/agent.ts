@@ -1253,6 +1253,7 @@ export interface ProjectSlot {
   sessionRestoreAvailable: { message_count: number } | null;
   availableModels: ModelInfo[];
   activeModel: string | null;
+  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
   endpoints: EndpointInfo[];
 }
 

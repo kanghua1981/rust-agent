@@ -82,6 +82,9 @@ similar = "2"
 # Base64 encoding for image upload
 base64 = "0.21"
 
+# MIME type detection for the HTTP /file download endpoint
+mime_guess = "2"
+
 # Precise token counting (optional — falls back to heuristic if not available)
 tiktoken-rs = { version = "0.11", optional = true }
 

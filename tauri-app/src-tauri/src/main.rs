@@ -66,9 +66,8 @@ fn run_command(command: String, args: Vec<String>, cwd: Option<String>) -> Resul
     }
 }
 
-// 在外部编辑器中打开文件（桌面端直接调用，无需走 WebSocket 到后端）
-#[tauri::command]
-fn open_file_external(path: String) -> Result<(), String> {
+// 在外部编辑器中打开一个「本地」路径（桌面端直接调用，无需走 WebSocket 到后端）
+fn open_local_path(path: &str) -> Result<(), String> {
     // 解析编辑器：EDITOR_COMMAND 环境变量 → EDITOR 环境变量 → 平台默认
     let editor = std::env::var("EDITOR_COMMAND")
         .or_else(|_| std::env::var("EDITOR"))
@@ -81,7 +80,7 @@ fn open_file_external(path: String) -> Result<(), String> {
         });
 
     if editor.contains("{path}") {
-        let cmd_str = editor.replace("{path}", &path);
+        let cmd_str = editor.replace("{path}", path);
         let (program, args_str) = if cfg!(windows) {
             ("cmd", vec!["/C", &cmd_str])
         } else {
@@ -93,10 +92,94 @@ fn open_file_external(path: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to launch editor '{}': {}", editor, e))?;
     } else {
         std::process::Command::new(&editor)
-            .arg(&path)
+            .arg(path)
             .spawn()
             .map_err(|e| format!("Failed to launch editor '{}': {}", editor, e))?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_file_external(path: String) -> Result<(), String> {
+    open_local_path(&path)
+}
+
+/// 从远端 agent server 下载文件到本地缓存目录，然后用默认编辑器本地打开。
+///
+/// 场景：Tauri 桌面端连接「远端」服务器（编译系统在远端），文件浏览器里的
+/// 文件实际在远端机器上。此命令通过 HTTP 流式下载到 `{cache}/agent-downloads/`，
+/// 再复用 `open_file_external` 的编辑器逻辑本地打开。
+/// 返回下载到本地的绝对路径。
+#[tauri::command]
+async fn open_remote_file(url: String, filename: String) -> Result<String, String> {
+    // 只保留 basename，防止路径穿越（filename 来自远端 Content-Disposition/条目名）
+    let safe_name = std::path::Path::new(&filename)
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".to_string());
+
+    let cache_dir = dirs::cache_dir().ok_or("无法获取缓存目录")?;
+    let dl_dir = cache_dir.join("agent-downloads");
+    std::fs::create_dir_all(&dl_dir).map_err(|e| format!("创建下载目录失败: {}", e))?;
+    let dest = dl_dir.join(&safe_name);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let mut resp = client.get(&url).send().await
+        .map_err(|e| format!("下载失败: {}", e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("服务器返回 {}: {}", status, body.trim()));
+    }
+
+    // 流式写盘（reqwest bytes_stream，逐块写入，避免整文件进内存）
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(&dest).await
+        .map_err(|e| format!("写入本地文件失败: {}", e))?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("下载中断: {}", e))?;
+        file.write_all(&chunk).await
+            .map_err(|e| format!("写入本地文件失败: {}", e))?;
+    }
+
+    open_local_path(&dest.to_string_lossy())?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+// 创建新的项目窗口（Tauri 多窗口隔离）
+#[tauri::command]
+fn create_project_window(
+    app: tauri::AppHandle,
+    label: String,
+    title: String,
+    url: String,
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+) -> Result<(), String> {
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+
+    let win = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .title(&title)
+        .inner_size(width, height)
+        .min_inner_size(min_width, min_height)
+        .center()
+        .decorations(false)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("Failed to create window: {}", e))?;
+
+    // Bring to front
+    win.show().map_err(|e| format!("Failed to show window: {}", e))?;
+    win.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
+
     Ok(())
 }
 
@@ -111,7 +194,9 @@ pub fn run() {
             write_file,
             list_dir,
             run_command,
-            open_file_external
+            open_file_external,
+            open_remote_file,
+            create_project_window
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

@@ -54,6 +54,7 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
     sessionRestoreAvailable: null,
     availableModels: [],
     activeModel: null,
+    agentMode: 'auto' as const,
     endpoints: [],
   };
 }
@@ -108,6 +109,7 @@ interface AgentState {
 
   availableModels: ModelInfo[];
   activeModel: string | null;
+  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
   endpoints: EndpointInfo[];
 
   // ── File browser (per-project, not persisted) ──
@@ -208,6 +210,7 @@ interface AgentState {
   setPlugins: (plugins: PluginInfo[]) => void;
   setAvailableModels: (models: ModelInfo[]) => void;
   setActiveModel: (alias: string | null) => void;
+  setAgentMode: (mode: 'auto' | 'simple' | 'plan' | 'pipeline') => void;
   setActiveRun: (run: WorkflowRunResult | null) => void;
 
   // ── File browser actions ──
@@ -297,6 +300,7 @@ const initialState = {
 
   availableModels: [] as ModelInfo[],
   activeModel: null as string | null,
+  agentMode: 'auto' as const,
   endpoints: [] as import('../types/agent').EndpointInfo[],
 
   // ── File browser ──
@@ -409,6 +413,7 @@ export const useAgentStore = create<AgentState>()(
           plugins: state.plugins,
           availableModels: state.availableModels,
           activeModel: state.activeModel,
+          agentMode: state.agentMode,
         };
         set({ connections: { ...state.connections, [id]: updated }, projectSlots: { ...state.projectSlots, [id]: updated } });
       },
@@ -446,6 +451,7 @@ export const useAgentStore = create<AgentState>()(
             plugins: updatedSlot.plugins,
             availableModels: updatedSlot.availableModels,
             activeModel: updatedSlot.activeModel,
+            agentMode: updatedSlot.agentMode,
           });
         } else {
           // Inactive slot — only update the connections map
@@ -510,6 +516,7 @@ export const useAgentStore = create<AgentState>()(
               plugins: nextSlot.plugins,
               availableModels: nextSlot.availableModels,
               activeModel: nextSlot.activeModel,
+              agentMode: nextSlot.agentMode,
             });
           } else {
             // No connections left; keep an empty placeholder
@@ -542,6 +549,7 @@ export const useAgentStore = create<AgentState>()(
               plugins: [],
               availableModels: [],
               activeModel: null,
+              agentMode: 'auto' as const,
               endpoints: [],
             });
           }
@@ -574,6 +582,7 @@ export const useAgentStore = create<AgentState>()(
             nodeList: state.nodeList,
             tokenUsage: state.tokenUsage,
             plugins: state.plugins,
+            agentMode: state.agentMode,
           };
         }
 
@@ -618,6 +627,7 @@ export const useAgentStore = create<AgentState>()(
           plugins: target.plugins,
           availableModels: target.availableModels,
           activeModel: target.activeModel,
+          agentMode: target.agentMode,
         });
       },
 
@@ -638,6 +648,10 @@ export const useAgentStore = create<AgentState>()(
         }
         // Switch to the project tab
         state.setActiveConnection(projectId);
+        // Apply project's agent mode
+        if (project.agentMode) {
+          get().setAgentMode(project.agentMode);
+        }
       },
 
       closeProject: (projectId) => {
@@ -727,6 +741,9 @@ export const useAgentStore = create<AgentState>()(
 
       setActiveModel: (alias) =>
         set(syncActiveSlot({ activeModel: alias })),
+
+      setAgentMode: (mode) =>
+        set(syncActiveSlot({ agentMode: mode })),
 
       // ── Heavy mutations (write to BOTH flat proxy + connections[activeId]) ──
 

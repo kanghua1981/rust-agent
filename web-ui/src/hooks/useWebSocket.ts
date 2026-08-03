@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ClientMessage, ServerEvent, ToolCall } from '../types/agent';
 import { v4 as uuidv4 } from 'uuid';
-import { openFileExternal as tauriOpenFile } from '../utils/tauri-api';
+import { openFileFromServer } from '../utils/fileTransfer';
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -409,11 +409,16 @@ export const useWebSocket = () => {
   }, [sendRaw]);
 
   const openFileExternal = useCallback(async (path: string) => {
-    // Tauri desktop: open file directly via Rust command (no server round-trip)
-    if (await tauriOpenFile(path)) return;
-    // Web UI: send to backend via WebSocket
-    sendRaw({ type: 'open_file_external', data: { path } });
-  }, [sendRaw]);
+    // 统一分派：Tauri 本地零传输直开 / Tauri 远端 Rust 流式下载后本地打开 / 浏览器原生下载
+    const st = useAgentStore.getState();
+    openFileFromServer(
+      serverUrl,
+      path,
+      st.clusterToken,
+      st.workdir || st.connectedWorkdir || undefined,
+      () => sendRaw({ type: 'open_file_external', data: { path } }),
+    );
+  }, [serverUrl, sendRaw]);
 
   // ── PTY Terminal ───────────────────────────────────────────────────
   const ptyOutputCbRef = useRef<((data: string) => void) | null>(null);
@@ -1450,7 +1455,14 @@ export const useWebSocket = () => {
   }, [connect, flushInactiveBatch, flushTokens, scheduleFlush]);
 
   // ── Sync execution mode to server ──
-  const agentMode = config.agentMode ?? 'auto';
+  // agentMode is per-slot (per-project), read from active slot
+  const agentMode = useAgentStore(s => {
+    const id = s.activeConnectionId;
+    if (id && s.projectSlots[id]) {
+      return s.projectSlots[id].agentMode ?? 'auto';
+    }
+    return 'auto';
+  });
   useEffect(() => {
     const st = useAgentStore.getState();
     if (st.connectionStatus === 'connected') {

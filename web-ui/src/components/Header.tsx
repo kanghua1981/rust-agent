@@ -45,6 +45,7 @@ interface SlotSnapshot {
   pendingConfCount: number;
   availableModels: Array<{ alias: string; model: string; provider: string }>;
   activeModel: string | null;
+  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
   tokenUsage: TokenUsage | null;
 }
 
@@ -61,6 +62,7 @@ const emptySlot: SlotSnapshot = {
   pendingConfCount: 0,
   availableModels: [],
   activeModel: null,
+  agentMode: 'auto',
   tokenUsage: null,
 };
 
@@ -113,23 +115,24 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
         pendingConfCount: c.pendingConfirmations?.length ?? 0,
         availableModels: c.availableModels,
         activeModel: c.activeModel,
+        agentMode: c.agentMode,
         tokenUsage: c.tokenUsage ?? null,
       };
     })
   );
 
-  // config is GLOBAL (not per-slot) — keep flat-proxy subscription
-  const config = useAgentStore(s => s.config);
+  // agentMode is now per-slot — read from active slot (above)
+  // isolation is still global config
+  const isolation = useAgentStore(s => s.config.isolation) ?? 'container';
 
   const {
     connectionStatus, serverUrl, workdir, isProcessing,
     sandboxBackend, pendingChanges,
     msgCount, toolCallCount, pendingConfCount,
-    availableModels, activeModel, tokenUsage,
+    availableModels, activeModel, agentMode, tokenUsage,
   } = slot;
 
   const cfg = statusConfig[connectionStatus as keyof typeof statusConfig] ?? statusConfig.disconnected;
-  const isolation = config.isolation ?? 'container';
 
   return (
     <header
@@ -353,10 +356,10 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
           {/* 运行模式快捷切换 */}
           <div style={{ position: 'relative' }}>
             <select
-              value={config.agentMode || 'auto'}
+              value={agentMode || 'auto'}
               onChange={(e) => {
                 const newMode = e.target.value as 'auto' | 'simple' | 'plan' | 'pipeline';
-                useAgentStore.getState().setConfig({ agentMode: newMode });
+                useAgentStore.getState().setAgentMode(newMode);
               }}
               style={{
                 padding: '4px 8px',
