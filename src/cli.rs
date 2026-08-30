@@ -1799,21 +1799,27 @@ async fn handle_consolidate_command(agent: &mut Agent) {
 
 /// Handle `/plan` command — generate a plan for a task.
 async fn handle_plan_command(input: &str, agent: &mut Agent) {
-    let task = input.strip_prefix("/plan").unwrap_or("").trim();
-    if task.is_empty() {
+    let rest = input.strip_prefix("/plan").unwrap_or("").trim();
+    if rest == "off" {
+        agent.set_plan_mode(false);
+        println!("\n{}  Exited plan mode. Next messages execute normally.", "📋");
+        return;
+    }
+    if rest.is_empty() || rest == "on" {
+        agent.set_plan_mode(true);
         println!(
-            "\n{}  Usage: {} {}",
-            "📋",
-            "/plan".bright_white(),
-            "<task description>".dimmed()
+            "\n{}  Entered plan mode. The next message is analyzed read-only; submit the plan via exit_plan_mode.",
+            "📋"
         );
         return;
     }
-    
-    println!("\n{}  Generating plan for: {}\n", "🧠", task.bright_cyan());
-    
-    // Plan generation not implemented in this branch
-    println!("{}  Plan generation is not available in this branch.", "⚠️");
+    // With a task: enter plan mode and plan (read-only) before any execution.
+    agent.set_plan_mode(true);
+    println!("\n{}  Planning (read-only): {}\n", "🧠", rest.bright_cyan());
+    match agent.process_message(rest).await {
+        Ok(text) => println!("{}", text),
+        Err(e) => println!("\n{}  {}", "⚠️", e),
+    }
 }
 
 /// Handle `/rollback` — discard all sandbox changes (restore original).

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use crate::confirm;
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
-use crate::output::AgentOutput;
+use crate::output::{AgentOutput, PlanReview};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ToolLoopOptions
@@ -209,6 +209,51 @@ impl Agent {
                         &format!("User's answer: {}", answer),
                         false,
                     ));
+                    conversation.append_tool_result(&tool_id, false);
+                    continue;
+                }
+
+                // Virtual tool: exit_plan_mode (plan approval gate)
+                if tool_name == "exit_plan_mode" {
+                    let plan = tool_input
+                        .get("plan")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    match self.output.review_plan(plan) {
+                        PlanReview::Approve => {
+                            self.plan_mode = false;
+                            conversation.add_message(Message::tool_result(
+                                &tool_id,
+                                "Plan approved. You may now implement it.",
+                                false,
+                            ));
+                        }
+                        PlanReview::ApproveWithContext(ctx) => {
+                            self.plan_mode = false;
+                            conversation.add_message(Message::tool_result(
+                                &tool_id,
+                                &format!("Plan approved. Additional context: {}", ctx),
+                                false,
+                            ));
+                        }
+                        PlanReview::Reject => {
+                            conversation.add_message(Message::tool_result(
+                                &tool_id,
+                                "Plan rejected. Revise the plan and resubmit it via exit_plan_mode.",
+                                true,
+                            ));
+                        }
+                        PlanReview::Refine(feedback) => {
+                            conversation.add_message(Message::tool_result(
+                                &tool_id,
+                                &format!(
+                                    "Plan needs refinement: {}\n\nRevise and resubmit via exit_plan_mode.",
+                                    feedback
+                                ),
+                                true,
+                            ));
+                        }
+                    }
                     conversation.append_tool_result(&tool_id, false);
                     continue;
                 }
