@@ -414,7 +414,7 @@ impl Agent {
         self.hook_bus = bus;
     }
 
-    /// 获取 Hook 事件总线共享引用（供 pipeline.rs 等外部模块使用）。
+    /// 获取 Hook 事件总线共享引用。
     pub fn hook_bus(&self) -> Option<Arc<crate::plugin::hook_bus::HookBus>> {
         self.hook_bus.clone()
     }
@@ -503,7 +503,7 @@ impl Agent {
             "agent"      => "🤖 Agent",
             other        => other,
         };
-        // Show role banner (visible even when pipeline uses a different model)
+        // Show the role/model banner before a response.
         let model_name = cfg.model_alias.as_deref().unwrap_or(&cfg.model).to_string();
         self.output.on_role_header(role_label, &model_name);
         self.output.on_thinking();
@@ -817,8 +817,7 @@ impl Agent {
 
     // ── Unified tool loop ─────────────────────────────────────────────────
 
-    /// Single unified tool loop that powers `process_message` (BasicLoop),
-    /// `run_pipeline_stage` (Executor / Checker), and `generate_plan` (Planner).
+    /// The unified tool loop that powers `process_message`.
     ///
     /// Each caller selects the subset of features via `opts` while the core
     /// LLM→tools→results→context cycle is shared.
@@ -1587,9 +1586,8 @@ fn build_role_configs(
     let mut map = HashMap::new();
     for (role_name, role_cfg) in &models_cfg.roles {
         let config = base.for_role(role_name, models_cfg);
-        // If system_prompt is set inline, we store it in the role entry but
-        // the actual prompt injection happens in pipeline.rs / generate_plan.
-        // Here we only care about which model/provider/key to call.
+        // If system_prompt is set inline, we store it in the role entry; here
+        // we only care about which model/provider/key to call.
         let _ = &role_cfg.system_prompt; // acknowledged, used later
         map.insert(role_name.clone(), config);
     }

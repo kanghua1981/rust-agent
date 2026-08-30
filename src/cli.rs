@@ -1249,7 +1249,7 @@ async fn run_interruptible(agent: &mut Agent, input: &str) -> Result<String> {
             crate::agent::request_interrupt();
         }
     });
-    // Ctrl-\ (SIGQUIT) → guidance flag (pipeline executor picks it up between iterations)
+    // Ctrl-\ (SIGQUIT) → guidance flag consumed by the loop between iterations
     #[cfg(unix)]
     let guidance_guard = tokio::spawn(async {
         use tokio::signal::unix::{signal, SignalKind};
