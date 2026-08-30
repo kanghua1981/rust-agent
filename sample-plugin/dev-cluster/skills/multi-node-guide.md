@@ -8,7 +8,7 @@
 |------|------|------|---------|
 | `frontend` | /workspace/frontend | React/TS 前端 | auto |
 | `backend`  | /workspace/backend  | Rust/Python 后端 | plan |
-| `infra`    | /workspace/infra    | Terraform/K8s | pipeline |
+| `infra`    | /workspace/infra    | Terraform/K8s | plan |
 | `gpu-worker@gpu-box` | 远程 GPU 机 | 模型训练/推理 | — |
 | `*@ci-runner` | 远程 CI 机 | 测试/构建 | — |
 
@@ -65,4 +65,4 @@ github__create_issue(owner="yourname", repo="yourproject",
 1. **stdio MCP**：Agent 启动时自动 spawn 子进程，连接失败只打警告，不阻断启动。
 2. **HTTP MCP**：需要目标服务已在运行，否则连接失败会跳过该服务器。
 3. **peer 节点**：仅在 Agent 以 `--mode server` 启动时才会主动探测，CLI 模式不探测 peer。
-4. **infra 节点**强制 `pipeline` 模式，所有变更都经过 Checker 验证，防止误操作生产资源。
+4. **infra 节点**强制 `plan` 模式，所有变更先规划再执行，防止误操作生产资源。

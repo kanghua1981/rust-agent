@@ -4,7 +4,7 @@
 //! a notification gateway, a RAG/knowledge-base server) that the agent can
 //! query while it works.  Key design constraints:
 //!
-//!   - **Simple only**: no multi-step pipeline, one question → one answer.
+//!   - **Simple only**: one question → one answer.
 //!   - **Single queue**: a `Semaphore(1)` ensures requests are serialised so a
 //!     lightweight local model is never over-subscribed.
 //!   - **Named connections**: `ServiceManager` holds multiple named clients so

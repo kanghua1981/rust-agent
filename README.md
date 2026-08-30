@@ -7,7 +7,7 @@
 - **🔧 工具系统**: 内置 26 种工具 — 文件读写、批量文件操作、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF 读取、浏览器自动化、内部推理、外部服务连接、多 Agent 协作、任务管理、技能与记忆管理；另支持动态脚本工具（`tool.json`）
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
-- **🔀 自定义流水线**: 通过 `.agent/pipelines/*.toml` 定义 DAG 多阶段流水线，每个阶段独立配置角色、模型、工具集、上下文隔离模式（shared/isolated）、artifact 传递与自定义跳转（`on_pass`/`on_fail`）；Web UI 可视化编辑，发送消息时一键选择
+- **🛰️ 子代理委托**: 通过 `subagent`/`subagent_fork` 在进程内委托子代理，或通过 `call_node` 委托到外部节点（协作编排由模型驱动）
 - **🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
 - **📡 四种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器、**MCP 工具服务器**（Claude Desktop / Cursor 直接接入）
 - **🔌 MCP 双向支持**: **作为 MCP 服务器**（`--mode mcp`）向任何 MCP 主机暴露全部内置工具；**作为 MCP 客户端**（`mcp.toml`）自动连接外部 MCP 服务器并将其工具注册到 Agent 工具列表，LLM 透明调用
@@ -113,7 +113,7 @@ api_key = "sk-xxxxx"  # 可选，不设则 fallback 到环境变量
 
 > **提示**: `.env` 文件仍然有效，推荐只放 API Key；模型/provider/base_url 的管理交给 `models.toml`。
 
-### 自定义流水线（`.agent/pipelines/*.toml`）
+### 子代理委托（进程内 + 外部节点）
 
 通过 `.agent/pipelines/` 下的 TOML 文件定义**多阶段 DAG 流水线**，每个阶段（stage）可独立配置模型、角色、工具集和上下文策略，阶段之间通过 artifact 传递结果并支持自定义跳转。
 
@@ -509,8 +509,8 @@ git push origin fix/gpio-pullup
 | `/skills` | 查看当前加载的 Skills |
 | `/yesall` | 关闭所有确认提示（本次会话内有效） |
 | `/confirm` | 重新开启确认提示 |
-| `/mode` | 查看或设置执行模式：simple/plan/pipeline/auto |
-| `/mode <simple|plan|pipeline|auto>` | 设置执行模式 |
+| `/mode` | 查看或设置执行模式：simple/plan/auto |
+| `/mode <simple|plan|auto>` | 设置执行模式 |
 | `/model` | 列出当前模型与所有已配置模型 |
 | `/model <alias>` | 热切换到指定模型 |
 | `/model add <alias>` | 交互式添加新模型配置 |
@@ -883,10 +883,10 @@ Header 会根据当前隔离模式显示对应徽标：
 src/
 ├── main.rs          # 入口：CLI 参数解析 (clap)，--mode 选择输出后端，.env 加载
 ├── config.rs        # 配置管理（API Key、Provider、模型参数、角色 Config 构造）
-├── model_manager.rs # 模型管理（models.toml 读写、RoleConfig、PipelineConfig）
+├── model_manager.rs # 模型管理（models.toml 读写、RoleConfig）
 ├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput / WsOutput 实现
 ├── cli.rs           # 交互式 REPL 循环 (rustyline)，斜杠命令处理
-├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式 + 流水线角色分发
+├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式 + 子代理
 ├── pipeline/         # 自定义 DAG 流水线引擎
 │   ├── mod.rs        # 模块入口
 │   ├── loader.rs     # 流水线 TOML 加载与验证

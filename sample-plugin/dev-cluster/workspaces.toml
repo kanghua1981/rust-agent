@@ -22,7 +22,7 @@ name        = "frontend"
 workdir     = "/workspace/frontend"   # 前端项目根目录
 description = "React/TypeScript 前端，负责 UI 开发和构建"
 isolation   = "normal"                # "normal" | "sandbox" | "container"
-exec_mode   = "auto"                  # "simple" | "plan" | "pipeline" | "auto"
+exec_mode   = "auto"                  # "simple" | "plan" | "auto"
 tags        = ["frontend", "typescript", "react"]
 
 [[node]]
@@ -30,7 +30,7 @@ name        = "backend"
 workdir     = "/workspace/backend"    # 后端项目根目录
 description = "Rust/Python 后端服务，负责 API 和业务逻辑"
 isolation   = "sandbox"               # sandbox 隔离，限制文件访问范围
-exec_mode   = "plan"                  # 后端改动默认走 plan+execute
+exec_mode   = "plan"                  # 后端改动默认先规划再执行
 tags        = ["backend", "rust", "api"]
 
 [[node]]
@@ -38,7 +38,7 @@ name        = "infra"
 workdir     = "/workspace/infra"      # 基础设施即代码（Terraform/Helm）
 description = "基础设施配置，Terraform & Kubernetes manifests"
 isolation   = "sandbox"
-exec_mode   = "pipeline"             # 基础设施变更强制走完整三阶段流水线
+exec_mode   = "plan"              # 基础设施变更强制先规划再执行
 tags        = ["infra", "terraform", "k8s"]
 
 # ── 远程 peer 节点 ─────────────────────────────────────────────

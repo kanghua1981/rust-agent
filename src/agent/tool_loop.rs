@@ -1,8 +1,7 @@
-//! Unified tool loop: powers `process_message` (BasicLoop),
-//! `run_pipeline_stage` (Executor / Checker), and `generate_plan` (Planner).
+//! Unified tool loop: powers `process_message` and every sub-agent.
 //!
-//! Each caller selects the subset of features via `ToolLoopOptions` while
-//! the core LLM→tools→results→context cycle is shared.
+//! Callers select the subset of features via `ToolLoopOptions` while the core
+//! LLM→tools→results→context cycle is shared.
 
 use std::collections::HashMap;
 
@@ -17,8 +16,7 @@ use crate::output::{AgentOutput, PlanReview};
 
 /// Feature flags controlling the unified tool loop.
 ///
-/// The same `run_tool_loop()` powers `process_message` (BasicLoop),
-/// `run_pipeline_stage` (Executor / Checker), and `generate_plan` (Planner).
+/// `run_tool_loop()` powers `process_message` and every sub-agent.
 /// Each caller picks the subset of features it needs.
 #[derive(Clone)]
 pub struct ToolLoopOptions {

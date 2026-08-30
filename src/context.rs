@@ -330,7 +330,7 @@ pub fn check_context(conversation: &Conversation, model: &str) -> ContextStatus 
 /// to satisfy the Anthropic API constraint that every tool_use must be followed
 /// by a tool_result in the very next message.
 pub fn truncate_conversation(conversation: &mut Conversation, model: &str, memory: &dyn crate::memory::MemoryProvider) {
-    // Use the plan + apply pipeline with a mechanical summary fallback.
+    // Use the plan + apply path with a mechanical summary fallback.
     if let Some(plan) = plan_truncation(conversation, model) {
         let summary = summarize_removed_messages(
             &conversation.messages[plan.remove_start..plan.remove_end],
@@ -524,7 +524,7 @@ pub fn build_truncation_context(messages: &[Message]) -> String {
 
 /// Apply a truncation plan to the conversation with the given summary text.
 ///
-/// This is the second phase of the truncation pipeline. The summary can be
+/// This is the second phase of truncation. The summary can be
 /// either a mechanical summary (from `summarize_removed_messages`) or an
 /// LLM-generated narrative.
 pub fn apply_truncation(

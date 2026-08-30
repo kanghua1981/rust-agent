@@ -8,7 +8,7 @@
 #
 # payload.data 结构：
 #   {
-#     "proposed_mode":        "basic_loop | plan_and_execute | full_pipeline",
+#     "proposed_mode":        "basic_loop",
 #     "classification_source": "forced | auto",
 #     "task_preview":          "任务前 200 字"
 #   }
@@ -20,7 +20,7 @@
 #
 # 本脚本示例：
 #   检测任务预览中包含"生产"/"production"/"deploy"等高风险关键词时
-#   将模式升级为 full_pipeline，确保有 Checker 验证。
+#   强制保持单层循环（router 已退役，仅剩 basic_loop）。
 # ============================================================
 set -euo pipefail
 
@@ -38,12 +38,12 @@ if [[ "$SOURCE" == "forced" ]]; then
   exit 0
 fi
 
-# ── 策略 2：已经是最高级别则不干预 ───────────────────────────────
-if [[ "$PROPOSED" == "full_pipeline" ]]; then
+# ── 策略 2：已经是 basic_loop 则不干预 ───────────────────────────
+if [[ "$PROPOSED" == "basic_loop" ]]; then
   exit 0
 fi
 
-# ── 策略 3：检测高风险关键词，升级为 full_pipeline ────────────────
+# ── 策略 3：检测高风险关键词，强制 basic_loop ────────────────────
 HIGH_RISK_KEYWORDS=(
   "生产" "production" "prod" "deploy" "部署"
   "删除所有" "drop table" "rm -rf" "truncate"
@@ -53,7 +53,7 @@ HIGH_RISK_KEYWORDS=(
 for keyword in "${HIGH_RISK_KEYWORDS[@]}"; do
   if [[ "$PREVIEW" == *"$keyword"* ]]; then
     # 返回 JSON 覆盖决策
-    echo "{\"override_mode\": \"full_pipeline\"}"
+    echo "{\"override_mode\": \"basic_loop\"}"
     exit 0
   fi
 done

@@ -238,7 +238,7 @@ ws://127.0.0.1:9527/agent?workdir=%2Fhome%2Fuser%2Fmyproject&mode=sandbox&token=
 | type | data | 说明 |
 |------|------|------|
 | `set_workdir` | `{ workdir }` | 切换工作目录 |
-| `set_mode` | `{ mode }` | 设置执行模式: `simple` / `plan` / `pipeline` / `auto` |
+| `set_mode` | `{ mode }` | 设置执行模式: `simple` / `plan` / `auto` |
 | `set_model` | ... | 切换模型 (仅通知，实际切换由连接时 URL 控制) |
 | `set_sandbox` | `{ enabled }` | 切换沙盒 (容器模式下仅报告状态) |
 

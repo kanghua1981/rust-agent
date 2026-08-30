@@ -1,6 +1,6 @@
 //! Execution mode selection.
 //!
-//! The pipeline/router was retired; the model drives orchestration via plan mode
+//! The router was retired; the model drives orchestration via plan mode
 //! (the `plan_mode` flag) and sub-agents. This module keeps the single
 //! `ExecutionMode::BasicLoop` value the CLI and worker's `set_mode` still carry.
 //! Runtime mode is always the basic loop; whether to plan first is the separate

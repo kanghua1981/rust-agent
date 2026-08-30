@@ -553,7 +553,7 @@ impl Agent {
         &self,
         _user_input: &str,
     ) -> crate::router::ExecutionMode {
-        // The pipeline router is retired: the model drives plan-mode (plan_mode
+        // The router is retired: the model drives plan-mode (plan_mode
         // flag) and delegation (call_node). Honor an explicit force_mode (e.g.
         // /mode) for command compatibility, otherwise always run the basic loop.
         if let Some(forced) = self.force_mode {

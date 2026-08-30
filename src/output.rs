@@ -49,7 +49,7 @@ pub enum PlanReview {
     Approve,
     /// User approves the plan and provides background context for the executor.
     ApproveWithContext(String),
-    /// User rejects the plan — abort pipeline.
+    /// User rejects the plan.
     Reject,
     /// User provides feedback — regenerate the plan with this guidance.
     Refine(String),
@@ -81,7 +81,7 @@ pub trait AgentOutput: Send + Sync {
     /// `model`  — display name of the model being called.
     fn on_role_header(&self, label: &str, model: &str);
 
-    /// Signal that a pipeline stage has finished.
+    /// Signal that a stage has finished.
     /// `label`  — e.g. "Executor", "Checker".
     fn on_stage_end(&self, label: &str);
 
@@ -124,13 +124,12 @@ pub trait AgentOutput: Send + Sync {
     /// Returns the user's free-text answer.
     fn ask_user(&self, question: &str) -> String;
 
-    /// Present a pipeline plan for interactive review.
+    /// Present a plan for interactive review.
     /// Returns Approve, Reject, or Refine(feedback).
     fn review_plan(&self, plan_text: &str) -> PlanReview;
 
     /// Prompt the user for mid-execution guidance (triggered by Ctrl-\).
-    /// Called only during Executor/Checker pipeline stages when the user
-    /// presses Ctrl-\ to inject context the LLM is missing.
+    /// Called when the user presses Ctrl-\ to inject context the LLM is missing.
     /// Returns `Some(text)` if the user typed something, `None` to continue silently.
     fn inject_guidance(&self) -> Option<String>;
 
@@ -289,7 +288,7 @@ impl AgentOutput for CliOutput {
     fn review_plan(&self, plan_text: &str) -> PlanReview {
         use std::io::{self, Write};
         use colored::Colorize;
-        println!("\n{}  {}", "📋", "Pipeline Plan:".yellow().bold());
+        println!("\n{}  {}", "📋", "Plan:".yellow().bold());
         println!("{}", "─".repeat(60));
         // Print the plan with termimad (or plain text)
         println!("{}", plan_text);

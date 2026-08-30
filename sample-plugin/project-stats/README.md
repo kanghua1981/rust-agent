@@ -72,7 +72,7 @@ project-stats/
 
 ### `on_router_decision` — intercepting
 检测任务描述中的高风险关键词（`生产`、`deploy`、`rm -rf` 等），
-自动将执行模式升级为 `full_pipeline`，确保有 Checker 验证。
+强制保持单层循环（router 已退役，仅剩 `basic_loop` 一种模式）。
 
 **脚本返回协议：**
 
@@ -81,7 +81,7 @@ project-stats/
 exit 0
 
 # 覆盖为指定模式
-echo '{"override_mode": "full_pipeline"}'
+echo '{"override_mode": "basic_loop"}'
 exit 0
 
 # 阻止执行
@@ -90,9 +90,7 @@ exit 0
 ```
 
 **可用 override_mode 值：**
-- `basic_loop` — 单模型直接回复
-- `plan_and_execute` — 两阶段（计划+执行）
-- `full_pipeline` — 三阶段（计划+执行+校验）
+- `basic_loop` — 单模型直接回复（router 已退役，唯一取值）
 
 ## 开发规范
 

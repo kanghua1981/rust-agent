@@ -133,7 +133,7 @@ docker run -d -p 3000:80 rust-agent-ui
    - **服务器地址**: ws://localhost:9527（或远程地址）
    - **工作目录**: /path/to/your/project
    - **模型**: claude-opus-4-5（可选）
-   - **执行模式**: auto / simple / plan / pipeline
+   - **执行模式**: auto / simple / plan
 
 ### 配置预设
 

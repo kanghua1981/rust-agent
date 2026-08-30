@@ -1,8 +1,8 @@
 //! Compositional orchestration helpers: plan mode (read-only analysis + an
 //! approved plan before implementation) and in-process sub-agent delegation.
 //!
-//! This replaces the retired pipeline DAG: order is decided by the model (or by
-//! entering plan mode), not by a fixed stage machine.
+//! This replaces the retired DAG orchestrator: order is decided by the model (or
+//! by entering plan mode), not by a fixed stage machine.
 
 use crate::tools::ToolDefinition;
 

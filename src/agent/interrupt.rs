@@ -76,8 +76,8 @@ pub fn is_interrupted() -> bool {
 
 // ── Guidance injection (Ctrl-\) ────────────────────────────────────────────
 
-/// Set by the Ctrl-\ (SIGQUIT) handler; checked between LLM iterations in the
-/// pipeline executor so the user can inject real-time guidance at any safe point.
+/// Set by the Ctrl-\ (SIGQUIT) handler; checked between LLM iterations so the
+/// user can inject real-time guidance at any safe point.
 static GUIDANCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn request_guidance() {

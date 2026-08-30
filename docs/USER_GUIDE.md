@@ -468,8 +468,8 @@ git checkout -b fix/my-feature
 | `/sessions` | 列出所有已保存的会话 |
 | `/yesall` | 关闭所有确认提示（本次会话） |
 | `/confirm` | 重新开启确认提示 |
-| `/mode` | 查看或设置执行模式：simple/plan/pipeline/auto |
-| `/mode <simple|plan|pipeline|auto>` | 设置执行模式 |
+| `/mode` | 查看或设置执行模式：simple/plan/auto |
+| `/mode <simple|plan|auto>` | 设置执行模式 |
 | `/model` | 列出当前模型与所有已配置模型 |
 | `/model <alias>` | 热切换到指定模型 |
 | `/model add <alias>` | 交互式添加新模型配置 |
@@ -558,19 +558,18 @@ git checkout -b fix/my-feature
 
 ## 🔀 执行模式切换
 
-Agent 支持多种执行模式，可通过 `/mode` 命令实时切换：
+Agent 支持几种执行模式，可通过 `/mode` 命令实时切换：
 
 ### 查看当前模式
 
 ```
 🤖 > /mode
 
-🔀  Current execution mode: auto (router decides)
+🔀  Current execution mode: auto
   Use /mode <option> to change:
     simple      — single-model loop, fast & cheap
-    plan        — planner + executor, no checker
-    pipeline    — full planner → executor → checker
-    auto        — let the router decide (default)
+    plan        — plan read-only, then act after approval
+    auto        — let the agent decide (default)
 ```
 
 ### 切换执行模式
@@ -580,13 +579,10 @@ Agent 支持多种执行模式，可通过 `/mode` 命令实时切换：
 🔀  Mode locked to simple: single-model loop for all messages.
 
 🤖 > /mode plan
-🔀  Mode locked to plan: planner + executor for all messages.
-
-🤖 > /mode pipeline
-🔀  Mode locked to pipeline: full pipeline for all messages.
+🔀  Mode locked to plan: read-only plan, then act after approval.
 
 🤖 > /mode auto
-🔀  Mode reset to auto: adaptive router will classify each task.
+🔀  Mode reset to auto: default single-model loop.
 ```
 
 ### 执行模式说明
@@ -594,27 +590,16 @@ Agent 支持多种执行模式，可通过 `/mode` 命令实时切换：
 | 模式 | 说明 | 适用场景 |
 |------|------|----------|
 | **simple** | 单模型循环模式，快速响应，成本低 | 简单问答、代码解释、单文件修改 |
-| **plan** | 规划+执行模式，无检查器 | 中等复杂度任务，多文件修改 |
-| **pipeline** | 完整流水线模式（规划→执行→检查） | 复杂任务，架构设计，需要验证的任务 |
-| **auto** | 自适应路由（默认） | 让 Agent 根据任务复杂度自动选择模式 |
+| **plan** | 先只读规划、审批后再执行 | 中等复杂度任务，需要先确认方案 |
+| **auto** | 默认单模型循环 | 让 Agent 根据任务自行决定 |
 
-### 自适应路由
-
-当模式设为 `auto` 时，Agent 会根据任务复杂度自动选择执行模式：
-
-- **简单任务** → `simple` 模式（单模型循环）
-- **中等任务** → `plan` 模式（规划+执行）
-- **复杂任务** → `pipeline` 模式（完整流水线）
-
-路由决策基于：
-1. **规则启发式**：关键词匹配（如 "refactor" → 复杂，"explain" → 简单）
-2. **LLM 分类**：当启发式不确定时，使用轻量级 LLM 调用分类
+规划（plan mode）也可用 `/plan` 命令手动触发：Agent 先只读分析项目，通过 `exit_plan_mode` 提交方案，审批通过后才执行。
 
 ---
 
 ## 📝 Plan 模式（先分析后执行）
 
-Agent 支持两种「先分析后执行」机制：**`/plan` 斜杠命令**（手动触发）和**自动 Pipeline**（通过 `models.toml` 配置，自动路由）。
+Agent 通过 `/plan` 斜杠命令手动触发「先分析后执行」机制。
 
 ### `/plan` 斜杠命令（手动）
 
