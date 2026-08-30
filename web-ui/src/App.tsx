@@ -138,14 +138,14 @@ function App() {
             case 'm': // Ctrl+Shift+M: 切换运行模式
               e.preventDefault();
               const store = useAgentStore.getState();
-              const modes = ['auto', 'simple', 'plan', 'pipeline'] as const;
+              const modes = ['auto', 'simple', 'plan'] as const;
               const currentMode = store.config.agentMode || 'auto';
               const currentIndex = modes.indexOf(currentMode);
               const nextIndex = (currentIndex + 1) % modes.length;
               store.setConfig({ agentMode: modes[nextIndex] });
               
               // 显示短暂提示
-              const modeNames = { auto: '自动', simple: '单层', plan: '计划', pipeline: '流水线' };
+              const modeNames = { auto: '自动', simple: '单层', plan: '计划' };
               console.log(`运行模式已切换为: ${modeNames[modes[nextIndex]]}`);
               break;
           }
@@ -229,9 +229,9 @@ function App() {
         action: () => setModelRemote(m.alias),
       })),
       // 运行模式切换
-      ...(['auto', 'simple', 'plan', 'pipeline'] as const).map((m) => ({
+      ...(['auto', 'simple', 'plan'] as const).map((m) => ({
         id: `mode.${m}`,
-        label: `切换为 ${{ auto: '自动', simple: '单层', plan: '计划', pipeline: '流水线' }[m]} 模式`,
+        label: `切换为 ${{ auto: '自动', simple: '单层', plan: '计划' }[m]} 模式`,
         description:
           m === 'auto' ? 'Router 自动选择执行策略'
           : m === 'simple' ? '单层 Agent 循环，速度快'

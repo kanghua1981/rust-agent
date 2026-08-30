@@ -45,7 +45,7 @@ interface SlotSnapshot {
   pendingConfCount: number;
   availableModels: Array<{ alias: string; model: string; provider: string }>;
   activeModel: string | null;
-  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+  agentMode: 'auto' | 'simple' | 'plan';
   tokenUsage: TokenUsage | null;
 }
 
@@ -358,7 +358,7 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
             <select
               value={agentMode || 'auto'}
               onChange={(e) => {
-                const newMode = e.target.value as 'auto' | 'simple' | 'plan' | 'pipeline';
+                const newMode = e.target.value as 'auto' | 'simple' | 'plan';
                 useAgentStore.getState().setAgentMode(newMode);
               }}
               style={{
@@ -377,7 +377,7 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
               <option value="auto">🤖 自动</option>
               <option value="simple">⚡ 单层</option>
               <option value="plan">📋 计划</option>
-              <option value="pipeline">🔀 流水线</option>
+              
             </select>
           </div>
 

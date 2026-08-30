@@ -30,15 +30,6 @@ export type ClientMessage =
   | ListEndpointsMessage
   | AddEndpointMessage
   | DeleteEndpointMessage
-  | ListWorkflowsMessage
-  | GetWorkflowMessage
-  | SaveWorkflowMessage
-  | DeleteWorkflowMessage
-  | RunWorkflowMessage
-  | ListPipelinesMessage
-  | GetPipelineMessage
-  | SavePipelineMessage
-  | DeletePipelineMessage
   | ListNodesMessage
   | AddNodeMessage
   | UpdateNodeMessage
@@ -187,22 +178,11 @@ export type ServerEvent =
   | PeersListEvent
   | PeerSavedEvent
   | PeerDeletedEvent
-  | WorkflowsListEvent
-  | WorkflowLoadedEvent
-  | WorkflowSavedEvent
-  | WorkflowDeletedEvent
-  | WorkflowStartedEvent
-  | WorkflowCompleteEvent
-  | WorkflowErrorEvent
-  | PipelinesListEvent
-  | PipelineLoadedEvent
-  | PipelineSavedEvent
   | DirListEvent
   | FileContentEvent
   | PtyOutputEvent
   | PtyExitEvent
-  | PtyErrorEvent
-  | PipelineDeletedEvent;
+  | PtyErrorEvent;
 
 export interface SessionMeta {
   id: string;
@@ -454,7 +434,6 @@ export interface UserMessage extends BaseMessage {
     text: string;
     workdir?: string;     // 可选的工作目录
     model?: string;       // 可选的模型
-    pipeline_name?: string; // 可选：指定执行的 pipeline 名称
   };
 }
 
@@ -505,7 +484,7 @@ export interface SetSandboxMessage extends BaseMessage {
 export interface SetModeMessage extends BaseMessage {
   type: 'set_mode';
   data: {
-    mode: 'auto' | 'simple' | 'plan' | 'pipeline';
+    mode: 'auto' | 'simple' | 'plan';
   };
 }
 
@@ -815,82 +794,6 @@ export interface DeleteEndpointMessage extends BaseMessage {
   data: { name: string };
 }
 
-// ── Workflow CRUD messages ─────────────────────────────────────────
-export interface ListWorkflowsMessage extends BaseMessage {
-  type: 'list_workflows';
-  data: {};
-}
-
-export interface GetWorkflowMessage extends BaseMessage {
-  type: 'get_workflow';
-  data: { id: string };
-}
-
-export interface SaveWorkflowMessage extends BaseMessage {
-  type: 'save_workflow';
-  data: Record<string, any>;  // Workflow fields
-}
-
-export interface DeleteWorkflowMessage extends BaseMessage {
-  type: 'delete_workflow';
-  data: { id: string };
-}
-
-export interface RunWorkflowMessage extends BaseMessage {
-  type: 'run_workflow';
-  data: { workflowId: string; task: string };
-}
-
-// ── Pipeline types ─────────────────────────────────────────────────
-export interface StageDef {
-  id: string;
-  name: string;
-  role?: string;
-  model?: string;
-  tools?: 'read_only' | 'all';
-  context?: 'shared' | 'isolated';
-  system_prompt?: string;
-  initial_message?: string;
-  inputs?: string[];
-  artifact?: string;
-  on_pass?: string;
-  on_fail?: string;
-  max_retries?: number;
-}
-
-export interface PipelineDef {
-  name: string;
-  description: string;
-  stages: StageDef[];
-}
-
-export interface PipelineInfo {
-  name: string;
-  description: string;
-  stage_count: number;
-}
-
-// ── Pipeline CRUD messages ─────────────────────────────────────────
-export interface ListPipelinesMessage extends BaseMessage {
-  type: 'list_pipelines';
-  data: {};
-}
-
-export interface GetPipelineMessage extends BaseMessage {
-  type: 'get_pipeline';
-  data: { name: string };
-}
-
-export interface SavePipelineMessage extends BaseMessage {
-  type: 'save_pipeline';
-  data: PipelineDef;
-}
-
-export interface DeletePipelineMessage extends BaseMessage {
-  type: 'delete_pipeline';
-  data: { name: string };
-}
-
 export interface PluginsListEvent extends BaseMessage {
   type: 'plugins_list';
   data: { plugins: PluginInfo[] };
@@ -1047,99 +950,6 @@ export interface PeerDeletedEvent extends BaseMessage {
   data: { id: string; peers?: PeerInfo[] };
 }
 
-// ── Workflow events ─────────────────────────────────────────────────
-export interface WorkflowsListEvent extends BaseMessage {
-  type: 'workflows_list';
-  data: { workflows: any[] };
-}
-
-export interface WorkflowLoadedEvent extends BaseMessage {
-  type: 'workflow_loaded';
-  data: { workflow: any };
-}
-
-export interface WorkflowSavedEvent extends BaseMessage {
-  type: 'workflow_saved';
-  data: { workflow: any };
-}
-
-export interface WorkflowDeletedEvent extends BaseMessage {
-  type: 'workflow_deleted';
-  data: { id: string };
-}
-
-export interface WorkflowStartedEvent extends BaseMessage {
-  type: 'workflow_started';
-  data: { workflowId: string; task: string };
-}
-
-export interface WorkflowCompleteEvent extends BaseMessage {
-  type: 'workflow_complete';
-  data: { run: WorkflowRunResult };
-}
-
-export interface WorkflowErrorEvent extends BaseMessage {
-  type: 'workflow_error';
-  data: { message: string };
-}
-
-// ── Pipeline events ─────────────────────────────────────────────────
-export interface PipelinesListEvent extends BaseMessage {
-  type: 'pipelines_list';
-  data: { pipelines: PipelineInfo[] };
-}
-
-export interface PipelineLoadedEvent extends BaseMessage {
-  type: 'pipeline_loaded';
-  data: { pipeline: PipelineDef };
-}
-
-export interface PipelineSavedEvent extends BaseMessage {
-  type: 'pipeline_saved';
-  data: { name: string };
-}
-
-export interface PipelineDeletedEvent extends BaseMessage {
-  type: 'pipeline_deleted';
-  data: { name: string };
-}
-
-// ── Workflow data types ─────────────────────────────────────────────
-export interface WorkflowStage {
-  id: string;
-  workflowId: string;
-  /** @deprecated kept for backward compat; use embedded fields */
-  presetId?: string;
-  stageOrder: number;
-  stageGroup: string;
-  inputTemplate: string;
-  outputKey?: string;
-  condition: string;
-  timeoutSecs: number;
-  retryCount: number;
-  autoApprove: boolean;
-  // ── Embedded connection fields ──
-  /** Target Agent server URL, e.g. ws://host:9527 */
-  serverUrl: string;
-  /** Working directory on the target server */
-  workdir?: string;
-  /** Model alias */
-  model?: string;
-  /** Execution mode: auto, simple, plan, pipeline */
-  agentMode: string;
-}
-
-export interface WorkflowDef {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  defaultTimeout: number;
-  stages: WorkflowStage[];
-  createdAt: string;
-  updatedAt: string;
-}
-
 // 工具类型定义
 export interface ToolCall {
   id: string;
@@ -1177,7 +987,7 @@ export interface AgentConfig {
   workdir?: string;
   model?: string;
   autoApprove?: boolean;
-  agentMode?: 'auto' | 'simple' | 'plan' | 'pipeline';
+  agentMode?: 'auto' | 'simple' | 'plan';
   isolation?: 'normal' | 'container' | 'sandbox';
   newSessionOnConnect?: boolean;
 }
@@ -1200,7 +1010,7 @@ export interface ProjectDefinition {
   serverUrl: string;             // ws://host:port
   workdir: string;               // 工程目录绝对路径
   isolation: 'normal' | 'container' | 'sandbox';
-  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+  agentMode: 'auto' | 'simple' | 'plan';
   autoApprove: boolean;
   newSessionOnConnect: boolean;
   createdAt: string;             // ISO timestamp
@@ -1253,7 +1063,7 @@ export interface ProjectSlot {
   sessionRestoreAvailable: { message_count: number } | null;
   availableModels: ModelInfo[];
   activeModel: string | null;
-  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+  agentMode: 'auto' | 'simple' | 'plan';
   endpoints: EndpointInfo[];
 }
 
@@ -1277,39 +1087,4 @@ export interface SandboxFileChange {
   original_size: number | null;
   current_size: number | null;
   diff: string | null;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  Workflow Run Types
-// ═══════════════════════════════════════════════════════════════
-
-export interface StageRunResult {
-  id: string;
-  runId: string;
-  stageId: string;
-  stageOrder: number;
-  presetName?: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
-  inputPrompt?: string;
-  outputText?: string;
-  outputSummary?: string;
-  tokensUsed: number;
-  toolCalls: string[];
-  startedAt?: string;
-  finishedAt?: string;
-  errorMessage?: string;
-  retryAttempt: number;
-}
-
-export interface WorkflowRunResult {
-  id: string;
-  workflowId: string;
-  workflowName: string;
-  status: string;
-  task: string;
-  startedAt?: string;
-  finishedAt?: string;
-  totalTokens: number;
-  errorMessage?: string;
-  stageResults: StageRunResult[];
 }

@@ -38,7 +38,7 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
   const [isolation, setIsolation] = useState<'normal' | 'container' | 'sandbox'>(
     (store.config.isolation as any) || 'normal'
   );
-  const [agentMode, setAgentMode] = useState<'auto' | 'simple' | 'plan' | 'pipeline'>(
+  const [agentMode, setAgentMode] = useState<'auto' | 'simple' | 'plan'>(
     store.config.agentMode || 'auto'
   );
   const [autoApprove, setAutoApprove] = useState(store.config.autoApprove ?? false);
@@ -261,7 +261,7 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
                 <option value="auto">自动</option>
                 <option value="simple">单层</option>
                 <option value="plan">计划</option>
-                <option value="pipeline">流水线</option>
+                
               </select>
             </div>
           </div>

@@ -161,11 +161,6 @@ export const useWebSocket = () => {
     setPlugins,
     setAvailableModels,
     setActiveModel,
-    setWorkflows,
-    addWorkflow,
-    updateWorkflow,
-    deleteWorkflow,
-    setActiveRun,
     activeConnectionId,
     connections,
     createConnectionSlot,
@@ -181,7 +176,7 @@ export const useWebSocket = () => {
 
     const ok = sendRaw({
       type: 'user_message',
-      data: { text, workdir: st.workdir, model: st.config.model, pipeline_name: st.selectedPipeline },
+      data: { text, workdir: st.workdir, model: st.config.model },
       id: userMsgId,
     });
 
@@ -351,43 +346,6 @@ export const useWebSocket = () => {
     sendRaw({ type: 'delete_peer', data: { id } });
   }, [sendRaw]);
 
-  // ── Workflow CRUD (global.db) ─────────────────────────────────────
-  const listWorkflows = useCallback(() => {
-    sendRaw({ type: 'list_workflows', data: {} });
-  }, [sendRaw]);
-
-  const getWorkflow = useCallback((id: string) => {
-    sendRaw({ type: 'get_workflow', data: { id } });
-  }, [sendRaw]);
-
-  const sendSaveWorkflow = useCallback((wf: any) => {
-    sendRaw({ type: 'save_workflow', data: wf });
-  }, [sendRaw]);
-
-  const sendDeleteWorkflow = useCallback((id: string) => {
-    sendRaw({ type: 'delete_workflow', data: { id } });
-  }, [sendRaw]);
-
-  const runWorkflow = useCallback((workflowId: string, task: string) => {
-    sendRaw({ type: 'run_workflow', data: { workflowId, task } });
-  }, [sendRaw]);
-
-  // ── Pipeline CRUD (project-local .agent/pipelines/*.toml) ─────────
-  const listPipelines = useCallback(() => {
-    sendRaw({ type: 'list_pipelines', data: {} });
-  }, [sendRaw]);
-
-  const getPipeline = useCallback((name: string) => {
-    sendRaw({ type: 'get_pipeline', data: { name } });
-  }, [sendRaw]);
-
-  const savePipeline = useCallback((pipeline: any) => {
-    sendRaw({ type: 'save_pipeline', data: pipeline });
-  }, [sendRaw]);
-
-  const deletePipeline = useCallback((name: string) => {
-    sendRaw({ type: 'delete_pipeline', data: { name } });
-  }, [sendRaw]);
 
   const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
     const uploadMsgId = uuidv4();
@@ -409,16 +367,15 @@ export const useWebSocket = () => {
   }, [sendRaw]);
 
   const openFileExternal = useCallback(async (path: string) => {
-    // 统一分派：Tauri 本地零传输直开 / Tauri 远端 Rust 流式下载后本地打开 / 浏览器原生下载
+    // 统一分派：Tauri 本地零传输直开 / 远端与浏览器走锚点下载（服务端需 /file 端点）
     const st = useAgentStore.getState();
     openFileFromServer(
       serverUrl,
       path,
       st.clusterToken,
       st.workdir || st.connectedWorkdir || undefined,
-      () => sendRaw({ type: 'open_file_external', data: { path } }),
     );
-  }, [serverUrl, sendRaw]);
+  }, [serverUrl]);
 
   // ── PTY Terminal ───────────────────────────────────────────────────
   const ptyOutputCbRef = useRef<((data: string) => void) | null>(null);
@@ -596,100 +553,6 @@ export const useWebSocket = () => {
         if (event.data.peers) {
           setPeerList(event.data.peers);
         }
-        break;
-      }
-
-      // ── Workflow events (global.db) ────────────────────────────────────
-      case 'workflows_list': {
-        setWorkflows(event.data.workflows || []);
-        break;
-      }
-
-      case 'workflow_loaded': {
-        const wf = event.data.workflow;
-        if (wf) {
-          const st = useAgentStore.getState();
-          const existing = st.workflows.findIndex((w: any) => w.id === wf.id);
-          if (existing >= 0) {
-            st.updateWorkflow(wf.id, wf);
-          } else {
-            st.addWorkflow(wf);
-          }
-        }
-        break;
-      }
-
-      case 'workflow_saved': {
-        const wf = event.data.workflow;
-        if (wf) {
-          const st = useAgentStore.getState();
-          const existing = st.workflows.findIndex((w: any) => w.id === wf.id);
-          if (existing >= 0) {
-            st.updateWorkflow(wf.id, wf);
-          } else {
-            st.addWorkflow(wf);
-          }
-        }
-        break;
-      }
-
-      case 'workflow_deleted': {
-        const st = useAgentStore.getState();
-        st.deleteWorkflow(event.data.id);
-        break;
-      }
-
-      // ── Workflow execution events ─────────────────────────────────
-      case 'workflow_started': {
-        setActiveRun(null); // clear previous
-        // Optionally show a notification
-        console.log('Workflow started:', event.data);
-        break;
-      }
-
-      case 'workflow_complete': {
-        setActiveRun(event.data.run || null);
-        break;
-      }
-
-      case 'workflow_error': {
-        setActiveRun({
-          id: '',
-          workflowId: '',
-          workflowName: '',
-          status: 'error',
-          task: '',
-          totalTokens: 0,
-          stageResults: [],
-          errorMessage: event.data.message,
-        } as any);
-        break;
-      }
-
-      // ── Pipeline events (project-local .agent/pipelines/*.toml) ──────
-      case 'pipelines_list': {
-        const st = useAgentStore.getState();
-        st.setPipelines(event.data.pipelines || []);
-        break;
-      }
-
-      case 'pipeline_loaded': {
-        const st = useAgentStore.getState();
-        st.setEditingPipeline(event.data.pipeline || null);
-        break;
-      }
-
-      case 'pipeline_saved': {
-        // Refresh the list
-        const st = useAgentStore.getState();
-        if (st.activeProjectId) {
-          // Re-fetch will be triggered by caller, or send a list_pipelines
-        }
-        break;
-      }
-
-      case 'pipeline_deleted': {
-        // Refresh the list
         break;
       }
 
@@ -1466,7 +1329,7 @@ export const useWebSocket = () => {
   useEffect(() => {
     const st = useAgentStore.getState();
     if (st.connectionStatus === 'connected') {
-      sendRaw({ type: 'set_mode', data: { mode: agentMode as 'auto' | 'simple' | 'plan' | 'pipeline' } });
+      sendRaw({ type: 'set_mode', data: { mode: agentMode as 'auto' | 'simple' | 'plan' } });
       if (st.workdir) {
         sendRaw({ type: 'set_workdir', data: { workdir: st.workdir } });
       }
@@ -1533,16 +1396,6 @@ export const useWebSocket = () => {
     addPeer,
     updatePeer,
     deletePeer,
-    listWorkflows,
-    getWorkflow,
-    saveWorkflow: sendSaveWorkflow,
-    deleteWorkflow: sendDeleteWorkflow,
-    runWorkflow,
-    // Pipeline CRUD
-    listPipelines,
-    getPipeline,
-    savePipeline,
-    deletePipeline,
     uploadFile,
     listDir,
     openFileExternal,

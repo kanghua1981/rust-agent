@@ -147,7 +147,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isConnected, onSet
               <option value="auto">自动</option>
               <option value="simple">单层</option>
               <option value="plan">计划</option>
-              <option value="pipeline">流水线</option>
+              
             </select>
           </Field>
         </Section>

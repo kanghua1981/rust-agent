@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, WorkflowDef, WorkflowRunResult, PipelineInfo, PipelineDef, DirEntry } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, DirEntry } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 import { runMigration } from '../utils/migration';
 
@@ -109,7 +109,7 @@ interface AgentState {
 
   availableModels: ModelInfo[];
   activeModel: string | null;
-  agentMode: 'auto' | 'simple' | 'plan' | 'pipeline';
+  agentMode: 'auto' | 'simple' | 'plan';
   endpoints: EndpointInfo[];
 
   // ── File browser (per-project, not persisted) ──
@@ -128,14 +128,6 @@ interface AgentState {
   projects: Record<string, ProjectDefinition>;
 
   connectionHistory: ConnectionHistory[];
-  workflows: WorkflowDef[];
-  activeRun: WorkflowRunResult | null;
-  /** Available pipelines from .agent/pipelines/ */
-  pipelines: PipelineInfo[];
-  /** Currently loaded pipeline for editing */
-  editingPipeline: PipelineDef | null;
-  /** Currently selected pipeline name for task dispatch */
-  selectedPipeline: string;
 
   // ── Connection lifecycle actions ──
   createConnectionSlot: (id: string, label: string, serverUrl: string, workdir?: string) => void;
@@ -190,14 +182,6 @@ interface AgentState {
   updateProject: (id: string, updates: Partial<ProjectDefinition>) => void;
   deleteProject: (id: string) => void;
 
-  setWorkflows: (workflows: WorkflowDef[]) => void;
-  addWorkflow: (wf: WorkflowDef) => void;
-  updateWorkflow: (id: string, wf: Partial<WorkflowDef>) => void;
-  deleteWorkflow: (id: string) => void;
-  // Pipeline CRUD
-  setPipelines: (pipelines: PipelineInfo[]) => void;
-  setEditingPipeline: (pipeline: PipelineDef | null) => void;
-  setSelectedPipeline: (name: string) => void;
   clearSession: () => void;
   setNodeList: (nodes: VirtualNodeInfo[]) => void;
   setPeerList: (peers: any[]) => void;
@@ -210,8 +194,7 @@ interface AgentState {
   setPlugins: (plugins: PluginInfo[]) => void;
   setAvailableModels: (models: ModelInfo[]) => void;
   setActiveModel: (alias: string | null) => void;
-  setAgentMode: (mode: 'auto' | 'simple' | 'plan' | 'pipeline') => void;
-  setActiveRun: (run: WorkflowRunResult | null) => void;
+  setAgentMode: (mode: 'auto' | 'simple' | 'plan') => void;
 
   // ── File browser actions ──
   setDirEntries: (path: string, entries: DirEntry[]) => void;
@@ -323,11 +306,6 @@ const initialState = {
   })(),
 
   connectionHistory: [] as ConnectionHistory[],
-  workflows: [] as WorkflowDef[],
-  pipelines: [] as PipelineInfo[],
-  editingPipeline: null as PipelineDef | null,
-  selectedPipeline: 'default',
-  activeRun: null as WorkflowRunResult | null,
   config: {
     serverUrl: defaultUrl,
     autoApprove: persistedConfig.autoApprove ?? false,
@@ -841,39 +819,6 @@ export const useAgentStore = create<AgentState>()(
 
       setConfig: (partial) =>
         set((state) => ({ config: { ...state.config, ...partial } })),
-
-      setWorkflows: (workflows) =>
-        set({ workflows }),
-
-      addWorkflow: (wf) =>
-        set((state) => ({
-          workflows: [...state.workflows.filter(w => w.id !== wf.id), wf],
-        })),
-
-      updateWorkflow: (id, partial) =>
-        set((state) => ({
-          workflows: state.workflows.map((w) =>
-            w.id === id ? { ...w, ...partial } : w
-          ),
-        })),
-
-      deleteWorkflow: (id) =>
-        set((state) => ({
-          workflows: state.workflows.filter((w) => w.id !== id),
-        })),
-
-      // Pipeline CRUD
-      setPipelines: (pipelines) =>
-        set({ pipelines }),
-
-      setEditingPipeline: (editingPipeline) =>
-        set({ editingPipeline }),
-
-      setSelectedPipeline: (selectedPipeline) =>
-        set({ selectedPipeline }),
-
-      setActiveRun: (run) =>
-        set({ activeRun: run }),
 
       // ── File browser actions ────────────────────────────────────
       setDirEntries: (path, entries) =>

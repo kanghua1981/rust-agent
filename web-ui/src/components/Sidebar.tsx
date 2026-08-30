@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ProjectTree } from './ProjectTree';
 
-type Tab = 'chat' | 'settings' | 'nodes' | 'plugins' | 'models' | 'workflows' | 'pipelines';
+type Tab = 'chat' | 'settings' | 'nodes' | 'plugins' | 'models';
 
 interface SidebarProps {
   activeTab: Tab;
@@ -172,8 +172,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
                 { tab: 'chat' as Tab, icon: '💬', label: '对话' },
                 { tab: 'nodes' as Tab, icon: '🌐', label: '节点' },
                 { tab: 'plugins' as Tab, icon: '🧩', label: '插件' },
-                { tab: 'workflows' as Tab, icon: '🔄', label: '工作流' },
-                { tab: 'pipelines' as Tab, icon: '🚀', label: '流水线' },
                 { tab: 'models' as Tab, icon: '🧠', label: '模型' },
                 { tab: 'settings' as Tab, icon: '⚙️', label: '设置' },
               ];
@@ -205,8 +203,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpen
             <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingCount || undefined} collapsed={collapsed} onClick={() => onTabChange('chat')} />
             <NavItem icon="🌐" label="节点" active={activeTab === 'nodes'} badge={nodeList.length || undefined} collapsed={collapsed} onClick={() => onTabChange('nodes')} />
             <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} collapsed={collapsed} onClick={() => onTabChange('plugins')} />
-            <NavItem icon="🔄" label="工作流" active={activeTab === 'workflows'} collapsed={collapsed} onClick={() => onTabChange('workflows')} />
-            <NavItem icon="🚀" label="流水线" active={activeTab === 'pipelines'} collapsed={collapsed} onClick={() => onTabChange('pipelines')} />
             <NavItem icon="🧠" label="模型" active={activeTab === 'models'} collapsed={collapsed} onClick={() => onTabChange('models')} />
             <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} collapsed={collapsed} onClick={() => onTabChange('settings')} />
           </div>
