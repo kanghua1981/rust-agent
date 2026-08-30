@@ -572,27 +572,15 @@ impl Agent {
     /// - absent + `enabled = false`:    always basic loop
     pub async fn resolve_execution_mode(
         &self,
-        user_input: &str,
+        _user_input: &str,
     ) -> crate::router::ExecutionMode {
-        use crate::router::{ExecutionMode, RouterMode};
-
-        // Manual override always wins.
+        // The pipeline router is retired: the model drives plan-mode (plan_mode
+        // flag) and delegation (call_node). Honor an explicit force_mode (e.g.
+        // /mode) for command compatibility, otherwise always run the basic loop.
         if let Some(forced) = self.force_mode {
             return forced;
         }
-
-        let router_mode = self
-            .models_cfg
-            .pipeline
-            .as_ref()
-            .map(|p| p.router_mode())
-            .unwrap_or(RouterMode::AlwaysSimple);
-
-        match router_mode {
-            RouterMode::AlwaysPipeline => ExecutionMode::FullPipeline,
-            RouterMode::AlwaysSimple => ExecutionMode::BasicLoop,
-            RouterMode::Auto => self.classify_task(user_input).await,
-        }
+        crate::router::ExecutionMode::BasicLoop
     }
 
     /// Classify a task using heuristics, falling back to an LLM call
@@ -792,29 +780,13 @@ impl Agent {
         };
 
         match mode {
-            crate::router::ExecutionMode::FullPipeline => {
-                // Use the configurable DAG pipeline from .agent/pipelines/.
-                self.conversation.add_message(Message::user(&enriched_input));
-                let pipeline = self.load_pipeline()?;
-                return crate::pipeline::runner::run(self, &pipeline, &enriched_input).await;
-            }
-            crate::router::ExecutionMode::PlanAndExecute => {
-                // Plan+Execute: use a lightweight 2-stage pipeline (planner→executor, no checker).
-                // This is auto-generated from the default pipeline minus the checker stage.
-                self.conversation.add_message(Message::user(&enriched_input));
-                let mut pipeline = self.load_pipeline()?;
-                // Remove checker-related stages, keep only planner + executor
-                pipeline.stages.retain(|s| s.id != "checker");
-                // Rewire executor's on_pass to "done"
-                if let Some(exec) = pipeline.stages.iter_mut().find(|s| s.id == "executor") {
-                    exec.on_pass = "done".to_string();
-                    exec.on_fail = "done".to_string();
-                    exec.max_retries = None;
-                }
-                return crate::pipeline::runner::run(self, &pipeline, &enriched_input).await;
-            }
             crate::router::ExecutionMode::BasicLoop => {
                 // Fall through to the basic loop below
+            }
+            _ => {
+                // Retired pipeline modes (FullPipeline / PlanAndExecute) are
+                // treated as the basic loop; the model drives plan-mode and
+                // delegation via call_node instead.
             }
         }
 
