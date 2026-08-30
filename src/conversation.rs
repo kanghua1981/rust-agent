@@ -227,6 +227,9 @@ pub struct Conversation {
     pub system_prompt: String,
     /// Append-only typed session log (the authoritative recording).
     pub log: Vec<SessionEvent>,
+    /// Delegation depth of the agent this conversation belongs to (0 = top).
+    /// Persisted with the session so a resumed sub-agent keeps its depth cap.
+    pub delegation_depth: usize,
     /// Incremental token-estimate cache; see [Conversation::token_estimate].
     token_estimate_cache: std::sync::Mutex<TokenEstimateCache>,
 }
@@ -238,6 +241,7 @@ impl Conversation {
             messages: Vec::new(),
             system_prompt,
             log: Vec::new(),
+            delegation_depth: 0,
             token_estimate_cache: std::sync::Mutex::new(TokenEstimateCache::default()),
         }
     }
@@ -287,6 +291,7 @@ impl Conversation {
             messages: Vec::new(),
             system_prompt,
             log: Vec::new(),
+            delegation_depth: 0,
             token_estimate_cache: std::sync::Mutex::new(TokenEstimateCache::default()),
         }
     }
@@ -733,6 +738,7 @@ The conversation continues from the most recent messages below.]",
             messages,
             system_prompt: String::new(),
             log,
+            delegation_depth: 0,
             token_estimate_cache: std::sync::Mutex::new(TokenEstimateCache::default()),
         }
     }

@@ -49,6 +49,10 @@ pub struct SavedSession {
     /// to the legacy flat "messages" array for older session files.
     #[serde(default)]
     pub log: Vec<SessionEvent>,
+    /// Delegation depth of the session's agent (0 = top-level). Persisted so a
+    /// resumed sub-agent keeps its depth cap.
+    #[serde(default)]
+    pub delegation_depth: usize,
     /// Legacy flat message array, kept for backward compatibility and as the
     /// fallback when "log" is empty.
     #[serde(default)]
@@ -146,6 +150,7 @@ pub fn save_session(conversation: &Conversation, session_id: Option<&str>, proje
         },
         system_prompt: conversation.system_prompt.clone(),
         log: conversation.to_log(),
+        delegation_depth: conversation.delegation_depth,
         messages: conversation.messages.clone(),
     };
 
@@ -321,6 +326,7 @@ pub fn save_local_named_session(
             working_dir: workdir.display().to_string(),
         },
         system_prompt: conversation.system_prompt.clone(),
+        delegation_depth: conversation.delegation_depth,
         log: messages
             .iter()
             .enumerate()
@@ -542,5 +548,6 @@ pub fn restore_conversation(session: &SavedSession) -> Conversation {
         conv.messages = session.messages.clone();
         conv.sync_log_from_messages();
     }
+    conv.delegation_depth = session.delegation_depth;
     conv
 }

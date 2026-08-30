@@ -320,6 +320,7 @@ impl Agent {
     pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let client = llm::create_client(&config);
         let memory: Arc<dyn MemoryProvider> = Arc::new(LocalFileMemory::load(&project_dir));
+        let conv_depth = conversation.delegation_depth;
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
@@ -347,7 +348,7 @@ impl Agent {
             project_dir,
             pending_plan: None,
             plan_mode: false,
-            delegation_depth: 0,
+            delegation_depth: conv_depth,
             subagents: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             max_subagent_depth: 3,
             max_subagents: 8,
@@ -729,6 +730,7 @@ impl Agent {
         if fork {
             child.conversation = self.conversation.fork(self.conversation.log.len() as u64);
         }
+        child.conversation.delegation_depth = child.delegation_depth;
         let id = format!("sa-{}", uuid::Uuid::new_v4());
         let child_arc = Arc::new(tokio::sync::Mutex::new(child));
         self.subagents.lock().await.insert(id.clone(), child_arc.clone());
