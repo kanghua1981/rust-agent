@@ -258,6 +258,32 @@ impl Agent {
                     continue;
                 }
 
+                // Virtual tool: subagent / subagent_fork (in-process child agent)
+                if tool_name == "subagent" || tool_name == "subagent_fork" {
+                    let task = tool_input
+                        .get("task")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let is_fork = tool_name == "subagent_fork";
+                    self.output.on_warning(&format!(
+                        "⏭️  Delegating to an in-process {}: {}",
+                        if is_fork { "forked sub-agent" } else { "sub-agent" },
+                        crate::ui::truncate_str(&task, 120)
+                    ));
+                    let result = if is_fork {
+                        self.spawn_subagent_fork(task).await
+                    } else {
+                        self.spawn_subagent(task).await
+                    };
+                    let ok = result.is_ok();
+                    match result {
+                        Ok(text) => conversation.add_message(Message::tool_result(&tool_id, &text, false)),
+                        Err(e) => conversation.add_message(Message::tool_result(&tool_id, &format!("Sub-agent failed: {:#}", e), true)),
+                    }
+                    conversation.append_tool_result(&tool_id, !ok);
+                    continue;
+                }
+
                 // Confirmation for dangerous tools
                 let confirm_level =
                     super::confirmation::needs_confirmation(&tool_name, &tool_input);

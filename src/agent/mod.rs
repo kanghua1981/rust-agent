@@ -632,6 +632,39 @@ impl Agent {
         self.plan_mode
     }
 
+    /// Spawn an in-process child agent and run `task`, returning its final text.
+    ///
+    /// The child is a fresh Agent with a new conversation (dsh's subagent spawn):
+    /// it shares this agent's config, directory, sandbox, output, and project
+    /// memory, so the model can delegate focused work without an external node.
+    pub(crate) async fn spawn_subagent(&self, task: &str) -> Result<String> {
+        let mut child = Agent::new(
+            self.config.clone(),
+            self.project_dir.clone(),
+            self.output.clone(),
+            self.sandbox.clone(),
+            self.plugin_manager.clone(),
+        );
+        // Box the recursive call: process_message -> run_tool_loop -> spawn_subagent
+        // -> process_message, so the async fn's type stays finite.
+        Box::pin(child.process_message(task)).await
+    }
+
+    /// Like [Agent::spawn_subagent], but the child's conversation is a fork of
+    /// this session's log, so it inherits the current history (dsh's fork).
+    pub(crate) async fn spawn_subagent_fork(&self, task: &str) -> Result<String> {
+        let mut child = Agent::new(
+            self.config.clone(),
+            self.project_dir.clone(),
+            self.output.clone(),
+            self.sandbox.clone(),
+            self.plugin_manager.clone(),
+        );
+        child.conversation = self.conversation.fork(self.conversation.log.len() as u64);
+        // Box the recursive call (see spawn_subagent).
+        Box::pin(child.process_message(task)).await
+    }
+
 
     /// 发射 `router.decision` intercepting hook，允许插件覆盖路由模式。
     /// 脚本失败/超时均回退为原模式，不阻断主流程。
@@ -805,7 +838,10 @@ impl Agent {
                 plan_mode::plan_mode_toolset(self.tool_executor.readonly_definitions()),
             )
         } else {
-            confirmation::with_ask_user(self.tool_executor.definitions())
+            let mut defs = confirmation::with_ask_user(self.tool_executor.definitions());
+            defs.push(plan_mode::subagent_definition());
+            defs.push(plan_mode::subagent_fork_definition());
+            defs
         };
 
         // Per-turn tracking for record_interaction (zero extra LLM calls)
