@@ -29,7 +29,7 @@
 | **工具注册** | `ToolExecutor::new()` 中 25+ 行 `executor.register(Box::new(...))` 硬编码，工具集编译时决定 | 新增内置工具 = 改代码 + 重编译；LLM 每次拿到全部工具定义 |
 | **系统提示词** | `Conversation::new()` 启动时把 summary + skills index + memory knowledge + sub-agents 全部拼进 system prompt，然后 frozen snapshot | 膨胀到 1500+ tokens，大部分 LLM 不总是需要 |
 | **信任机制** | `allowed_dir`（目录限制）+ `security.rs`（命令黑名单）+ `tool.before` hook + `ConfirmationLevel` — 分散在三处 | 无统一裁决入口；无法声明 per-role per-capability 策略 |
-| **角色隔离** | Pipeline planner/executor/checker 共享同一份 `conversation.system_prompt` 和 memory | "一个角色多拿上下文，另一个角色串味" |
+| **角色隔离** | 计划/执行与子代理共享同一份 `conversation.system_prompt` 和 memory | "子代理会继承主对话上下文的全部" |
 | **资源加载** | Skills/Memory/Summary 全量注入 system prompt，而非按需拉取 | 文章说的"每次还像第一次上岗，得靠 prompt 再解释一遍" |
 | **MCP 工具** | 动态加载 OK，但加载后与内置工具混在同一 HashMap，无来源区分 | 无法做来源级信任/卸载管理 |
 
@@ -361,7 +361,7 @@ confirm = []
 | `src/tools/mod.rs` | 修改 | ToolExecutor::execute() 中插入 trust_engine.check() |
 | `src/security.rs` | 修改 | 保留接口，内部转发到 TrustEngine |
 | `src/agent/mod.rs` | 修改 | Agent 持有 TrustEngine；set_allowed_dir 逻辑移入 |
-| `src/pipeline.rs` | 修改 | Planner/Executor/Checker 各自获得 TrustPolicy 快照 |
+| `src/agent/plan_mode.rs` | 修改 | 计划/子代理各自获得 TrustPolicy 快照 |
 | `src/worker.rs` | 修改 | 新连接时根据 channel 配置初始化 TrustPolicy |
 
 ---
@@ -575,26 +575,20 @@ impl Agent {
 }
 ```
 
-### 7.2 Pipeline 集成
+### 7.2 组合式编排（plan-mode + 子代理）
 
 ```
-用户输入 → Router 分类
+用户输入 → 主代理循环
               │
-              ├─ Simple → 直接 Basic Loop (Discovery + Trust + Execution)
+              ├─ /plan（可选）→ 只读规划 + Trust(Role=plan) → exit_plan_mode → 审批 → 执行
               │
-              ├─ Medium → Plan + Execute
-              │              │
-              │              ├─ Planner: Discovery(ReadOnly) → Trust(Role=planner) → Plan
-              │              └─ Executor: Discovery(All) → Trust(Role=executor) → Execute
+              ├─ subagent / subagent_fork（可选）→ 子代理各自获得独立 Trust 快照 + 资源子集
               │
-              └─ Complex → Full Pipeline
-                             │
-                             ├─ Planner: Discovery(ReadOnly) + Trust(Role=planner)
-                             ├─ Executor: Discovery(Write+Shell) + Trust(Role=executor)
-                             └─ Checker: Discovery(ReadOnly) + Trust(Role=checker)
+              └─ call_node（可选）→ 委托到外部节点（独立进程/机器，自带 Trust 策略）
 ```
 
-关键改进：**每个 Pipeline 阶段都有自己的 Trust 快照和 Resource 子集**，不再共享同一份臃肿上下文。
+关键改进：**子代理 / 计划阶段各自持有独立的 Trust 快照和 Resource 子集**，不再共享同一份臃肿上下文。
+
 
 ### 7.3 Agent 结构体变化
 
@@ -649,7 +643,7 @@ pub struct Agent {
 |:---|:---|:---|:---|
 | P3.1 | `Conversation::new()` 改为生成紧凑资源目录 | `src/conversation.rs` | < 800 token system prompt |
 | P3.2 | Skills / Memory / Summary 注册到 ResourceIndex | `src/skills.rs` + `src/memory/` + `src/summary.rs` | 资源统一可枚举 |
-| P3.3 | Pipeline 各阶段使用 Trust 快照 + 独立上下文 | `src/pipeline.rs` + `src/agent/mod.rs` | 角色上下文隔离 |
+| P3.3 | 计划/子代理使用 Trust 快照 + 独立上下文 | `src/agent/plan_mode.rs` + `src/agent/mod.rs` | 角色上下文隔离 |
 
 ### Phase 4：文档与测试（预计 1 天）
 
@@ -683,7 +677,7 @@ pub struct Agent {
 - [ ] Trust 策略可配置：在 `models.toml` 中设置 `[roles.myrole] confirm = ["write_file"]`，写文件时触发确认
 - [ ] Discovery 生效：发送"帮我分析 Cargo.toml"时，给 LLM 的工具列表不含 browser/write_file/run_command 等高风险工具
 - [ ] 现有 `system_prompt.md` 用户自定义内容仍出现在 system prompt 首部
-- [ ] Pipeline planner/executor/checker 各自获得独立 TrustPolicy 快照
+- [ ] 子代理各自获得独立 TrustPolicy 快照
 - [ ] `security.rs` 现有安全拦截全部由 TrustEngine 承载，不出现重复检查
 
 ---
@@ -697,7 +691,7 @@ src/tools/mod.rs      → 保留 Tool trait + ToolExecutor，新增 Capability �
 src/router.rs         → 增加调用 discovery.search() 步骤
 src/conversation.rs   → build_system_prompt() 改用 ResourceIndex 紧凑格式
 src/security.rs       → 保留为兼容层，内部转发到 TrustEngine
-src/pipeline.rs       → 每个阶段获得独立 Trust + Resource 快照
+src/agent/plan_mode.rs → 计划/子代理获得独立 Trust + Resource 快照
 src/agent/mod.rs      → 字段新增 registry/trust_engine/resource_index
 src/model_manager.rs  → RoleConfig 扩展 Trust 字段
 src/plugin/manager.rs → 工具加载时注册到 CapabilityRegistry

@@ -89,7 +89,7 @@ Agent 内核事件源
 
 | 事件名 | 触发时机 | 建议模式 |
 |--------|----------|----------|
-| `mode.switch` | pipeline 模式切换 | Blocking |
+| `mode.switch` | 执行/模式切换 | Blocking |
 | `skill.load` | `load_skill` 工具被调用 | Fire-and-forget |
 | `mcp.connect` | MCP 服务器连接成功 | Fire-and-forget |
 | `mcp.disconnect` | MCP 服务器断开连接 | Fire-and-forget |
@@ -308,7 +308,7 @@ plugin_id = "my-plugin@1.0.0"   # 只响应本插件自身加载事件
 ```json
 {
   "from": "default",
-  "to": "pipeline",
+  "to": "plan",
   "reason": "user_command"
 }
 ```

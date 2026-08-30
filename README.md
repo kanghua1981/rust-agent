@@ -115,118 +115,24 @@ api_key = "sk-xxxxx"  # 可选，不设则 fallback 到环境变量
 
 ### 子代理委托（进程内 + 外部节点）
 
-通过 `.agent/pipelines/` 下的 TOML 文件定义**多阶段 DAG 流水线**，每个阶段（stage）可独立配置模型、角色、工具集和上下文策略，阶段之间通过 artifact 传递结果并支持自定义跳转。
+通过 **Plan 模式**、**进程内子代理委托** 与 **外部节点 call_node** 组合编排，无需固定流水线 DAG；编排顺序由模型根据任务自行决定。
 
-#### 核心概念
+#### Plan 模式（先分析后执行）
 
-| 概念 | 说明 |
-|---|---|
-| `stages` | 流水线阶段列表，每个阶段有唯一 `id` |
-| `role` | 阶段角色，引用 `models.toml` 中的 `[roles.<name>]` 定义 |
-| `tools` | 工具集：`"all"` 全部工具 / `"read_only"` 只读工具 |
-| `context` | 上下文隔离：`"shared"` 共享全对话 / `"isolated"` 只继承 artifact |
-| `initial_message` | 阶段初始 prompt，支持 `{{task}}` 和 `{{inputs.xxx}}` 模板变量 |
-| `inputs` | 从上游阶段 artifact 注入的数据，模板中引用 `{{inputs.xxx}}` |
-| `artifact` | 阶段产出文件路径（如 `.agent/artifacts/analysis.md`） |
-| `on_pass` / `on_fail` | 自定义 DAG 跳转：可指向下一阶段 `id` 或 `"done"` |
-| `max_retries` | 失败重试次数（默认 0） |
+用 `/plan <任务>`（或 `/mode plan`）进入只读规划：先分析项目、生成方案，再通过 `exit_plan_mode` 提交；方案审批通过后才执行。规划期间只允许只读工具（`read_file`、`grep_search`、`list_directory` 等）与只读 shell 命令，零副作用。
 
-#### 示例：四阶段代码评审流水线
+#### 进程内子代理（自委派）
 
-```toml
-# .agent/pipelines/review.toml
-name = "review"
-description = "分析→编码→自查→独立评审"
+- `subagent` / `subagent_fork` — 委托一个子代理；`subagent_fork` 继承当前会话日志（dsh 的 fork 语义）。
+- `subagent_followup` — 继续与仍在运行的子代理对话。
+- `subagent_terminate` — 结束子代理、释放配额。
+- `output_schema` — 要求子代理返回符合给定 JSON Schema 的结构化结果，便于主代理直接消费。
 
-[[stages]]
-id = "analyze"
-name = "需求分析"
-role = "planner"
-tools = "read_only"
-context = "shared"
-initial_message = """
-分析以下任务并输出结构化报告：
-{{task}}
+#### 外部节点协作（call_node）
 
-请从以下维度分析：
-1. 影响范围  2. 技术方案  3. 风险评估  4. 建议步骤（不执行）
-将分析报告写入 artifact 文件。
-"""
-artifact = ".agent/artifacts/analysis.md"
-on_pass = "code"
-on_fail = "done"
+`list_nodes` 发现可用节点，`call_node` 把任务委托给外部节点（节点名 / `ws://` URL / `any:<tag>` 广播）。节点在服务端以 `--mode server` 启动时暴露给本节点。
 
-[[stages]]
-id = "code"
-name = "代码实现"
-role = "executor"
-tools = "all"
-context = "isolated"
-system_prompt = "你是高效的代码实现专家。直接动手改，不要重复分析。"
-initial_message = """
-分析报告：{{inputs.analysis}}
-原始任务：{{task}}
-请按照分析报告中的步骤逐一实现。每完成一步，read_file 确认改动。
-"""
-inputs = ["analysis.md"]
-artifact = ".agent/artifacts/implementation.md"
-on_pass = "self_check"
-on_fail = "self_check"
-
-[[stages]]
-id = "self_check"
-name = "代码自查"
-role = "executor"
-tools = "all"
-context = "shared"
-initial_message = """
-对照分析报告，自查实现是否完整。
-如果发现遗漏，立即补上。完成后输出 PASS 或 FAIL。
-"""
-inputs = ["analysis.md", "implementation.md"]
-artifact = ".agent/artifacts/self_check.md"
-on_pass = "review"
-on_fail = "code"
-max_retries = 2
-
-[[stages]]
-id = "review"
-name = "独立代码评审"
-tools = "read_only"
-context = "isolated"
-system_prompt = "你是独立的代码评审专家。只基于事实说话——亲自读取文件验证。"
-initial_message = """
-独立评审实现：读取被修改的文件，运行构建验证，对照分析报告检查。
-最终输出 REVIEW_ARTIFACT — PASS ✅ 或 FAIL ❌。
-"""
-inputs = ["analysis.md", "implementation.md", "self_check.md"]
-artifact = ".agent/artifacts/review.md"
-on_pass = "done"
-on_fail = "code"
-max_retries = 3
-```
-
-#### 角色定义（`models.toml`）
-
-Stage 的 `role` 引用全局 `~/.config/rust_agent/models.toml` 中的角色定义：
-
-```toml
-[roles.planner]
-model = "sonnet"
-extra_instructions = "使用只读工具探索代码库，输出可执行计划。"
-
-[roles.executor]
-model = "deepseek"
-extra_instructions = "每次修改后运行 cargo build 验证。"
-```
-
-#### 使用方式
-
-- **Web UI**：消息输入框旁的 🚀 Pipeline 下拉菜单，选择后发送消息即按所选流水线执行；支持在 PipelinePanel 中可视化创建/编辑流水线
-- **CLI**：`/mode pipeline` 切换后输入消息自动走默认流水线
-- **老版本兼容**：`models.toml` 的 `[pipeline]` 三阶段固定模式仍可用，但推荐迁移到 `.agent/pipelines/` 自定义格式
-
-详细设计见 [docs/MULTI_ROLE_DESIGN.md](docs/MULTI_ROLE_DESIGN.md)。
+> 组合式编排取代了旧的流水线 DAG 引擎。
 
 ### 第三步：启动 Agent
 
@@ -887,12 +793,6 @@ src/
 ├── output.rs        # ★ AgentOutput trait + CliOutput / StdioOutput / WsOutput 实现
 ├── cli.rs           # 交互式 REPL 循环 (rustyline)，斜杠命令处理
 ├── agent.rs         # Agent 核心：LLM 调用 + Tool 编排 + Plan 模式 + 子代理
-├── pipeline/         # 自定义 DAG 流水线引擎
-│   ├── mod.rs        # 模块入口
-│   ├── loader.rs     # 流水线 TOML 加载与验证
-│   ├── dag.rs        # DAG 阶段图构建与拓扑排序
-│   ├── runner.rs     # 流水线执行引擎（shared/isolated 上下文、artifact 传递）
-│   └── deprecated.rs # 旧版三阶段固定流水线（向后兼容）
 ├── conversation.rs  # 对话历史：Message / ContentBlock 数据模型，system prompt 构建
 ├── context.rs       # 上下文窗口管理、自动截断（保持 tool_use/tool_result 配对完整）
 ├── streaming.rs     # Anthropic SSE 流式输出（通过 &dyn AgentOutput 解耦）
@@ -1156,15 +1056,6 @@ your-project/
     ├── summary.md                  # 项目摘要（/summary 生成）
     ├── system_prompt.md            # 自定义系统提示词（可选，# OVERRIDE 可替换默认）
     ├── mcp.toml                    # MCP 客户端配置（可选）
-    ├── roles/                      # 角色提示词覆盖（可选）
-    │   ├── planner.md
-    │   ├── executor.md
-    │   └── checker.md
-    ├── pipelines/                  # 自定义 DAG 流水线定义
-    │   └── example.toml            # 流水线配置（多阶段编排）
-    ├── artifacts/                  # 流水线阶段产物（自动生成）
-    │   ├── analysis.md
-    │   └── implementation.md
     ├── skills/                     # 项目级 Skills
     │   ├── coding-style.md
     │   └── my-tool/                # 目录 Skill（SKILL.md + tool.json + 脚本）
@@ -1249,7 +1140,7 @@ Agent 将事件 payload 以 JSON 写入脚本 stdin；脚本 stdout 在 `interce
 `router.decision` intercepting Hook 通过 stdout 覆盖执行模式：
 
 ```json
-{"override_mode": "full_pipeline"}
+{"override_mode": "basic_loop"}
 ```
 
 ### 安装示例插件

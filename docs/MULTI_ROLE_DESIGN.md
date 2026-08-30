@@ -1,7 +1,6 @@
 # Multi-Role Agent 架构设计文档
 
-> 设计目标：在现有 `Agent` 框架基础上，扩展支持用户自定义角色（如规划者、实施者、审核者），
-> 每个角色绑定独立的模型与系统提示词，并通过标准化的**上下文传递协议**串联为一条自动流水线。
+> **注意**: 本文描述的**多角色流水线引擎**（Planner/Implementer/Checker + `[pipeline]` 配置 + `src/pipeline.rs`）已由**组合式编排**取代：主循环 + Plan 模式（`/plan` → `exit_plan_mode` 审批）+ 进程内子代理（`subagent`/`subagent_fork`）+ 外部节点（`call_node`）。编排顺序由模型决定，不再依赖固定角色流水线。本文保留以记录设计演进。
 
 ---
 

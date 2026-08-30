@@ -70,7 +70,7 @@ Agent ──spawn──► agent --mode stdio --yes
 
 Service 是**带状态的工具服务器**，不是 agent。核心约束：
 
-- **Simple only**：不做多步 pipeline，接受问题，一次性返回答案
+- **Simple only**：单模型循环，接受问题，一次性返回答案
 - **全局单例**：`ServiceManager` 由 Agent 持有，跨会话复用连接
 - **单队列**：同时只处理一个请求，`Semaphore(1)` 保护，超队列深度拒绝
 - **多连接支持**：可同时持有多个不同 service 的连接（按名字区分）

@@ -42,10 +42,10 @@
     - [自适应路由](#自适应路由)
   - [📝 Plan 模式（先分析后执行）](#-plan-模式先分析后执行)
     - [`/plan` 斜杠命令（手动）](#plan-斜杠命令手动)
-    - [自动 Pipeline（Planner → Executor → Checker）](#自动-pipelineplanner--executor--checker)
-      - [流程概览](#流程概览)
-      - [计划审核](#计划审核)
-      - [执行前注入背景（approve 时）](#执行前注入背景approve-时)
+    - [组合式编排（Plan 模式 + 子代理委托）](#组合式编排plan-模式--子代理委托)
+      - [Plan 模式（先分析后执行）](#plan-模式先分析后执行)
+      - [子代理委托（进程内自委派）](#子代理委托进程内自委派)
+      - [外部节点协作（call_node）](#外部节点协作call_node)
       - [执行中随时打断（Ctrl+\\）](#执行中随时打断ctrl)
   - [📜 会话管理](#-会话管理)
     - [列出历史会话](#列出历史会话)
@@ -643,82 +643,45 @@ Plan 阶段允许使用只读工具（`read_file`、`grep_search`、`list_direct
 
 ---
 
-### 自动 Pipeline（Planner → Executor → Checker）
+### 组合式编排（Plan 模式 + 子代理委托）
 
-通过 `models.toml` 配置多角色流水线后，Agent 会根据任务复杂度自动路由（或始终走 Pipeline）。用户**无需学习任何新命令**，整个流程完全透明交互。
+Agent 不再使用固定的流水线 DAG；编排顺序由模型根据任务自行决定，主要手段是 **Plan 模式** 和 **子代理委托**。
 
-#### 流程概览
+#### Plan 模式（先分析后执行）
 
-```
-用户输入
-  └─▶ Planner（只读探索，生成计划）
-            │
-            ▼
-       计划审核（用户控制）
-            │
-            ▼
-       Executor（全工具，按计划执行）
-            │
-            ▼
-       Checker（验证结果，可重试）
-```
+用 `/plan <任务>`（或 `/mode plan`）进入只读规划：Agent 先用只读工具分析项目、生成方案，再通过 `exit_plan_mode` 提交。方案经你审批通过后才执行；拒绝时返回反馈重新规划。规划期间只允许只读工具（`read_file`、`grep_search`、`list_directory` 等）与只读 shell 命令，确保零副作用。
 
-#### 计划审核
+#### 子代理委托（进程内自委派）
 
-Planner 生成计划后，会暂停等待你的确认：
+把子任务交给进程内的子代理，主循环保持专注：
 
-```
-📋 Pipeline Plan:
-────────────────────────────────────────────────────────────
-1. 检出新分支并查看文件结构
-2. 识别冲突的模块路径
-3. 按新分支的结构调整 include/import
-...
-────────────────────────────────────────────────────────────
-   Review: [y] approve  [n] reject  [type feedback to refine]
-   > 
-```
+- `subagent` / `subagent_fork` — 委托一个子代理；`subagent_fork` 继承当前会话日志（dsh 的 fork 语义）。
+- `subagent_followup` — 继续与仍在运行的子代理对话。
+- `subagent_terminate` — 结束子代理、释放配额。
+- `output_schema` — 要求子代理返回符合给定 JSON Schema 的结构化结果，便于主代理直接消费。
 
-| 输入 | 效果 |
-|------|------|
-| `y` / `yes` | 批准并进入执行（见下方「执行前注入背景」） |
-| `n` / `no` | 取消整个 Pipeline |
-| 直接输入文字 | 作为反馈重新生成计划（最多 5 轮） |
+#### 外部节点协作（call_node）
 
-#### 执行前注入背景（approve 时）
-
-输入 `y` 后，系统会追加询问你是否有背景信息需要告知执行器。这是最关键的干预时机——当你知道 LLM 可能不清楚的项目细节时，在此补充：
-
-```
-   Review: [y] approve  [n] reject  [type feedback to refine]
-   > y
-   Context: add background info for the executor (Enter to skip)
-   > 注意：新分支已将 module.rs 重构为 foo/mod.rs + foo/types.rs + foo/handler.rs，旧路径已删除
-```
-
-这段背景会以最高优先级注入到 Executor 的初始 prompt，LLM 在第一步就能感知到这个事实，避免找错文件或做出错误假设。
+跨机器/多智能体协作通过 `list_nodes` 发现可用节点，再用 `call_node` 把任务委托给外部节点（按节点名或 `ws://` URL，或用 `any:<tag>` 广播）。
 
 #### 执行中随时打断（Ctrl+\）
 
-Executor 运行期间，你可以在**任意 LLM 迭代之间**按 `Ctrl+\` 暂停并注入新指导：
+任意 LLM 迭代之间可按 `Ctrl+\` 暂停并注入新指导：
 
 ```
-⚡ Executor running — press Ctrl+\ to pause and inject guidance at any time
+⚡ Agent running — press Ctrl+\ to pause and inject guidance at any time
 （LLM 正在执行第 3 步...）
 
 按下 Ctrl+\ 后：
 
-⚡ Guidance: type a note for the executor (or press Enter to continue)
+⚡ Guidance: type a note for the agent (or press Enter to continue)
    > 等一下，那个文件已经被删了，你应该去看 src/driver/new_gpio.c
-💡 Guidance injected into executor context.
+💡 Guidance injected into the running context.
 ```
 
-指导会追加到 Executor 的 system prompt，LLM 在下一次调用中完整接收，**不打乱 API 消息结构**。
-
-> **Ctrl+C vs Ctrl+\**
-> - `Ctrl+C` — 立即中断当前 Pipeline，停止执行
-> - `Ctrl+\` — 暂停等待你的指导，输入后继续执行
-
+> **Ctrl+C vs Ctrl+\\**
+> - `Ctrl+C` — 立即中断当前运行，停止执行
+> - `Ctrl+\\` — 暂停等待你的指导，输入后继续执行
 ---
 
 ## 📜 会话管理
@@ -975,7 +938,7 @@ echo "[$(date)] agent started in $project_dir" >> /tmp/audit.log
 payload=$(cat)
 task=$(echo "$payload" | jq -r '.task_preview')
 if echo "$task" | grep -qiE 'drop|delete|force.?push|truncate'; then
-    echo '{"override_mode": "full_pipeline"}'
+    echo '{"override_mode": "basic_loop"}'
 else
     echo '{}'   # 空对象 = 不干预
 fi
@@ -1028,7 +991,7 @@ git clone https://github.com/example/agent-plugin-xxx .agent/plugins/xxx
 |------|------|
 | 工具 | `git_log`（Git 历史查询）、`word_count`（代码规模统计） |
 | 技能 | `git-workflow.md`（工具使用最佳实践） |
-| Hooks | `agent.start` fire_and_forget（写会话日志）、`tool.after` fire_and_forget（写审计日志）、`router.decision` intercepting（高风险词 → 强制 full_pipeline） |
+| Hooks | `agent.start` fire_and_forget（写会话日志）、`tool.after` fire_and_forget（写审计日志）、`router.decision` intercepting（高风险词 → 强制 basic_loop） |
 | system_prompt.md | 限制 LLM 使用插件工具而非原始 git 命令 |
 
 安装：`cp -r sample/project-stats .agent/plugins/project-stats`

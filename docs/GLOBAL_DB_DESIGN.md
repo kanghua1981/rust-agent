@@ -1,6 +1,8 @@
 # 全局数据库 & 编排引擎 设计文档
 
 > 状态: 设计阶段 | 日期: 2025-06-22
+>
+> **注意**: 本文描述的 workflow/orchestrator 编排引擎已由**组合式编排**取代——主循环 + Plan 模式（`/plan` → `exit_plan_mode` 审批）+ 进程内子代理（`subagent`/\`subagent_fork`）+ 外部节点（`call_node`）。对应的工作流编排层（orchestrator.rs、workflow 持久化、WorkflowPanel）已移除；本文保留以记录设计演进。
 
 ---
 
@@ -153,7 +155,7 @@ CREATE TABLE IF NOT EXISTS presets (
     workdir         TEXT,                       -- 默认工作目录
     model           TEXT,                       -- 模型别名 (models.toml key)
     auto_approve    INTEGER NOT NULL DEFAULT 0, -- 0/1
-    agent_mode      TEXT NOT NULL DEFAULT 'auto',  -- auto|simple|plan|pipeline
+    agent_mode      TEXT NOT NULL DEFAULT 'auto',  -- auto|simple|plan
     isolation       TEXT NOT NULL DEFAULT 'container', -- normal|container|sandbox
     new_session     INTEGER NOT NULL DEFAULT 0, -- 连接时是否新建会话
     icon            TEXT DEFAULT '🔧',          -- emoji 图标
@@ -336,7 +338,7 @@ pub struct Preset {
     pub workdir: Option<String>,
     pub model: Option<String>,
     pub auto_approve: bool,
-    pub agent_mode: String,     // auto|simple|plan|pipeline
+    pub agent_mode: String,     // auto|simple|plan
     pub isolation: String,      // normal|container|sandbox
     pub new_session: bool,
     pub icon: String,
