@@ -82,9 +82,7 @@ pub struct Agent {
     /// When set, overrides the adaptive router for every message.
     /// `None` means use the normal router logic.
     pub force_mode: Option<crate::router::ExecutionMode>,
-    /// When set, overrides the pipeline name from models.toml for this request.
-    /// Set by worker.rs from the `user_message.pipeline_name` field.
-    pub force_pipeline_name: Option<String>,
+
     /// Plugin manager for plugin system integration
     pub plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
     /// Hook 事件总线（与 PluginManager 共享同一 Arc）
@@ -277,7 +275,7 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
-            force_pipeline_name: None,
+
             plugin_manager,
             hook_bus: None,
             knowledge_extract_turns: 0,
@@ -359,7 +357,7 @@ impl Agent {
             global_session: false,
             service_events: SERVICE_EVENT_TX.subscribe(),
             force_mode: None,
-            force_pipeline_name: None,
+
             plugin_manager,
             hook_bus: None,
             knowledge_extract_turns: 0,
@@ -569,74 +567,6 @@ impl Agent {
         crate::router::ExecutionMode::BasicLoop
     }
 
-    /// Classify a task using heuristics, falling back to an LLM call
-    /// when the heuristics are inconclusive.
-    async fn classify_task(
-        &self,
-        user_input: &str,
-    ) -> crate::router::ExecutionMode {
-        use crate::router::*;
-
-        // Tier 1: rule-based heuristics (free, instant)
-        if let Some(complexity) = classify_heuristic(user_input) {
-            self.output.on_warning(&format!(
-                "🔀 Router (heuristic): {} → {}",
-                complexity,
-                ExecutionMode::from(complexity)
-            ));
-            return ExecutionMode::from(complexity);
-        }
-
-        // Tier 2: lightweight LLM classification
-        let prompt = build_classification_prompt(user_input);
-        let mut classify_conv = Conversation::new(&self.project_dir);
-        classify_conv.system_prompt =
-            "You are a task classifier. Reply with exactly one word.".to_string();
-        classify_conv.add_message(Message::user(&prompt));
-
-        // Use SilentOutput so the classifier's single-word reply never reaches the user.
-        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
-        let role_cfg = self.role_configs.get("router");
-        let cfg = role_cfg.unwrap_or(&self.config);
-        let result = match cfg.provider {
-            Provider::Anthropic =>
-                streaming::stream_anthropic_response(cfg, &classify_conv, &[], &*silent).await,
-            Provider::OpenAI | Provider::Compatible =>
-                streaming::stream_openai_response(cfg, &classify_conv, &[], &*silent).await,
-        };
-        match result {
-            Ok(response) => {
-                let text: String = response
-                    .content
-                    .iter()
-                    .filter_map(|b| {
-                        if let ContentBlock::Text { text } = b {
-                            Some(text.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let complexity = parse_classification(&text);
-                let mode = ExecutionMode::from(complexity);
-                self.output.on_warning(&format!(
-                    "🔀 Router (LLM): {} → {}",
-                    complexity, mode
-                ));
-                mode
-            }
-            Err(e) => {
-                // If classification fails, default to basic loop (safe, cheap)
-                self.output.on_warning(&format!(
-                    "🔀 Router: classification failed ({}), defaulting to Basic Loop",
-                    e
-                ));
-                ExecutionMode::BasicLoop
-            }
-        }
-    }
-
-    /// Get a clone of the output Arc (used by pipeline.rs).
     pub fn output_arc(&self) -> Arc<dyn AgentOutput> {
         self.output.clone()
     }
@@ -1540,206 +1470,6 @@ Summary:"#,
     /// (read_file, list_directory, grep_search, file_search) so it can explore
     /// the codebase but cannot modify anything.  The resulting plan text is
     /// stored in `self.pending_plan` and returned.
-    pub async fn generate_plan(&mut self, task: &str) -> Result<String> {
-        // ── Sync global interrupt to per-session flag ─────────────────────
-        if is_interrupted() {
-            self.request_interrupt();
-            clear_interrupt();
-        }
-
-        // ── Build context sections to inject ─────────────────────────────
-        // 1. Project summary (from .agent/summary.md)
-        let summary_section = crate::summary::load(&self.project_dir)
-            .map(|s| format!("\n\n## Project Summary\n{}", s))
-            .unwrap_or_default();
-
-        // 2. Memory: project knowledge + file map
-        let memory = crate::memory::Memory::load(&self.project_dir);
-        let mut memory_section = String::new();
-        if !memory.knowledge.is_empty() || !memory.file_map.is_empty() {
-            memory_section.push_str("\n\n## Project Knowledge (from memory)");
-            for k in &memory.knowledge {
-                memory_section.push_str(&format!("\n- {}", k));
-            }
-            if !memory.file_map.is_empty() {
-                memory_section.push_str("\n\n## Known Important Files");
-                for entry in &memory.file_map {
-                    memory_section.push_str(&format!("\n- {} [{}] {}: {}",
-                        entry.path, entry.importance_label(), entry.last_accessed, entry.description));
-                }
-            }
-        }
-
-        // Planner now sees the full conversation history automatically because
-        // we write to self.conversation.  No more manual history_section extraction.
-
-        let planning_prompt = format!(
-            r#"The user wants to accomplish the following task:
-
-{}
-{}{}
-
-Please analyze the task carefully using the conversation context above and the read-only tools available. You may use the read-only tools to explore the codebase and gather any additional information you need.
-You also have access to `run_command` — use it ONLY for read-only exploration commands such as:
-  git status, git log, git diff, git show, git branch, git remote -v,
-  find, cat, ls, wc, head, tail, cargo metadata, etc.
-Do NOT run any command that mutates state (no commits, pushes, file writes, installs, builds).
-
-IMPORTANT: If the task is ambiguous, missing key details, or requires user decisions (e.g. choice of approach, naming, scope), use the `ask_user` tool to ask clarifying questions BEFORE producing the plan. Do NOT guess — ask.
-
-Then output a detailed, numbered step-by-step plan describing exactly what changes and actions are needed. For each step, specify:
-1. What action to take (create/edit/delete file, run command, etc.)
-2. Which file(s) are involved
-3. A brief description of the change
-4. Any dependencies on other steps
-
-⚠️  Do NOT execute any modifications — only produce the plan."#,
-            task, summary_section, memory_section
-        );
-
-        // Write directly to self.conversation so the planner sees the full
-        // conversation history and follow-up turns keep planner context.
-        self.conversation.add_message(Message::user(&planning_prompt));
-
-        let readonly_tools = confirmation::with_ask_user(self.tool_executor.readonly_definitions());
-
-        let opts = ToolLoopOptions {
-            role: "planner".to_string(),
-            enable_guardrails: false,
-            enable_guidance: false,
-            notify_file_created: false,
-            handle_upload_image: false,
-        };
-
-        // Take ownership temporarily to satisfy the borrow checker.
-        let mut conv = std::mem::replace(
-            &mut self.conversation,
-            Conversation::new(&self.project_dir),
-        );
-        let mut plan_text = self.run_tool_loop(&mut conv, &readonly_tools, &opts).await?;
-        self.conversation = conv;
-
-        // If the loop exhausted all iterations without the LLM stopping naturally,
-        // force one final call with no tools available so it has to write the plan.
-        if plan_text.is_empty() {
-            self.output.on_assistant_text(
-                "\n[Exploration limit reached — consolidating findings into a plan…]\n"
-            );
-            self.conversation.add_message(Message::user(
-                "You have finished exploring. Now write the complete, detailed, numbered \
-                 step-by-step plan based on everything you have discovered. \
-                 Do not call any more tools — output only the plan text."
-            ));
-            let mut conv = std::mem::replace(
-                &mut self.conversation,
-                Conversation::new(&self.project_dir),
-            );
-            let final_response = self.call_llm_as_role("planner", &conv, &[]).await?;
-            conv.add_message(Message::assistant(final_response.content.clone()));
-            self.conversation = conv;
-            if let Some(ref usage) = final_response.usage {
-                self.track_tokens("planner", usage);
-            }
-            for block in &final_response.content {
-                if let ContentBlock::Text { text } = block {
-                    plan_text.push_str(text);
-                }
-            }
-        }
-
-        let plan_text = plan_text.trim().to_string();
-        if plan_text.is_empty() {
-            anyhow::bail!("LLM returned an empty plan");
-        }
-
-        self.pending_plan = Some(plan_text.clone());
-        Ok(plan_text)
-    }
-
-    /// Execute a previously generated plan.
-    ///
-    /// Runs the executor tool loop directly (no router re-entry).
-    pub async fn execute_plan(&mut self, plan: &str) -> Result<String> {
-        let exec_prompt = format!(
-            r#"You previously created the following plan. Now execute it step by step.
-After completing each step, briefly report what was done before moving on to the next step.
-If a step fails, explain the error and try to recover.
-
---- PLAN ---
-{}
---- END PLAN ---
-
-Begin execution now."#,
-            plan
-        );
-
-        self.pending_plan = None;
-        self.conversation.add_message(Message::user(&exec_prompt));
-
-        let tools = confirmation::with_ask_user(self.tool_executor.definitions());
-        let opts = ToolLoopOptions {
-            role: "executor".to_string(),
-            enable_guardrails: false,
-            enable_guidance: true,
-            notify_file_created: false,
-            handle_upload_image: false,
-        };
-
-        let mut conv = std::mem::replace(
-            &mut self.conversation,
-            Conversation::new(&self.project_dir),
-        );
-        let result = self.run_tool_loop(&mut conv, &tools, &opts).await;
-        self.conversation = conv;
-        result
-    }
-
-    /// Run a single pipeline stage, appending all messages to `self.conversation`
-    /// so follow-up turns have full context of what happened during the pipeline.
-    ///
-    /// Role-specific behaviour comes from `call_llm_as_role` (model selection +
-    /// role-header UI).  The `initial_message` is added as a user message.
-    pub async fn run_pipeline_stage(
-        &mut self,
-        role: &str,
-        initial_message: &str,
-        readonly_only: bool,
-    ) -> Result<String> {
-        // ── Sync global interrupt to per-session flag ─────────────────────
-        if is_interrupted() {
-            self.request_interrupt();
-            clear_interrupt();
-        }
-
-        self.conversation.add_message(Message::user(initial_message));
-
-        let tool_defs = if readonly_only {
-            confirmation::with_ask_user(self.tool_executor.readonly_definitions())
-        } else {
-            confirmation::with_ask_user(self.tool_executor.definitions())
-        };
-
-        let opts = ToolLoopOptions {
-            role: role.to_string(),
-            enable_guardrails: false,
-            enable_guidance: true,
-            notify_file_created: false,
-            handle_upload_image: false,
-        };
-
-        // Temporarily take ownership so we can borrow &mut self and
-        // &mut Conversation simultaneously.
-        let mut conv = std::mem::replace(
-            &mut self.conversation,
-            Conversation::new(&self.project_dir),
-        );
-        let result = self.run_tool_loop(&mut conv, &tool_defs, &opts).await;
-        self.conversation = conv;
-        result
-    }
-
-    /// Scan the project directory and use the LLM to generate a project summary.
-    /// The summary is saved to `.agent/summary.md` so subsequent sessions skip this step.
     pub async fn generate_project_summary(&mut self) -> Result<String> {
         let cwd = self.project_dir.clone();
 

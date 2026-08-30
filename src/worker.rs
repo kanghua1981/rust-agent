@@ -274,7 +274,7 @@ async fn run_async(
 
     // Capacity 1: agent processes messages serially
     let (user_tx, mut user_rx) =
-        mpsc::channel::<(String, Option<serde_json::Value>, Option<String>, Option<String>)>(1);
+        mpsc::channel::<(String, Option<serde_json::Value>, Option<String>)>(1);
     let ws_output_reader = ws_output.clone();
 
     // ── Reader task ──────────────────────────────────────────────────────
@@ -402,13 +402,11 @@ async fn run_async(
             }
 
             msg = user_rx.recv() => {
-                let (user_text, req_id, msg_workdir, pipeline_name) = match msg {
+                let (user_text, req_id, msg_workdir) = match msg {
                     Some(m) => m,
                     None => break,
                 };
 
-                // Apply per-request pipeline override
-                agent.force_pipeline_name = pipeline_name;
 
                 // Resolve effective workdir
                 let effective_workdir = msg_workdir.or_else(|| {
@@ -1124,7 +1122,7 @@ async fn handle_control_cmd(
 
 async fn dispatch_ws_message(
     text: &str,
-    user_tx: &mpsc::Sender<(String, Option<serde_json::Value>, Option<String>, Option<String>)>,
+    user_tx: &mpsc::Sender<(String, Option<serde_json::Value>, Option<String>)>,
     confirm_tx: &std::sync::mpsc::Sender<crate::confirm::ConfirmResult>,
     ask_user_tx: &std::sync::mpsc::Sender<String>,
     output: &Arc<WsOutput>,
@@ -1157,9 +1155,7 @@ async fn dispatch_ws_message(
             let workdir = msg.get("data").and_then(|d| d.get("workdir")).and_then(|v| v.as_str())
                 .or_else(|| msg.get("allowed_dir").and_then(|v| v.as_str()))
                 .map(|s| s.to_string());
-            let pipeline_name = msg.get("data").and_then(|d| d.get("pipeline_name"))
-                .and_then(|v| v.as_str()).map(|s| s.to_string());
-            if user_tx.try_send((user_text, req_id, workdir, pipeline_name)).is_err() {
+            if user_tx.try_send((user_text, req_id, workdir)).is_err() {
                 output.emit_public("error", serde_json::json!({
                     "message": "Agent is busy processing a previous request"
                 }));

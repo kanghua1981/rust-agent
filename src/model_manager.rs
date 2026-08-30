@@ -49,9 +49,6 @@ pub struct ModelsConfig {
     #[serde(default)]
     pub roles: BTreeMap<String, RoleConfig>,
 
-    /// Multi-role pipeline configuration.
-    #[serde(default)]
-    pub pipeline: Option<PipelineConfig>,
 
     /// Configured sub-agents to start (alias, port, role).
     #[serde(default)]
@@ -85,76 +82,6 @@ pub struct RoleConfig {
     pub extra_instructions: Option<String>,
 }
 
-/// Multi-role pipeline configuration (in models.toml).
-///
-/// NOTE: With the DAG-based pipeline system, the pipeline stage definitions
-/// have moved to `.agent/pipelines/*.toml`. This struct now only holds the
-/// routing preferences and which pipeline to use by default.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PipelineConfig {
-    /// When true every user message is routed through the full pipeline.
-    /// Deprecated: prefer using `router = "always_pipeline"`.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Routing strategy: "auto" (adaptive), "always_pipeline", "always_simple".
-    /// When set to "auto", the router classifies each user message and
-    /// picks the cheapest execution mode that fits the task complexity.
-    /// Defaults to following the `enabled` flag for backward compatibility.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub router: Option<String>,
-    /// Name of the default pipeline to load from `.agent/pipelines/`.
-    /// Defaults to `"default"` (the built-in 3-stage pipeline).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_pipeline: Option<String>,
-
-    // ── Deprecated: moved to .agent/pipelines/*.toml ──────────────────────
-    /// @deprecated Use stage definitions in `.agent/pipelines/*.toml` instead.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stages: Vec<String>,
-    /// @deprecated Use `max_retries` in `.agent/pipelines/*.toml` stage definitions.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_checker_retries: Option<u32>,
-    /// @deprecated Not supported in DAG pipeline yet.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub require_plan_confirm: Option<bool>,
-}
-
-impl PipelineConfig {
-    pub fn effective_stages(&self) -> Vec<&str> {
-        if self.stages.is_empty() {
-            vec!["planner", "executor", "checker"]
-        } else {
-            self.stages.iter().map(|s| s.as_str()).collect()
-        }
-    }
-
-    pub fn max_retries(&self) -> u32 {
-        self.max_checker_retries.unwrap_or(2)
-    }
-
-    pub fn confirm_plan(&self) -> bool {
-        self.require_plan_confirm.unwrap_or(true)
-    }
-
-    /// Resolve the effective router mode.
-    ///
-    /// Priority: explicit `router` field > `enabled` flag.
-    /// - `router = "auto"` → adaptive routing regardless of `enabled`.
-    /// - `router` absent + `enabled = true` → AlwaysPipeline (backward compat).
-    /// - `router` absent + `enabled = false` → AlwaysSimple.
-    pub fn router_mode(&self) -> crate::router::RouterMode {
-        if let Some(ref r) = self.router {
-            r.parse().unwrap_or_else(|_| {
-                tracing::warn!("Unknown router mode '{}', falling back to auto", r);
-                crate::router::RouterMode::Auto
-            })
-        } else if self.enabled {
-            crate::router::RouterMode::AlwaysPipeline
-        } else {
-            crate::router::RouterMode::AlwaysSimple
-        }
-    }
-}
 
 /// A single model entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
