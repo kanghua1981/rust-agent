@@ -66,7 +66,7 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
   };
 
   if (isSystem) {
-    // Pipeline stage header
+    // Message banner (which role/model produced it)
     if (message.meta?.stageLabel) {
       const stageIcons: Record<string, string> = {
         Planner: '🎯', Executor: '⚡', Checker: '✅', Router: '🔀',
