@@ -49,7 +49,7 @@ pub struct VirtualNodeInfo {
     /// Legacy field kept for backward compatibility with older server responses.
     #[serde(default)]
     pub sandbox: bool,
-    /// Default execution mode: "simple" | "plan" | "pipeline" | None (auto).
+    /// Default execution mode: "simple" | "plan" | "auto" | None.
     #[serde(default)]
     pub exec_mode: Option<String>,
     #[serde(default)]
@@ -409,7 +409,7 @@ pub struct RegistryEntry {
     /// Absolute working directory for this node (used by call_node to set ?workdir= param).
     #[serde(default)]
     pub workdir: Option<String>,
-    /// Default execution mode: "simple" | "plan" | "pipeline" | None (auto).
+    /// Default execution mode: "simple" | "plan" | "auto" | None.
     #[serde(default)]
     pub exec_mode: Option<String>,
 }

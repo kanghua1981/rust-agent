@@ -532,6 +532,8 @@ enum ControlCmd {
     /// Sandbox toggle: in worker mode sandbox is fixed at startup.
     /// We respond with the current status and optionally a warning.
     SetSandbox(bool),
+    /// Toggle plan mode (set_mode 'plan' / 'simple' / 'auto').
+    SetPlanMode(bool),
     SandboxListChanges,
     SandboxCommit,
     SandboxCommitFile(String),
@@ -807,6 +809,10 @@ async fn handle_control_cmd(
                 "backend": agent.sandbox.backend_label_sync(),
                 "pending_changes": agent.sandbox.ops_count().await,
             }));
+        }
+
+        ControlCmd::SetPlanMode(on) => {
+            agent.set_plan_mode(on);
         }
 
         ControlCmd::SandboxListChanges => {
@@ -1741,13 +1747,20 @@ async fn dispatch_ws_message(
             use crate::router::ExecutionMode;
             let mode_str = msg.get("data").and_then(|d| d.get("mode"))
                 .and_then(|v| v.as_str()).unwrap_or("auto");
-            let mode = match mode_str {
-                "simple"   => Some(ExecutionMode::BasicLoop),
-                "plan"     => Some(ExecutionMode::PlanAndExecute),
-                "pipeline" => Some(ExecutionMode::FullPipeline),
-                _          => None,
-            };
-            if let Ok(mut g) = shared_mode.lock() { *g = mode; }
+            match mode_str {
+                "simple" => {
+                    if let Ok(mut g) = shared_mode.lock() { *g = Some(ExecutionMode::BasicLoop); }
+                    let _ = ctrl_tx.send(ControlCmd::SetPlanMode(false));
+                }
+                "plan" => {
+                    if let Ok(mut g) = shared_mode.lock() { *g = None; }
+                    let _ = ctrl_tx.send(ControlCmd::SetPlanMode(true));
+                }
+                _ => {
+                    if let Ok(mut g) = shared_mode.lock() { *g = None; }
+                    let _ = ctrl_tx.send(ControlCmd::SetPlanMode(false));
+                }
+            }
         }
 
         "set_sandbox" => {

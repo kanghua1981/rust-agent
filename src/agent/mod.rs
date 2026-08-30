@@ -548,12 +548,7 @@ impl Agent {
     /// Determine the execution mode for a given user message.
     ///
     /// If `force_mode` is set it takes priority over everything else.
-    /// Otherwise uses the router configuration from models.toml:
-    /// - `router = "auto"`:            heuristic + optional LLM classification
-    /// - `router = "always_pipeline"`:  always full pipeline
-    /// - `router = "always_simple"`:    always basic loop
-    /// - absent + `enabled = true`:     always full pipeline (backward compat)
-    /// - absent + `enabled = false`:    always basic loop
+    /// Otherwise the always-basic-loop default is used.
     pub async fn resolve_execution_mode(
         &self,
         _user_input: &str,
@@ -755,9 +750,7 @@ impl Agent {
         };
 
         let mode_str = match mode {
-            ExecutionMode::BasicLoop     => "basic_loop",
-            ExecutionMode::PlanAndExecute => "plan_and_execute",
-            ExecutionMode::FullPipeline  => "full_pipeline",
+            ExecutionMode::BasicLoop => "basic_loop",
         };
         let classification_source = if self.force_mode.is_some() { "forced" } else { "auto" };
         let task_preview: String = user_input.chars().take(200).collect();
@@ -779,9 +772,7 @@ impl Agent {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let new_mode = match override_str {
-                    "basic_loop"      => ExecutionMode::BasicLoop,
-                    "plan_and_execute" => ExecutionMode::PlanAndExecute,
-                    "full_pipeline"   => ExecutionMode::FullPipeline,
+                    "basic_loop" => ExecutionMode::BasicLoop,
                     other => {
                         self.output.on_warning(&format!(
                             "[hook] router.decision: unknown override_mode '{}', keeping '{}'",
@@ -792,9 +783,7 @@ impl Agent {
                 };
                 if new_mode != mode {
                     let new_str = match new_mode {
-                        ExecutionMode::BasicLoop     => "basic_loop",
-                        ExecutionMode::PlanAndExecute => "plan_and_execute",
-                        ExecutionMode::FullPipeline  => "full_pipeline",
+                        ExecutionMode::BasicLoop => "basic_loop",
                     };
                     self.output.on_warning(&format!(
                         "🔀 Router overridden by hook: {} → {}",
@@ -838,10 +827,12 @@ impl Agent {
     /// This handles the full agent loop: send message → receive response →
     /// if tool use → execute tools → send results → repeat until done.
     pub async fn process_message(&mut self, user_input: &str) -> Result<String> {
-        // ── Adaptive routing ─────────────────────────────────────────────
+        // ── Router decision hook ─────────────────────────────────────────
+        // Emit the (retired) router.decision hook so plugins can still observe
+        // / override the mode, then fall through to the basic loop. Only
+        // basic_loop is meaningful now; planning is driven by plan_mode.
         let mode = self.resolve_execution_mode(user_input).await;
-        // 允许插件 hook 拦截并覆盖路由决策（intercepting）
-        let mode = self.apply_router_hook(mode, user_input).await;
+        let _ = self.apply_router_hook(mode, user_input).await;
 
         // Prepend relevant memory context — used by all execution modes.
         let recall = self.memory.recall_relevant(user_input);
@@ -851,16 +842,6 @@ impl Agent {
             format!("{}\n\n{}", recall, user_input)
         };
 
-        match mode {
-            crate::router::ExecutionMode::BasicLoop => {
-                // Fall through to the basic loop below
-            }
-            _ => {
-                // Retired pipeline modes (FullPipeline / PlanAndExecute) are
-                // treated as the basic loop; the model drives plan-mode and
-                // delegation via call_node instead.
-            }
-        }
 
         // ── Sync global interrupt to per-session flag ─────────────────────
         // If a Ctrl-C happened before this turn started, propagate it to our

@@ -1,31 +1,24 @@
 //! Execution mode selection.
 //!
-//! The pipeline router was retired; the model drives orchestration via plan mode
-//! and sub-agents. This module keeps the ExecutionMode value the CLI and the
-//! worker's set_mode still carry for compatibility. Only BasicLoop is reached at
-//! runtime; PlanAndExecute / FullPipeline are retained as inert values.
+//! The pipeline/router was retired; the model drives orchestration via plan mode
+//! (the `plan_mode` flag) and sub-agents. This module keeps the single
+//! `ExecutionMode::BasicLoop` value the CLI and worker's `set_mode` still carry.
+//! Runtime mode is always the basic loop; whether to plan first is the separate
+//! `plan_mode` flag.
 
 use std::fmt;
 
-/// The execution mode value carried by force_mode / set_mode.
-/// The retired pipeline modes are kept as inert values for compatibility; the
-/// agent loop treats every variation as the basic loop.
+/// The execution mode carried by `force_mode` / `set_mode`.
+/// `BasicLoop` is the only mode reached at runtime; planning is driven by the
+/// agent's `plan_mode` flag, not by this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     /// Single-model loop — always used at runtime.
     BasicLoop,
-    /// Retired: plan+execute pipeline value (no-op).
-    PlanAndExecute,
-    /// Retired: full pipeline value (no-op).
-    FullPipeline,
 }
 
 impl fmt::Display for ExecutionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ExecutionMode::BasicLoop => write!(f, "Basic Loop"),
-            ExecutionMode::PlanAndExecute => write!(f, "Plan + Execute"),
-            ExecutionMode::FullPipeline => write!(f, "Full Pipeline"),
-        }
+        write!(f, "Basic Loop")
     }
 }

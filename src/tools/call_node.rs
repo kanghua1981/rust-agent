@@ -54,7 +54,7 @@ struct CallNodeInput {
     #[serde(default)]
     isolation: Option<String>,
     /// Override the node's default execution mode.
-    /// "simple" | "plan" | "pipeline" | "auto" (= node/router default).
+    /// "simple" | "plan" | "auto" (= node/router default).
     #[serde(default)]
     exec_mode: Option<String>,
     /// Auto-approve all tool confirmations from the remote agent.
@@ -600,11 +600,10 @@ impl Tool for CallNodeTool {
                     },
                     "exec_mode": {
                         "type": "string",
-                        "enum": ["simple", "plan", "pipeline", "auto"],
+                        "enum": ["simple", "plan", "auto"],
                         "description": "Override the execution mode on the remote node. \
-                            'simple' = basic loop (fast), 'plan' = plan+execute, \
-                            'pipeline' = full Planner→Executor→Checker, \
-                            'auto' = let the remote router decide (default)."
+                            'simple' = basic loop (fast), 'plan' = plan mode, \
+                            'auto' = let the remote agent decide (default)."
                     },
                     "auto_approve": {
                         "type": "boolean",

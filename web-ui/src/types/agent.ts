@@ -679,7 +679,7 @@ export interface VirtualNodeInfo {
   description: string;
   isolation: 'normal' | 'container' | 'sandbox';
   sandbox: boolean;  // legacy, kept for backward compat
-  exec_mode?: string;  // "simple" | "plan" | "pipeline" | undefined (=auto)
+  exec_mode?: string;  // "simple" | "plan" | "auto" | undefined
   tags: string[];
   createdAt?: string;  // ISO timestamp from DB-stored nodes
   updatedAt?: string;  // ISO timestamp from DB-stored nodes
@@ -865,7 +865,7 @@ export interface NodeData {
   description?: string;
   isolation?: 'normal' | 'container' | 'sandbox';
   sandbox?: boolean;
-  exec_mode?: 'simple' | 'plan' | 'pipeline' | 'auto';
+  exec_mode?: 'simple' | 'plan' | 'auto';
   tags?: string[];
   createdAt?: string;
   updatedAt?: string;
@@ -970,7 +970,7 @@ export interface Message {
   toolCalls?: ToolCall[];
   // Optional thinking content (streamed from thinking_start/thinking_token/thinking_end)
   thinking?: string;
-  // Optional metadata for special system messages (e.g. pipeline stage headers)
+  // Optional banner metadata: which role/model produced this message.
   meta?: { stageLabel?: string; stageModel?: string; stageEnd?: boolean };
 }
 

@@ -58,7 +58,7 @@ pub const ALL_COMMANDS: &[CommandMeta] = &[
     CommandMeta::new("/export",   "[file]",                    "Export conversation to Markdown"),
     // ── Models / mode ────────────────────────────────────────────────────────
     CommandMeta::new("/model",    "[alias|add|remove|default]","List / switch / manage models"),
-    CommandMeta::new("/mode",     "[simple|plan|pipeline|auto]","Set execution mode"),
+    CommandMeta::new("/mode",     "[simple|plan|auto]","Set execution mode"),
     // ── Planning ─────────────────────────────────────────────────────────────
     CommandMeta::new("/summary",  "[generate]",                "View or generate project summary"),
     CommandMeta::new("/plan",     "<task>|run|show|clear",     "Explore & plan, then execute"),
