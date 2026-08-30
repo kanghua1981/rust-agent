@@ -30,7 +30,6 @@ mod server;
 mod ui;
 mod worker;
 mod workspaces;
-mod orchestrator;
 
 use std::sync::Arc;
 
