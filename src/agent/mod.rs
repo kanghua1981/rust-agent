@@ -521,40 +521,6 @@ impl Agent {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM request failed after retries")))
     }
 
-    /// Return the pipeline config from models.toml (if any).
-    /// Kept for backward compatibility — new code should use `load_pipeline()`.
-    pub fn pipeline_config(&self) -> Option<&model_manager::PipelineConfig> {
-        self.models_cfg.pipeline.as_ref()
-    }
-
-    /// Load the active pipeline definition from `.agent/pipelines/`.
-    /// Falls back to the built-in default if no pipeline files exist.
-    ///
-    /// Priority: `force_pipeline_name` → `models.toml [pipeline] default_pipeline` → `"default"`
-    pub fn load_pipeline(&self) -> Result<crate::pipeline::dag::PipelineDef> {
-        let pipeline_name = self
-            .force_pipeline_name
-            .as_deref()
-            .or_else(|| {
-                self.models_cfg
-                    .pipeline
-                    .as_ref()
-                    .and_then(|p| p.default_pipeline.as_deref())
-            })
-            .unwrap_or("default");
-        crate::pipeline::loader::load_pipeline(&self.project_dir, pipeline_name)
-    }
-
-    /// Return true when the multi-role pipeline is enabled in models.toml.
-    /// NOTE: Prefer `resolve_execution_mode()` for adaptive routing.
-    pub fn pipeline_enabled(&self) -> bool {
-        self.models_cfg
-            .pipeline
-            .as_ref()
-            .map(|p| p.enabled)
-            .unwrap_or(false)
-    }
-
     /// Override the adaptive router for all subsequent messages.
     /// Pass `None` to restore normal router behaviour.
     pub fn set_force_mode(&mut self, mode: Option<crate::router::ExecutionMode>) {
