@@ -298,6 +298,23 @@ impl Agent {
                     continue;
                 }
 
+                // Virtual tool: subagent_terminate (free a live sub-agent quota slot)
+                if tool_name == "subagent_terminate" {
+                    let id = tool_input
+                        .get("subagentId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let removed = self.terminate_subagent(id).await;
+                    let msg = if removed {
+                        format!("Terminated sub-agent '{}'.", id)
+                    } else {
+                        format!("No live sub-agent with id '{}'.", id)
+                    };
+                    conversation.add_message(Message::tool_result(&tool_id, &msg, !removed));
+                    conversation.append_tool_result(&tool_id, !removed);
+                    continue;
+                }
+
                 // Confirmation for dangerous tools
                 let confirm_level =
                     super::confirmation::needs_confirmation(&tool_name, &tool_input);

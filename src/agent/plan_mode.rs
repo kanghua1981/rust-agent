@@ -111,3 +111,18 @@ pub fn subagent_followup_definition() -> ToolDefinition {
     }
 }
 
+/// The subagent_terminate tool: remove a live sub-agent, freeing its quota slot.
+pub fn subagent_terminate_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "subagent_terminate".to_string(),
+        description: "Terminate a live sub-agent created by subagent / subagent_fork (by its subagentId), freeing its quota slot. Use it once a sub-agent's work is done and it should not be followed up again.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "subagentId": { "type": "string", "description": "The sub-agent id to terminate." }
+            },
+            "required": ["subagentId"]
+        }),
+    }
+}
+

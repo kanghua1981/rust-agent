@@ -61,6 +61,8 @@ pub struct Agent {
     pub subagents: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Agent>>>>>,
     /// Maximum sub-agent nesting depth before spawns are refused.
     pub max_subagent_depth: usize,
+    /// Maximum number of concurrently live sub-agent sessions per agent.
+    pub max_subagents: usize,
     /// Loaded models.toml config, kept for role resolution at runtime.
     pub models_cfg: model_manager::ModelsConfig,
     /// Per-role Config cache, built once on construction.
@@ -267,6 +269,7 @@ impl Agent {
             delegation_depth: 0,
             subagents: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             max_subagent_depth: 3,
+            max_subagents: 8,
             models_cfg,
             role_configs,
             sandbox,
@@ -347,6 +350,7 @@ impl Agent {
             delegation_depth: 0,
             subagents: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             max_subagent_depth: 3,
+            max_subagents: 8,
             models_cfg,
             role_configs,
             sandbox,
@@ -647,40 +651,6 @@ impl Agent {
         self.plan_mode
     }
 
-    /// Spawn an in-process child agent and run `task`, returning its final text.
-    ///
-    /// The child is a fresh Agent with a new conversation (dsh's subagent spawn):
-    /// it shares this agent's config, directory, sandbox, output, and project
-    /// memory, so the model can delegate focused work without an external node.
-    #[allow(dead_code)]
-    pub(crate) async fn spawn_subagent(&self, task: &str) -> Result<String> {
-        let mut child = Agent::new(
-            self.config.clone(),
-            self.project_dir.clone(),
-            self.output.clone(),
-            self.sandbox.clone(),
-            self.plugin_manager.clone(),
-        );
-        // Box the recursive call: process_message -> run_tool_loop -> spawn_subagent
-        // -> process_message, so the async fn's type stays finite.
-        Box::pin(child.process_message(task)).await
-    }
-
-    /// Like [Agent::spawn_subagent], but the child's conversation is a fork of
-    /// this session's log, so it inherits the current history (dsh's fork).
-    #[allow(dead_code)]
-    pub(crate) async fn spawn_subagent_fork(&self, task: &str) -> Result<String> {
-        let mut child = Agent::new(
-            self.config.clone(),
-            self.project_dir.clone(),
-            self.output.clone(),
-            self.sandbox.clone(),
-            self.plugin_manager.clone(),
-        );
-        child.conversation = self.conversation.fork(self.conversation.log.len() as u64);
-        // Box the recursive call (see spawn_subagent).
-        Box::pin(child.process_message(task)).await
-    }
     /// Run an in-process sub-agent and return a [crate::tools::ToolResult].
     ///
     /// If output_schema is given, the sub-agent is instructed to return a JSON
@@ -737,6 +707,15 @@ impl Agent {
                 self.max_subagent_depth
             );
         }
+        {
+            let reg = self.subagents.lock().await;
+            if reg.len() >= self.max_subagents {
+                anyhow::bail!(
+                    "sub-agent quota reached ({}) — terminate one via subagent_terminate",
+                    self.max_subagents
+                );
+            }
+        }
         let mut child = Agent::new(
             self.config.clone(),
             self.project_dir.clone(),
@@ -746,6 +725,7 @@ impl Agent {
         );
         child.delegation_depth = self.delegation_depth + 1;
         child.max_subagent_depth = self.max_subagent_depth;
+        child.max_subagents = self.max_subagents;
         if fork {
             child.conversation = self.conversation.fork(self.conversation.log.len() as u64);
         }
@@ -798,6 +778,10 @@ impl Agent {
             }
             None => crate::tools::ToolResult::error(format!("unknown sub-agent id: {}", id)),
         }
+    }
+    /// Remove a live sub-agent from the registry, freeing its quota slot.
+    pub(crate) async fn terminate_subagent(&self, id: &str) -> bool {
+        self.subagents.lock().await.remove(id).is_some()
     }
 
     /// Best-effort extraction of a JSON value from sub-agent output. Try a direct
@@ -999,6 +983,7 @@ impl Agent {
             defs.push(plan_mode::subagent_definition());
             defs.push(plan_mode::subagent_fork_definition());
             defs.push(plan_mode::subagent_followup_definition());
+            defs.push(plan_mode::subagent_terminate_definition());
             defs
         };
 
