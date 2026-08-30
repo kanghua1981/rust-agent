@@ -664,6 +664,71 @@ impl Agent {
         // Box the recursive call (see spawn_subagent).
         Box::pin(child.process_message(task)).await
     }
+    /// Run an in-process sub-agent and return a [crate::tools::ToolResult].
+    ///
+    /// If output_schema is given, the sub-agent is instructed to return a JSON
+    /// value conforming to that schema, and the result carries that JSON
+    /// (pretty-printed), or a structured error if the output does not parse.
+    /// Without a schema, it returns the sub-agent's final free-text output.
+    pub(crate) async fn run_subagent(
+        &self,
+        task: &str,
+        output_schema: Option<&serde_json::Value>,
+        fork: bool,
+    ) -> crate::tools::ToolResult {
+        let effective_task = match output_schema {
+            Some(schema) => format!(
+                "{}\n\n[STRUCTURED OUTPUT]\nReturn your final answer as a single JSON value conforming to this JSON Schema. Do NOT wrap it in markdown code fences and do NOT add any other prose. Return ONLY the JSON value as your final message.\n\n{}\n",
+                task, schema
+            ),
+            None => task.to_string(),
+        };
+        let result = if fork {
+            self.spawn_subagent_fork(&effective_task).await
+        } else {
+            self.spawn_subagent(&effective_task).await
+        };
+        match result {
+            Ok(text) => {
+                if output_schema.is_some() {
+                    match Self::extract_json_value(&text) {
+                        Some(json) => crate::tools::ToolResult::success(
+                            serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()),
+                        ),
+                        None => crate::tools::ToolResult::error(format!(
+                            "Sub-agent did not return a JSON value matching the requested schema.\n\nRaw output:\n{}",
+                            text
+                        )),
+                    }
+                } else {
+                    crate::tools::ToolResult::success(text)
+                }
+            }
+            Err(e) => crate::tools::ToolResult::error(format!("Sub-agent failed: {:#}", e)),
+        }
+    }
+
+    /// Best-effort extraction of a JSON value from sub-agent output. Try a direct
+    /// parse of the trimmed text, then fall back to the first balanced {..} or [..]
+    /// block (covers a model that wraps the JSON in prose).
+    fn extract_json_value(text: &str) -> Option<serde_json::Value> {
+        let t = text.trim();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+            return Some(v);
+        }
+        for open in ['{', '['] {
+            if let Some(start) = t.find(open) {
+                let close = if open == '{' { '}' } else { ']' };
+                if let Some(end_rel) = t[start..].rfind(close) {
+                    let end = start + end_rel + 1;
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t[start..end]) {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+        None
+    }
 
 
     /// 发射 `router.decision` intercepting hook，允许插件覆盖路由模式。

@@ -47,7 +47,11 @@ pub fn subagent_definition() -> ToolDefinition {
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
-                "task": { "type": "string", "description": "The self-contained task for the sub-agent." }
+                "task": { "type": "string", "description": "The self-contained task for the sub-agent." },
+                "output_schema": {
+                    "type": "object",
+                    "description": "Optional JSON Schema the sub-agent's final answer must match; it returns a JSON value conforming to this instead of free text."
+                }
             },
             "required": ["task"]
         }),
@@ -65,7 +69,11 @@ pub fn subagent_fork_definition() -> ToolDefinition {
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
-                "task": { "type": "string", "description": "The task for the forked sub-agent." }
+                "task": { "type": "string", "description": "The task for the forked sub-agent." },
+                "output_schema": {
+                    "type": "object",
+                    "description": "Optional JSON Schema the sub-agent's final answer must match; it returns a JSON value conforming to this instead of free text."
+                }
             },
             "required": ["task"]
         }),

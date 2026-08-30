@@ -264,23 +264,18 @@ impl Agent {
                         .get("task")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
+                    let schema = tool_input
+                        .get("output_schema")
+                        .and_then(|v| v.is_object().then_some(v));
                     let is_fork = tool_name == "subagent_fork";
                     self.output.on_warning(&format!(
                         "⏭️  Delegating to an in-process {}: {}",
                         if is_fork { "forked sub-agent" } else { "sub-agent" },
                         crate::ui::truncate_str(&task, 120)
                     ));
-                    let result = if is_fork {
-                        self.spawn_subagent_fork(task).await
-                    } else {
-                        self.spawn_subagent(task).await
-                    };
-                    let ok = result.is_ok();
-                    match result {
-                        Ok(text) => conversation.add_message(Message::tool_result(&tool_id, &text, false)),
-                        Err(e) => conversation.add_message(Message::tool_result(&tool_id, &format!("Sub-agent failed: {:#}", e), true)),
-                    }
-                    conversation.append_tool_result(&tool_id, !ok);
+                    let result = self.run_subagent(task, schema, is_fork).await;
+                    conversation.add_message(Message::tool_result(&tool_id, &result.output, result.is_error));
+                    conversation.append_tool_result(&tool_id, result.is_error);
                     continue;
                 }
 
