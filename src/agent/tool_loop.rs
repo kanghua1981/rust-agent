@@ -279,6 +279,25 @@ impl Agent {
                     continue;
                 }
 
+                // Virtual tool: subagent_followup (continue a live sub-agent)
+                if tool_name == "subagent_followup" {
+                    let id = tool_input
+                        .get("subagentId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let message = tool_input
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let schema = tool_input
+                        .get("output_schema")
+                        .and_then(|v| v.is_object().then_some(v));
+                    let result = self.subagent_followup(id, message, schema).await;
+                    conversation.add_message(Message::tool_result(&tool_id, &result.output, result.is_error));
+                    conversation.append_tool_result(&tool_id, result.is_error);
+                    continue;
+                }
+
                 // Confirmation for dangerous tools
                 let confirm_level =
                     super::confirmation::needs_confirmation(&tool_name, &tool_input);

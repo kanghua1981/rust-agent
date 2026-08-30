@@ -52,6 +52,15 @@ pub struct Agent {
     /// Plan-mode session state. When true the model sees only read-only tools plus
     /// exit_plan_mode, and must get an approved plan before implementing.
     pub plan_mode: bool,
+    /// Delegation depth of this agent (0 = top-level). Bounds recursive sub-agent
+    /// spawning so the model cannot spawn an unbounded chain.
+    pub delegation_depth: usize,
+    /// Live continuable sub-agent sessions, keyed by a sub-agent id. The model can
+    /// follow up an existing sub-agent (subagent_followup) rather than only making
+    /// one-shot spawns.
+    pub subagents: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Agent>>>>>,
+    /// Maximum sub-agent nesting depth before spawns are refused.
+    pub max_subagent_depth: usize,
     /// Loaded models.toml config, kept for role resolution at runtime.
     pub models_cfg: model_manager::ModelsConfig,
     /// Per-role Config cache, built once on construction.
@@ -255,6 +264,9 @@ impl Agent {
             project_dir,
             pending_plan: None,
             plan_mode: false,
+            delegation_depth: 0,
+            subagents: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            max_subagent_depth: 3,
             models_cfg,
             role_configs,
             sandbox,
@@ -332,6 +344,9 @@ impl Agent {
             project_dir,
             pending_plan: None,
             plan_mode: false,
+            delegation_depth: 0,
+            subagents: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            max_subagent_depth: 3,
             models_cfg,
             role_configs,
             sandbox,
@@ -637,6 +652,7 @@ impl Agent {
     /// The child is a fresh Agent with a new conversation (dsh's subagent spawn):
     /// it shares this agent's config, directory, sandbox, output, and project
     /// memory, so the model can delegate focused work without an external node.
+    #[allow(dead_code)]
     pub(crate) async fn spawn_subagent(&self, task: &str) -> Result<String> {
         let mut child = Agent::new(
             self.config.clone(),
@@ -652,6 +668,7 @@ impl Agent {
 
     /// Like [Agent::spawn_subagent], but the child's conversation is a fork of
     /// this session's log, so it inherits the current history (dsh's fork).
+    #[allow(dead_code)]
     pub(crate) async fn spawn_subagent_fork(&self, task: &str) -> Result<String> {
         let mut child = Agent::new(
             self.config.clone(),
@@ -683,17 +700,12 @@ impl Agent {
             ),
             None => task.to_string(),
         };
-        let result = if fork {
-            self.spawn_subagent_fork(&effective_task).await
-        } else {
-            self.spawn_subagent(&effective_task).await
-        };
-        match result {
-            Ok(text) => {
+        match self.spawn_subagent_session(&effective_task, fork).await {
+            Ok((id, text)) => {
                 if output_schema.is_some() {
                     match Self::extract_json_value(&text) {
                         Some(json) => crate::tools::ToolResult::success(
-                            serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()),
+                            serde_json::json!({ "subagentId": id, "result": json }).to_string(),
                         ),
                         None => crate::tools::ToolResult::error(format!(
                             "Sub-agent did not return a JSON value matching the requested schema.\n\nRaw output:\n{}",
@@ -701,10 +713,90 @@ impl Agent {
                         )),
                     }
                 } else {
-                    crate::tools::ToolResult::success(text)
+                    crate::tools::ToolResult::success(
+                        serde_json::json!({ "subagentId": id, "result": text }).to_string(),
+                    )
                 }
             }
             Err(e) => crate::tools::ToolResult::error(format!("Sub-agent failed: {:#}", e)),
+        }
+    }
+
+    /// Spawn a continuable in-process sub-agent and run task, returning a
+    /// (subagent_id, final_text) pair. The child is registered in this agent's
+    /// live sub-agent registry so a later subagent_followup can continue it.
+    /// Honors the delegation-depth bound (max_subagent_depth).
+    pub(crate) async fn spawn_subagent_session(
+        &self,
+        task: &str,
+        fork: bool,
+    ) -> Result<(String, String)> {
+        if self.delegation_depth >= self.max_subagent_depth {
+            anyhow::bail!(
+                "sub-agent depth limit reached ({}) — refusing to spawn deeper",
+                self.max_subagent_depth
+            );
+        }
+        let mut child = Agent::new(
+            self.config.clone(),
+            self.project_dir.clone(),
+            self.output.clone(),
+            self.sandbox.clone(),
+            self.plugin_manager.clone(),
+        );
+        child.delegation_depth = self.delegation_depth + 1;
+        child.max_subagent_depth = self.max_subagent_depth;
+        if fork {
+            child.conversation = self.conversation.fork(self.conversation.log.len() as u64);
+        }
+        let id = format!("sa-{}", uuid::Uuid::new_v4());
+        let child_arc = Arc::new(tokio::sync::Mutex::new(child));
+        self.subagents.lock().await.insert(id.clone(), child_arc.clone());
+        let text = {
+            let mut guard = child_arc.lock().await;
+            // Box the recursive call: process_message -> run_tool_loop -> spawn.
+            Box::pin(guard.process_message(task)).await?
+        };
+        Ok((id, text))
+    }
+
+    /// Send a follow-up to a live sub-agent (by id) and return its next result.
+    /// The sub-agent keeps its conversation, so this is multi-turn delegation.
+    pub(crate) async fn subagent_followup(
+        &self,
+        id: &str,
+        message: &str,
+        output_schema: Option<&serde_json::Value>,
+    ) -> crate::tools::ToolResult {
+        let child = self.subagents.lock().await.get(id).cloned();
+        match child {
+            Some(child_arc) => {
+                let result = {
+                    let mut guard = child_arc.lock().await;
+                    Box::pin(guard.process_message(message)).await
+                };
+                match result {
+                    Ok(text) => {
+                        if output_schema.is_some() {
+                            match Self::extract_json_value(&text) {
+                                Some(json) => crate::tools::ToolResult::success(
+                                    serde_json::json!({ "subagentId": id, "result": json }).to_string(),
+                                ),
+                                None => crate::tools::ToolResult::error(format!(
+                                    "Sub-agent did not return JSON matching the schema.\n\nRaw output:\n{}",
+                                    text
+                                )),
+                            }
+                        } else {
+                            crate::tools::ToolResult::success(
+                                serde_json::json!({ "subagentId": id, "result": text }).to_string(),
+                            )
+                        }
+                    }
+                    Err(e) => crate::tools::ToolResult::error(format!("Sub-agent follow-up failed: {:#}", e)),
+                }
+            }
+            None => crate::tools::ToolResult::error(format!("unknown sub-agent id: {}", id)),
         }
     }
 
@@ -906,6 +998,7 @@ impl Agent {
             let mut defs = confirmation::with_ask_user(self.tool_executor.definitions());
             defs.push(plan_mode::subagent_definition());
             defs.push(plan_mode::subagent_fork_definition());
+            defs.push(plan_mode::subagent_followup_definition());
             defs
         };
 

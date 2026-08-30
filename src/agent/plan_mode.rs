@@ -90,3 +90,24 @@ pub fn plan_mode_guidance() -> &'static str {
      not end plan mode — only an approved exit_plan_mode does. If the plan is rejected, \
      incorporate the feedback and resubmit."
 }
+/// The subagent_followup tool: continue a live sub-agent (by its subagentId)
+/// with a new message, returning its next result — multi-turn delegation.
+pub fn subagent_followup_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "subagent_followup".to_string(),
+        description: "Send a follow-up message to a live sub-agent created by subagent or subagent_fork (by its subagentId), continuing the sub-agent's conversation and returning its next result. Use it for multi-turn delegation instead of spawning a new sub-agent each turn.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "subagentId": { "type": "string", "description": "The sub-agent id returned by subagent / subagent_fork." },
+                "message": { "type": "string", "description": "The follow-up instruction for the sub-agent." },
+                "output_schema": {
+                    "type": "object",
+                    "description": "Optional JSON Schema the result must match."
+                }
+            },
+            "required": ["subagentId", "message"]
+        }),
+    }
+}
+
