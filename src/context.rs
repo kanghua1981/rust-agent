@@ -36,9 +36,17 @@ impl TokenCounter {
 
     #[cfg(feature = "tiktoken")]
     fn count_tiktoken(text: &str, _model: &str) -> Result<usize, String> {
-        use tiktoken_rs::cl100k_base;
-        // cl100k_base is used by GPT-4 and is close enough for Claude too
-        let bpe = cl100k_base().map_err(|e| format!("tiktoken init: {}", e))?;
+        use std::sync::OnceLock;
+        // `cl100k_base` builds the BPE vocabulary, which is real work (and was
+        // performed on every call, making each context estimate scale with the
+        // conversation). Build it once and share the immutable, thread-safe BPE.
+        static BPE: OnceLock<Result<tiktoken_rs::CoreBPE, String>> = OnceLock::new();
+        let bpe = BPE
+            .get_or_init(|| {
+                tiktoken_rs::cl100k_base().map_err(|e| format!("tiktoken init: {}", e))
+            })
+            .as_ref()
+            .map_err(|e| e.clone())?;
         let tokens = bpe.encode_with_special_tokens(text);
         Ok(tokens.len())
     }
@@ -246,15 +254,10 @@ pub fn estimate_conversation_tokens(conversation: &Conversation) -> usize {
 
 /// Estimate total tokens for a conversation using model-specific tokenizer.
 pub fn estimate_conversation_tokens_for_model(conversation: &Conversation, model: &str) -> usize {
-    let system_tokens = estimate_tokens_for_model(&conversation.system_prompt, model);
-
-    let message_tokens: usize = conversation
-        .messages
-        .iter()
-        .map(|msg| estimate_message_tokens_for_model(msg, model))
-        .sum();
-
-    system_tokens + message_tokens
+    // Incremental: only messages not previously counted are tokenized per call,
+    // so a long multi-step conversation does not re-tokenize its whole history
+    // on every LLM iteration (the previous O(total) loop was a host-side hotspot).
+    conversation.token_estimate(model, estimate_message_tokens_for_model)
 }
 
 /// Estimate tokens for a single message (using default heuristic).
@@ -263,7 +266,7 @@ fn estimate_message_tokens(msg: &Message) -> usize {
 }
 
 /// Estimate tokens for a single message with model-specific tokenizer.
-fn estimate_message_tokens_for_model(msg: &Message, model: &str) -> usize {
+pub(crate) fn estimate_message_tokens_for_model(msg: &Message, model: &str) -> usize {
     let overhead = 4; // role + formatting tokens
 
     let content_tokens: usize = msg
@@ -533,19 +536,17 @@ pub fn apply_truncation(
     // Delegate to the memory provider — backend decides how to persist.
     memory.log_truncation(summary);
 
-    // Build new message list
-    let mut new_messages: Vec<Message> = Vec::new();
-    new_messages.extend_from_slice(&conversation.messages[..plan.keep_start]);
+    // Record the compaction as an append-only log event. The log keeps the
+    // original messages; derive_messages applies the shadow, so truncation no
+    // longer destroys the log's continuity.
+    conversation.append_compaction(
+        plan.remove_start,
+        plan.remove_end.saturating_sub(1),
+        summary,
+    );
 
-    new_messages.push(Message::user(&format!(
-        "[System: {} earlier messages were removed to fit the context window. \
-         Summary of removed conversation:\n{}\n\
-         The conversation continues from the most recent messages below.]",
-        plan.removed_count, summary
-    )));
-
-    new_messages.extend(plan.kept_end.clone());
-    conversation.messages = new_messages;
+    // Re-derive the message surface from the log (head + summary + tail).
+    conversation.rebuild_from_log();
 
     tracing::info!(
         "Truncated conversation: removed {} messages, kept {} messages (~{} tokens)",
@@ -556,6 +557,8 @@ pub fn apply_truncation(
 
     ensure_tool_pair_integrity(&mut conversation.messages);
     truncate_large_blocks(conversation);
+    // Drop the incremental token-estimate cache so the next estimate recomputes.
+    conversation.invalidate_token_estimate();
 }
 
 /// Summarize removed messages using an LLM for narrative quality.
@@ -788,7 +791,7 @@ fn message_has_large_thinking(msg: &Message) -> bool {
 /// following the one containing the tool_use.
 /// Removes orphaned or misordered blocks to prevent Anthropic API errors like:
 ///   "tool_use ids were found without tool_result blocks immediately after"
-pub fn ensure_tool_pair_integrity(messages: &mut Vec<Message>) {
+pub fn ensure_tool_pair_integrity(messages: &mut Vec<Message>) -> bool {
     use std::collections::{HashMap, HashSet};
 
     // Phase 1: collect all tool_use IDs with their message index,
@@ -858,7 +861,7 @@ pub fn ensure_tool_pair_integrity(messages: &mut Vec<Message>) {
     }
 
     if bad_ids.is_empty() {
-        return; // All pairs are intact and correctly ordered
+        return false; // All pairs are intact and correctly ordered
     }
 
     tracing::info!(
@@ -877,4 +880,5 @@ pub fn ensure_tool_pair_integrity(messages: &mut Vec<Message>) {
 
     // Remove any messages that became empty after block removal
     messages.retain(|msg| !msg.content.is_empty());
+    true
 }

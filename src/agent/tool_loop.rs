@@ -97,11 +97,17 @@ impl Agent {
             }
 
             // ── 6. Tool pair integrity ───────────────────────────────────
-            context::ensure_tool_pair_integrity(&mut conversation.messages);
+            if context::ensure_tool_pair_integrity(&mut conversation.messages) {
+                conversation.sync_log_from_messages();
+            }
 
             // ── 7. LLM call ──────────────────────────────────────────────
+            let step_turn = self.total_turns as u64;
+            let step_no = iterations as u64;
+            conversation.append_step_start(step_turn, step_no);
             let response =
                 self.call_llm_as_role(&opts.role, conversation, tools).await?;
+            conversation.append_step_end(step_turn, step_no);
 
             // ── 8. Token tracking ────────────────────────────────────────
             if let Some(ref usage) = response.usage {
@@ -189,6 +195,7 @@ impl Agent {
             for (tool_id, tool_name, tool_input) in tool_uses {
                 self.output
                     .on_tool_use(&tool_name, &tool_input, &tool_id);
+                conversation.append_tool_call(&tool_id, &tool_name, &tool_input);
 
                 // Virtual tool: ask_user
                 if tool_name == "ask_user" {
@@ -202,6 +209,7 @@ impl Agent {
                         &format!("User's answer: {}", answer),
                         false,
                     ));
+                    conversation.append_tool_result(&tool_id, false);
                     continue;
                 }
 
@@ -253,6 +261,7 @@ impl Agent {
                             "User declined to execute this operation.",
                             true,
                         ));
+                        conversation.append_tool_result(&tool_id, true);
                         continue;
                     }
                 }
@@ -268,6 +277,7 @@ impl Agent {
                 } else {
                     self.tool_executor.execute(&tool_name, &tool_input).await
                 };
+                conversation.append_tool_result(&tool_id, result.is_error);
 
                 self.output.on_tool_result(&tool_name, &result);
 

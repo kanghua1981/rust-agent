@@ -279,63 +279,51 @@ fn build_stage_message(
 }
 
 /// Resolve {{inputs.xxx}} and {{artifact.xxx}} variables with actual artifact content.
+///
+/// A placeholder key may be a filename stem ("plan"), a filename ("plan.md"),
+/// or a stage id ("planner"). ArtifactMap::resolve_input already matches by
+/// stage id, by artifact filename stem, and by a project-relative path, so we
+/// only need to scan the message for every {{inputs.X}} / {{artifact.X}}
+/// occurrence and substitute the first match.
+///
+/// The previous implementation built the placeholder from stage.inputs
+/// (e.g. {{inputs.plan.md}}), which never matched the filename-stem keys used
+/// by templates ({{inputs.plan}}), and its regex only matched {{artifact.X}}.
+/// Downstream stages therefore saw the literal placeholder instead of the prior
+/// stage's plan/result, so the pipeline ran blind. This version scans the
+/// message directly.
 fn resolve_inputs(
     message: &str,
-    stage: &StageDef,
+    _stage: &StageDef,
     artifacts: &ArtifactMap,
     project_dir: &Path,
 ) -> String {
+    let re = match regex::Regex::new(r"\{\{(?:inputs|artifact)\.([a-zA-Z0-9_\-\./]+)\}\}") {
+        Ok(re) => re,
+        Err(_) => return message.to_string(),
+    };
+
     let mut result = message.to_string();
-    for input_name in &stage.inputs {
-        let placeholder = format!("{{{{inputs.{}}}}}", input_name);
-        if result.contains(&placeholder) {
-            if let Some(content) = artifacts.resolve_input(input_name, project_dir) {
-                result = result.replace(&placeholder, &content);
-            } else {
-                // File not found — leave a note in the message.
-                result = result.replace(
-                    &placeholder,
-                    &format!("(artifact '{}' not yet available)", input_name),
-                );
-            }
+    // Collect unique placeholders first; resolve_input borrows artifacts
+    // immutably, so collect the (pattern, replacement) pairs and apply them
+    // once the capture iterator is dropped.
+    let mut found: Vec<(String, String)> = Vec::new();
+    for cap in re.captures_iter(&result) {
+        let full = cap.get(0).unwrap().as_str().to_string();
+        if found.iter().any(|(m, _)| m == &full) {
+            continue;
         }
-        // Also try {{artifact.xxx}} variant
-        let alt_placeholder = format!("{{{{artifact.{}}}}}", input_name);
-        if result.contains(&alt_placeholder) {
-            if let Some(content) = artifacts.resolve_input(input_name, project_dir) {
-                result = result.replace(&alt_placeholder, &content);
-            } else {
-                result = result.replace(
-                    &alt_placeholder,
-                    &format!("(artifact '{}' not yet available)", input_name),
-                );
-            }
-        }
+        let key = cap.get(1).unwrap().as_str().to_string();
+        let content = artifacts
+            .resolve_input(&key, project_dir)
+            .unwrap_or_else(|| format!("(artifact '{}' not yet available)", key));
+        found.push((full, content));
     }
-
-    // Also handle any {{artifact.xxx}} that aren't in inputs
-    let re = regex::Regex::new(r"\{\{artifact\.([a-zA-Z0-9_\-\./]+)\}\}").ok();
-    if let Some(re) = re {
-        let mut replacements: Vec<(String, String)> = Vec::new();
-        for cap in re.captures_iter(&result) {
-            let full = cap.get(0).unwrap().as_str().to_string();
-            let name = cap.get(1).unwrap().as_str().to_string();
-            if !replacements.iter().any(|(m, _)| m == &full) {
-                if let Some(content) = artifacts.resolve_input(&name, project_dir) {
-                    replacements.push((full, content));
-                } else {
-                    replacements.push((full, format!("(artifact '{}' not available)", name)));
-                }
-            }
-        }
-        for (pat, repl) in replacements {
-            result = result.replace(&pat, &repl);
-        }
+    for (pattern, replacement) in found {
+        result = result.replace(&pattern, &replacement);
     }
-
     result
 }
-
 /// Enforce artifact output: check if the LLM wrote to the artifact path.
 /// If not, auto-write the stage output as fallback.
 async fn enforce_artifact(

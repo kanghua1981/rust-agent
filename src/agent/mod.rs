@@ -817,6 +817,7 @@ impl Agent {
 
         // ── Turn start: notify memory providers ─────────────────────────
         self.total_turns += 1;
+        self.conversation.append_turn_start(self.total_turns as u64);
         let max_tokens = self.context_engine.max_context_tokens(&self.config.model);
         let used_tokens = context::estimate_conversation_tokens(&self.conversation);
         let remaining_tokens = max_tokens.saturating_sub(used_tokens) as u64;
@@ -856,6 +857,13 @@ impl Agent {
             .run_tool_loop(&mut conversation, &tool_defs, &opts)
             .await?;
         self.conversation = conversation;
+        self.conversation.append_turn_end(self.total_turns as u64);
+        if !self.conversation.log_is_consistent() {
+            tracing::warn!(
+                "[phase4] turn {} ended with a session log that diverged from the message surface;                  the log is authoritative and will be used on persistence",
+                self.total_turns
+            );
+        }
 
         // If run_tool_loop returned empty (e.g. loop exhausted), fall back to
         // scanning the conversation for the last assistant text.

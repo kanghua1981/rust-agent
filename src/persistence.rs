@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::conversation::{Conversation, Message};
+use crate::conversation::{Conversation, Message, SessionEvent, SessionEventKind};
 
 /// Maximum number of messages kept in each local session file.
 /// Older messages are rotated to `.agent/archive/YYYY-MM.jsonl`.
@@ -44,6 +44,14 @@ pub struct SessionMeta {
 pub struct SavedSession {
     pub meta: SessionMeta,
     pub system_prompt: String,
+    /// Ordered, replayable session log (the authoritative recording). Present
+    /// on sessions saved by this build; a (serde-default) empty log falls back
+    /// to the legacy flat "messages" array for older session files.
+    #[serde(default)]
+    pub log: Vec<SessionEvent>,
+    /// Legacy flat message array, kept for backward compatibility and as the
+    /// fallback when "log" is empty.
+    #[serde(default)]
     pub messages: Vec<Message>,
 }
 
@@ -122,6 +130,10 @@ pub fn save_session(conversation: &Conversation, session_id: Option<&str>, proje
 
     let now = now_string();
 
+    if !conversation.log_is_consistent() {
+        eprintln!("[persistence] warning: session log diverged from message history; the log is authoritative and will be used on restore");
+    }
+
     let session = SavedSession {
         meta: SessionMeta {
             id: id.clone(),
@@ -133,6 +145,7 @@ pub fn save_session(conversation: &Conversation, session_id: Option<&str>, proje
             working_dir: project_dir.display().to_string(),
         },
         system_prompt: conversation.system_prompt.clone(),
+        log: conversation.to_log(),
         messages: conversation.messages.clone(),
     };
 
@@ -308,6 +321,15 @@ pub fn save_local_named_session(
             working_dir: workdir.display().to_string(),
         },
         system_prompt: conversation.system_prompt.clone(),
+        log: messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| SessionEvent {
+                seq: i as u64,
+                time: 0,
+                kind: SessionEventKind::from_message(m),
+            })
+            .collect(),
         messages,
     };
 
@@ -507,11 +529,18 @@ pub fn load_local_session(workdir: &Path) -> Result<Option<SavedSession>> {
 
 /// Restore a saved session into a Conversation
 pub fn restore_conversation(session: &SavedSession) -> Conversation {
-    let mut conv = Conversation {
-        messages: Vec::new(),
-        system_prompt: String::new(),
-    };
-    conv.system_prompt = session.system_prompt.clone();
-    conv.messages = session.messages.clone();
+    let mut conv = Conversation::with_system_prompt(session.system_prompt.clone());
+    // The session log is authoritative when present; older files carry only the
+    // flat "messages" array, which is then the fallback.
+    if !session.log.is_empty() {
+        conv = Conversation::from_log(session.log.clone());
+        conv.system_prompt = session.system_prompt.clone();
+    } else {
+        // Legacy session file with only the flat messages array: rebuild the
+        // message surface AND populate the log from it so the log stays the
+        // single source of truth from the moment the session is restored.
+        conv.messages = session.messages.clone();
+        conv.sync_log_from_messages();
+    }
     conv
 }
