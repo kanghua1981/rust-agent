@@ -86,7 +86,7 @@ impl OpenAIClient {
     pub fn new(config: &Config) -> Self {
         OpenAIClient {
             client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(30))
+                .connect_timeout(std::time::Duration::from_secs(60))
                 .build()
                 .unwrap_or_default(),
             api_key: config.api_key.clone(),

@@ -163,7 +163,10 @@ struct BlockAccumulator {
 /// generous enough to not false-fire on a slow model while still catching real hangs.
 const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
 /// TCP connect timeout for LLM API requests.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+// api.deepseek.com can take ~15s+ to establish a TCP+TLS connection from some
+// routes; give the connect phase generous headroom so a slow handshake isn't
+// misreported as a hard failure.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Send a streaming request to Anthropic and print text tokens in real-time.
 /// Returns the complete LlmResponse when done.
