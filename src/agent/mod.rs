@@ -521,7 +521,10 @@ impl Agent {
             match result {
                 Ok(response) => return Ok(response),
                 Err(e) => {
-                    let err_msg = format!("{}", e);
+                    // {:#} prints the ANYHOW cause chain, so a transport failure
+                    // (DNS / proxy / TLS / connect timeout) is visible instead of
+                    // just the generic "Failed to send streaming request" context.
+                    let err_msg = format!("{:#}", e);
                     if Self::is_transient_error(&err_msg) && attempt < Self::LLM_MAX_RETRIES {
                         let delay = 2u64.pow(attempt + 1);
                         self.output.on_warning(&format!(
