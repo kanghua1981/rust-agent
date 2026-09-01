@@ -16,6 +16,21 @@ use crate::llm::{LlmResponse, Usage};
 use crate::output::AgentOutput;
 use crate::tools::ToolDefinition;
 
+/// Normalize a provider base URL: trim trailing slashes and any trailing `/v1`
+/// so the endpoint append below never produces a doubled `/v1/v1/...`.
+/// Users often configure the endpoint with the version segment already
+/// included (e.g. `https://api.openai.com/v1`), which would otherwise be
+/// appended twice.
+fn api_base(base: &str) -> String {
+    let mut s = base.trim_end_matches('/');
+    let lower = s.to_ascii_lowercase();
+    if lower.ends_with("/v1") {
+        s = &s[..s.len() - 3];
+        s = s.trim_end_matches('/');
+    }
+    s.to_string()
+}
+
 /// SSE event types from Anthropic streaming API
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -208,7 +223,7 @@ pub async fn stream_anthropic_response(
     );
 
     let response = client
-        .post(format!("{}/v1/messages", config.base_url))
+        .post(format!("{}/v1/messages", api_base(&config.base_url)))
         .header("x-api-key", &config.api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")
@@ -571,6 +586,9 @@ pub async fn stream_openai_response(
         "temperature": config.temperature,
         "messages": messages,
         "stream": true,
+        // dsh sends this too; without it OpenAI-compatible servers won't return
+        // a usage chunk, so token accounting stays at 0.
+        "stream_options": { "include_usage": true },
     });
 
     if !tools.is_empty() {
@@ -598,7 +616,7 @@ pub async fn stream_openai_response(
     }
 
     let response = client
-        .post(format!("{}/v1/chat/completions", config.base_url))
+        .post(format!("{}/v1/chat/completions", api_base(&config.base_url)))
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("content-type", "application/json")
         .json(&request_body)
