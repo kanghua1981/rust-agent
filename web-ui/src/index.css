@@ -166,3 +166,107 @@ pre code { background: none; border: none; padding: 0; }
 
 /* ─── Tauri window controls ─────────────────────────────────── */
 .win-ctrl-group:hover button { color: rgba(0,0,0,0.65); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Layout utilities
+   ═══════════════════════════════════════════════════════════════ */
+.row { display: flex; align-items: center; }
+.row-between { display: flex; align-items: center; justify-content: space-between; }
+.col { display: flex; flex-direction: column; }
+.center { display: flex; align-items: center; justify-content: center; }
+.fill { flex: 1; min-width: 0; min-height: 0; }
+.scroll-y { overflow-y: auto; }
+.text-2 { color: var(--text2); }
+.text-3 { color: var(--text3); }
+.text-sm { font-size: 12px; }
+.text-xs { font-size: 11px; }
+.weight-600 { font-weight: 600; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Buttons
+   ═══════════════════════════════════════════════════════════════ */
+.icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 6px;
+  color: var(--text3); font-size: 12px; line-height: 1;
+  transition: background .15s, color .15s;
+}
+.icon-btn:hover { background: var(--bg3); color: var(--text); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Sidebar
+   ═══════════════════════════════════════════════════════════════ */
+.sidebar {
+  width: 220px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  max-height: 100vh; overflow-y: auto; overflow-x: hidden;
+  background: var(--bg2); border-right: 1px solid var(--border);
+  transition: width .2s ease;
+}
+.sidebar.collapsed { width: 48px; }
+.sidebar-head { display: flex; justify-content: flex-end; padding: 8px 10px 4px; }
+.sidebar.collapsed .sidebar-head { justify-content: center; padding: 10px 0 4px; }
+.sidebar-body { padding: 16px 12px 12px; }
+.sidebar.collapsed .sidebar-body { padding: 0 6px; }
+
+.section-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px; padding-left: 4px; cursor: pointer;
+}
+.section-label {
+  font-size: 10px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text3);
+}
+.section-chevron { font-size: 10px; color: var(--text3); transition: transform .2s; }
+
+.nav-list { display: flex; flex-direction: column; gap: 3px; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 8px 10px; border-radius: 8px; border: 1px solid transparent;
+  background: transparent; color: var(--text2);
+  font-size: 13px; font-weight: 400; text-align: left;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.nav-item:hover { background: var(--bg3); }
+.nav-item.active {
+  background: var(--accent-glow); color: var(--accent);
+  font-weight: 500; border-color: rgba(99,102,241,.3);
+}
+.nav-item .ico { position: relative; font-size: 15px; width: 18px; text-align: center; flex-shrink: 0; }
+.nav-item .label { flex: 1; }
+.nav-item.is-collapsed { justify-content: center; gap: 0; padding: 10px 0; }
+.nav-item.is-collapsed .ico { width: auto; }
+
+.nav-rail { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.nav-rail button {
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border-radius: 6px; border: 1px solid transparent; font-size: 14px;
+  opacity: .5; transition: opacity .15s, background .15s, border-color .15s;
+}
+.nav-rail button:hover { opacity: 1; }
+.nav-rail button.active { background: var(--accent-glow); border-color: rgba(99,102,241,.3); opacity: 1; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Badges
+   ═══════════════════════════════════════════════════════════════ */
+.badge {
+  background: var(--red); color: #fff; border-radius: 10px;
+  padding: 1px 6px; font-size: 11px; font-weight: 600;
+  min-width: 18px; text-align: center;
+}
+.badge.sm { font-size: 9px; line-height: 14px; min-width: 16px; padding: 1px 5px; }
+.badge.abs { position: absolute; top: -4px; right: -8px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Panel tabs (right panel)
+   ═══════════════════════════════════════════════════════════════ */
+.tabs { display: flex; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--bg2); }
+.tab {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 8px 10px; border: none; border-bottom: 2px solid transparent;
+  background: transparent; color: var(--text2); font-size: 12px; font-weight: 400;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { border-bottom-color: var(--accent); background: var(--bg); color: var(--accent); font-weight: 600; }

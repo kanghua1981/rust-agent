@@ -8,211 +8,144 @@ interface SidebarProps {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenConnect: () => void;
-  onQuickConnect?: () => void;  // 可选：快速连接函数
+  onQuickConnect?: () => void;  // 保留以兼容调用方
   onSwitchLocalSession?: (name: string) => void;
   onNewLocalSession?: (name: string) => void;
   onConnectProject?: (id: string) => void;
   onEditProject?: (id: string) => void;
 }
 
+interface NavDef { tab: Tab; icon: string; label: string }
+
+const NAV: NavDef[] = [
+  { tab: 'chat',     icon: '💬', label: '对话' },
+  { tab: 'nodes',    icon: '🌐', label: '节点' },
+  { tab: 'plugins',  icon: '🧩', label: '插件' },
+  { tab: 'models',   icon: '🧠', label: '模型' },
+  { tab: 'settings', icon: '⚙️', label: '设置' },
+];
+
 const NavItem: React.FC<{
-  icon: string;
-  label: string;
+  item: NavDef;
   active: boolean;
   badge?: number;
-  collapsed?: boolean;
+  collapsed: boolean;
   onClick: () => void;
-}> = ({ icon, label, active, badge, collapsed, onClick }) => (
+}> = ({ item, active, badge, collapsed, onClick }) => (
   <button
+    className={`nav-item${active ? ' active' : ''}${collapsed ? ' is-collapsed' : ''}`}
+    title={collapsed ? item.label : undefined}
     onClick={onClick}
-    title={collapsed ? label : undefined}
-    style={{
-      display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', gap: collapsed ? '0' : '9px',
-      padding: collapsed ? '10px 0' : '8px 10px',
-      width: '100%',
-      borderRadius: '8px',
-      background: active ? 'var(--accent-glow)' : 'transparent',
-      color: active ? 'var(--accent)' : 'var(--text2)',
-      fontWeight: active ? '500' : '400',
-      fontSize: '13px',
-      border: active ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent',
-      transition: 'all 0.15s',
-      textAlign: collapsed ? 'center' : 'left',
-      position: 'relative',
-    }}
-    onMouseOver={(e) => { if (!active) e.currentTarget.style.background = 'var(--bg3)'; }}
-    onMouseOut={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
   >
-    <span style={{ fontSize: '15px', width: collapsed ? 'auto' : '18px', textAlign: 'center', flexShrink: 0, position: 'relative' }}>
-      {icon}
-      {collapsed && badge !== undefined && badge > 0 && (
-        <span style={{
-          position: 'absolute', top: '-4px', right: '-8px',
-          background: 'var(--red)', color: '#fff',
-          borderRadius: '10px', padding: '1px 5px',
-          fontSize: '9px', fontWeight: '600',
-          lineHeight: '14px', minWidth: '16px', textAlign: 'center',
-        }}>{badge}</span>
-      )}
+    <span className="ico">
+      {item.icon}
+      {collapsed && badge ? <span className="badge sm abs">{badge}</span> : null}
     </span>
-    {!collapsed && <span style={{ flex: 1 }}>{label}</span>}
-    {!collapsed && badge !== undefined && badge > 0 && (
-      <span style={{
-        background: 'var(--red)',
-        color: '#fff',
-        borderRadius: '10px',
-        padding: '1px 6px',
-        fontSize: '11px',
-        fontWeight: '600',
-        minWidth: '18px',
-        textAlign: 'center',
-      }}>{badge}</span>
-    )}
+    {!collapsed && <span className="label">{item.label}</span>}
+    {!collapsed && badge ? <span className="badge">{badge}</span> : null}
   </button>
 );
 
-
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onOpenConnect, onQuickConnect, onSwitchLocalSession, onNewLocalSession, onConnectProject, onEditProject }) => {
-  // Collapse state — persisted in localStorage
+export const Sidebar: React.FC<SidebarProps> = ({
+  activeTab,
+  onTabChange,
+  onOpenConnect,
+  onSwitchLocalSession,
+  onNewLocalSession,
+  onConnectProject,
+  onEditProject,
+}) => {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar-collapsed') === 'true'; } catch { return false; }
   });
-  // Section-level collapse: hide the nav items to give project tree more room
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar-nav-collapsed') === 'true'; } catch { return false; }
   });
-  const toggleCollapsed = () => {
-    setCollapsed(prev => {
-      const next = !prev;
-      try { localStorage.setItem('sidebar-collapsed', String(next)); } catch {}
-      return next;
-    });
-  };
-  const toggleNavCollapsed = () => {
-    setNavCollapsed(prev => {
-      const next = !prev;
-      try { localStorage.setItem('sidebar-nav-collapsed', String(next)); } catch {}
-      return next;
-    });
-  };
 
-  // Selective subscriptions — subscribe only to what the component renders.
-  // Avoids re-rendering on every streaming token / toolCall / message change.
+  const toggleCollapsed = () => setCollapsed(prev => {
+    const next = !prev;
+    try { localStorage.setItem('sidebar-collapsed', String(next)); } catch {}
+    return next;
+  });
+  const toggleNavCollapsed = () => setNavCollapsed(prev => {
+    const next = !prev;
+    try { localStorage.setItem('sidebar-nav-collapsed', String(next)); } catch {}
+    return next;
+  });
+
+  // Selective subscriptions — avoid re-rendering on every streaming token.
   const nodeList = useAgentStore(s => s.nodeList ?? []);
   const plugins = useAgentStore(s => s.plugins ?? []);
-  // Derived values — primitive selectors only fire on actual value change
   const pendingCount = useAgentStore(s => (s.pendingConfirmations ?? []).length);
 
+  const badgeFor = (tab: Tab): number | undefined =>
+    tab === 'chat' ? (pendingCount || undefined)
+    : tab === 'nodes' ? (nodeList.length || undefined)
+    : tab === 'plugins' ? (plugins.length || undefined)
+    : undefined;
+
   return (
-    <aside style={{
-      width: collapsed ? '48px' : '220px',
-      background: 'var(--bg2)',
-      borderRight: '1px solid var(--border)',
-      display: 'flex',
-      flexDirection: 'column',
-      flexShrink: 0,
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      maxHeight: '100vh',
-      transition: 'width 0.2s ease',
-    }}>
-      {/* Toggle button */}
-      <div style={{
-        display: 'flex', justifyContent: collapsed ? 'center' : 'flex-end',
-        padding: collapsed ? '10px 0 4px' : '8px 10px 4px',
-      }}>
+    <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
+      <div className="sidebar-head">
         <button
+          className="icon-btn"
           onClick={toggleCollapsed}
           title={collapsed ? '展开侧边栏' : '收起侧边栏'}
-          style={{
-            width: '24px', height: '24px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            borderRadius: '6px',
-            color: 'var(--text3)',
-            fontSize: '12px',
-            transition: 'all 0.15s',
-          }}
-          onMouseOver={(e) => { e.currentTarget.style.background = 'var(--bg3)'; e.currentTarget.style.color = 'var(--text)'; }}
-          onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text3)'; }}
         >
           {collapsed ? '▶' : '◀'}
         </button>
       </div>
 
-      {/* Navigation */}
-      <div style={{ padding: collapsed ? '0 6px' : '16px 12px 12px' }}>
+      <div className="sidebar-body">
         {!collapsed && (
           <div
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              marginBottom: '6px', paddingLeft: '4px', cursor: 'pointer',
-            }}
+            className="section-toggle"
             onClick={toggleNavCollapsed}
             title={navCollapsed ? '展开导航' : '收起导航'}
           >
-            <span style={{ fontSize: '10px', fontWeight: '600', color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-              导航
-            </span>
-            <span style={{
-              fontSize: '10px', color: 'var(--text3)',
-              transition: 'transform 0.2s',
-              transform: navCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
-            }}>▶</span>
+            <span className="section-label">导航</span>
+            <span
+              className="section-chevron"
+              style={{ transform: navCollapsed ? 'none' : 'rotate(90deg)' }}
+            >▶</span>
           </div>
         )}
 
-        {(!collapsed && navCollapsed) ? (
-          // Collapsed nav: single-row icon strip showing only the active tab
-          <div style={{
-            display: 'flex', gap: '4px', flexWrap: 'wrap',
-            marginBottom: '8px',
-          }}>
-            {(() => {
-              const items = [
-                { tab: 'chat' as Tab, icon: '💬', label: '对话' },
-                { tab: 'nodes' as Tab, icon: '🌐', label: '节点' },
-                { tab: 'plugins' as Tab, icon: '🧩', label: '插件' },
-                { tab: 'models' as Tab, icon: '🧠', label: '模型' },
-                { tab: 'settings' as Tab, icon: '⚙️', label: '设置' },
-              ];
-              return items.map(item => (
-                <button
-                  key={item.tab}
-                  onClick={(e) => { e.stopPropagation(); onTabChange(item.tab); }}
-                  title={item.label}
-                  style={{
-                    width: '28px', height: '28px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    borderRadius: '6px',
-                    fontSize: '14px',
-                    background: activeTab === item.tab ? 'var(--accent-glow)' : 'transparent',
-                    border: activeTab === item.tab ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s',
-                    opacity: activeTab === item.tab ? 1 : 0.5,
-                  }}
-                  onMouseOver={(e) => { e.currentTarget.style.opacity = '1'; }}
-                  onMouseOut={(e) => { e.currentTarget.style.opacity = activeTab === item.tab ? '1' : '0.5'; }}
-                >{item.icon}</button>
-              ));
-            })()}
+        {!collapsed && navCollapsed ? (
+          <div className="nav-rail">
+            {NAV.map(item => (
+              <button
+                key={item.tab}
+                className={activeTab === item.tab ? 'active' : undefined}
+                title={item.label}
+                onClick={(e) => { e.stopPropagation(); onTabChange(item.tab); }}
+              >{item.icon}</button>
+            ))}
           </div>
         ) : (
-          // Expanded nav: full items
-          <div style={{ display: 'flex', flexDirection: 'column', gap: collapsed ? '2px' : '3px' }}>
-            <NavItem icon="💬" label="对话" active={activeTab === 'chat'} badge={pendingCount || undefined} collapsed={collapsed} onClick={() => onTabChange('chat')} />
-            <NavItem icon="🌐" label="节点" active={activeTab === 'nodes'} badge={nodeList.length || undefined} collapsed={collapsed} onClick={() => onTabChange('nodes')} />
-            <NavItem icon="🧩" label="插件" active={activeTab === 'plugins'} badge={plugins.length || undefined} collapsed={collapsed} onClick={() => onTabChange('plugins')} />
-            <NavItem icon="🧠" label="模型" active={activeTab === 'models'} collapsed={collapsed} onClick={() => onTabChange('models')} />
-            <NavItem icon="⚙️" label="设置" active={activeTab === 'settings'} collapsed={collapsed} onClick={() => onTabChange('settings')} />
+          <div className="nav-list">
+            {NAV.map(item => (
+              <NavItem
+                key={item.tab}
+                item={item}
+                active={activeTab === item.tab}
+                badge={badgeFor(item.tab)}
+                collapsed={collapsed}
+                onClick={() => onTabChange(item.tab)}
+              />
+            ))}
           </div>
         )}
 
-        {/* ── Project Tree (Project-First) ── */}
-        <ProjectTree collapsed={collapsed} onOpenConnect={onOpenConnect} onSwitchLocalSession={onSwitchLocalSession} onNewLocalSession={onNewLocalSession} onConnectProject={onConnectProject} onEditProject={onEditProject} />
-
+        <ProjectTree
+          collapsed={collapsed}
+          onOpenConnect={onOpenConnect}
+          onSwitchLocalSession={onSwitchLocalSession}
+          onNewLocalSession={onNewLocalSession}
+          onConnectProject={onConnectProject}
+          onEditProject={onEditProject}
+        />
       </div>
-
     </aside>
   );
 };
