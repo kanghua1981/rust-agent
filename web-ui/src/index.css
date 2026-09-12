@@ -481,3 +481,66 @@ pre code { background: none; border: none; padding: 0; }
 .input-btn.send:not(:disabled) { background: var(--accent); border-color: transparent; color: #fff; }
 .input-btn.send:hover:not(:disabled) { background: var(--accent); color: #fff; filter: brightness(1.08); }
 .input-hint { max-width: 800px; margin: 4px auto 0; text-align: center; font-size: 11px; color: var(--text3); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Tool call card
+   ═══════════════════════════════════════════════════════════════ */
+.tool-card { overflow: hidden; margin-bottom: 6px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); }
+.tool-card.pending   { border-color: rgba(245,158,11,.3); }
+.tool-card.executing { border-color: rgba(59,130,246,.3); }
+.tool-card.completed { border-color: rgba(16,185,129,.3); }
+.tool-card.error     { border-color: rgba(239,68,68,.3); }
+
+.tool-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; text-align: left; background: transparent; }
+.tool-card.pending   .tool-head { background: var(--yellow-dim); }
+.tool-card.executing .tool-head { background: var(--blue-dim); }
+.tool-card.completed .tool-head { background: var(--green-dim); }
+.tool-card.error     .tool-head { background: var(--red-dim); }
+
+.tool-icon { font-size: 15px; }
+.tool-name { flex: 1; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-weight: 600; color: var(--text); font-size: 13px; }
+.tool-status { padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; background: rgba(0,0,0,.2); }
+.tool-card.pending   .tool-status { color: var(--yellow); }
+.tool-card.executing .tool-status { color: var(--blue); }
+.tool-card.completed .tool-status { color: var(--green); }
+.tool-card.error     .tool-status { color: var(--red); }
+.tool-chevron { font-size: 11px; color: var(--text3); }
+
+.tool-body { padding: 10px 12px; border-top: 1px solid var(--border); }
+.tool-card.pending   .tool-body { border-top-color: rgba(245,158,11,.3); }
+.tool-card.executing .tool-body { border-top-color: rgba(59,130,246,.3); }
+.tool-card.completed .tool-body { border-top-color: rgba(16,185,129,.3); }
+.tool-card.error     .tool-body { border-top-color: rgba(239,68,68,.3); }
+.tool-label { margin-bottom: 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text3); }
+.tool-pre { margin: 0; padding: 8px; border-radius: 6px; font-size: 12px; overflow-x: auto; max-height: 200px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); color: var(--text); }
+.tool-pre.error { max-height: 300px; color: var(--red); border-color: rgba(239,68,68,.3); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Confirmation card + shared field controls
+   ═══════════════════════════════════════════════════════════════ */
+.field { width: 100%; padding: 7px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 7px; color: var(--text); outline: none; font-size: 13px; }
+.field:focus { border-color: var(--accent); }
+.field::placeholder { color: var(--text3); }
+
+.confirm-card { padding: 14px; margin-bottom: 8px; border-radius: var(--radius); background: var(--surface); }
+.confirm-card.info { border: 1px solid rgba(99,102,241,.4); }
+.confirm-card.warn { border: 1px solid rgba(245,158,11,.4); }
+
+.confirm-head { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+.confirm-icon { font-size: 16px; line-height: 1.3; }
+.confirm-body { flex: 1; min-width: 0; }
+.confirm-title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.confirm-card.info .confirm-title { color: var(--accent); }
+.confirm-card.warn .confirm-title { color: var(--yellow); }
+.confirm-text { font-size: 13px; color: var(--text); line-height: 1.5; }
+
+.confirm-details { margin: 0 0 10px; padding: 10px; font-size: 12px; white-space: pre-wrap; overflow-x: auto; overflow-y: auto; max-height: 200px; border-radius: 6px; background: var(--bg3); border: 1px solid var(--border); color: var(--text2); }
+.confirm-details.tight { margin: 8px 0 0; max-height: 150px; padding: 8px; }
+
+.confirm-actions { display: flex; gap: 8px; }
+.confirm-btn { flex: 1; padding: 7px; border-radius: 7px; font-size: 13px; font-weight: 500; transition: opacity .15s; }
+.confirm-btn:hover:not(:disabled) { opacity: .85; }
+.confirm-btn.ok { background: var(--green-dim); color: var(--green); border: 1px solid rgba(16,185,129,.3); }
+.confirm-btn.no { background: var(--red-dim); color: var(--red); border: 1px solid rgba(239,68,68,.3); }
+.confirm-btn.go { padding: 7px 14px; flex: 0 0 auto; background: var(--accent); color: #fff; }
+.confirm-btn:disabled { opacity: .4; cursor: not-allowed; }
