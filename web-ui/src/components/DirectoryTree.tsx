@@ -8,12 +8,12 @@ interface Props {
   onOpenFile: (path: string) => void;
 }
 
-const kindDot = (kind: string): React.CSSProperties => {
+const kindClass = (kind: string): string => {
   switch (kind) {
-    case 'modified': return { background: '#f59e0b', boxShadow: '0 0 4px rgba(245,158,11,0.6)' };
-    case 'created':  return { background: '#10b981', boxShadow: '0 0 4px rgba(16,185,129,0.6)' };
-    case 'deleted':  return { background: '#ef4444', boxShadow: '0 0 4px rgba(239,68,68,0.6)' };
-    default:         return { background: 'transparent' };
+    case 'modified': return 'modified';
+    case 'created':  return 'created';
+    case 'deleted':  return 'deleted';
+    default:         return '';
   }
 };
 
@@ -32,6 +32,7 @@ const DirTreeNode: React.FC<{
   return (
     <div>
       <div
+        className="tree-node"
         onClick={() => {
           if (entry.is_dir) {
             onToggleDir(entry.path);
@@ -40,68 +41,24 @@ const DirTreeNode: React.FC<{
           }
         }}
         title={entry.path}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '4px',
-          padding: '3px 0',
-          paddingLeft: `${8 + depth * 14}px`,
-          paddingRight: '8px',
-          cursor: 'pointer',
-          borderRadius: '4px',
-          fontSize: '12px',
-          fontFamily: 'monospace',
-          color: 'var(--text)',
-          background: 'transparent',
-          transition: 'background 0.1s',
-        }}
-        onMouseOver={(e) => {
-          e.currentTarget.style.background = 'var(--bg3)';
-        }}
-        onMouseOut={(e) => {
-          e.currentTarget.style.background = 'transparent';
-        }}
+        style={{ paddingLeft: `${8 + depth * 14}px` }}
       >
         {/* Expand/collapse arrow for dirs */}
-        <span style={{
-          width: '12px',
-          fontSize: '9px',
-          color: 'var(--text3)',
-          flexShrink: 0,
-          textAlign: 'center',
-          visibility: entry.is_dir ? 'visible' : 'hidden',
-          transform: isExpanded ? 'rotate(90deg)' : 'none',
-          transition: 'transform 0.15s',
-        }}>
-          ▶
-        </span>
+        <span className={`tree-arrow${isExpanded ? ' open' : ''}${entry.is_dir ? '' : ' hidden'}`}>▶</span>
 
         {/* Icon */}
-        <span style={{ fontSize: '13px', flexShrink: 0 }}>
+        <span className="tree-node-icon">
           {entry.is_dir ? (isExpanded ? '📂' : '📁') : '📄'}
         </span>
 
         {/* Name */}
-        <span style={{
-          flex: 1,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          textDecoration: changeKind === 'deleted' ? 'line-through' : 'none',
-          opacity: changeKind === 'deleted' ? 0.5 : 1,
-        }}>
+        <span className={`tree-node-name${changeKind === 'deleted' ? ' deleted' : ''}`}>
           {entry.name}
         </span>
 
         {/* Change indicator dot */}
         {changeKind && changeKind !== 'unchanged' && (
-          <span style={{
-            width: '6px',
-            height: '6px',
-            borderRadius: '50%',
-            flexShrink: 0,
-            ...kindDot(changeKind),
-          }} />
+          <span className={`tree-change-dot ${kindClass(changeKind)}`} />
         )}
       </div>
 
@@ -176,86 +133,28 @@ export const DirectoryTree: React.FC<Props> = ({ collapsed, onListDir, onOpenFil
   if (collapsed) return null;
 
   return (
-    <div style={{
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      padding: '8px 8px 0',
-    }}>
+    <div className="filetree">
       {/* Header */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: '6px',
-        paddingLeft: '4px',
-      }}>
-        <span style={{
-          fontSize: '10px',
-          fontWeight: '600',
-          color: 'var(--text3)',
-          letterSpacing: '0.08em',
-          textTransform: 'uppercase',
-        }}>
-          📂 文件
-        </span>
-        <button
-          onClick={() => onListDir('.')}
-          title="刷新根目录"
-          style={{
-            fontSize: '10px',
-            color: 'var(--text3)',
-            background: 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '0 4px',
-            borderRadius: '4px',
-          }}
-          onMouseOver={(e) => e.currentTarget.style.color = 'var(--text)'}
-          onMouseOut={(e) => e.currentTarget.style.color = 'var(--text3)'}
-        >
-          🔄
-        </button>
+      <div className="filetree-head">
+        <span className="filetree-title">📂 文件</span>
+        <button className="filetree-refresh" onClick={() => onListDir('.')} title="刷新根目录">🔄</button>
       </div>
 
       {/* Filter input */}
       <input
+        className="filetree-filter"
         type="text"
         placeholder="过滤文件..."
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
-        style={{
-          width: '100%',
-          padding: '4px 8px',
-          marginBottom: '6px',
-          background: 'var(--bg3)',
-          border: '1px solid var(--border)',
-          borderRadius: '6px',
-          color: 'var(--text)',
-          fontSize: '11px',
-          fontFamily: 'monospace',
-          outline: 'none',
-          boxSizing: 'border-box',
-        }}
-        onFocus={(e) => e.currentTarget.style.borderColor = 'var(--accent)'}
-        onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border)'}
       />
 
       {/* Tree */}
-      <div style={{
-        flex: 1,
-        minHeight: 0,
-        overflowY: 'auto',
-        overflowX: 'hidden',
-      }}>
+      <div className="filetree-body">
         {connectionStatus !== 'connected' ? (
-          <div style={{ padding: '8px', color: 'var(--text3)', fontSize: '11px', textAlign: 'center' }}>
-            未连接
-          </div>
+          <div className="filetree-empty">未连接</div>
         ) : filteredEntries.length === 0 ? (
-          <div style={{ padding: '8px', color: 'var(--text3)', fontSize: '11px', textAlign: 'center' }}>
-            {filter ? '无匹配文件' : '空目录'}
-          </div>
+          <div className="filetree-empty">{filter ? '无匹配文件' : '空目录'}</div>
         ) : (
           filteredEntries.map((entry) => (
             <DirTreeNode

@@ -852,3 +852,29 @@ pre code { background: none; border: none; padding: 0; }
 .palette-desc { margin-top: 1px; font-size: 11px; color: var(--text3); }
 .palette-foot { display: flex; gap: 16px; flex-shrink: 0; padding: 8px 16px; border-top: 1px solid var(--border); background: var(--bg3); font-size: 10px; color: var(--text3); }
 .palette-foot .grow { margin-left: auto; }
+
+/* ═══════════════════════════════════════════════════════════════
+   File tree (right panel browser)
+   ═══════════════════════════════════════════════════════════════ */
+.filetree { height: 100%; display: flex; flex-direction: column; padding: 8px 8px 0; }
+.filetree-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding-left: 4px; }
+.filetree-title { font-size: 10px; font-weight: 600; color: var(--text3); letter-spacing: .08em; text-transform: uppercase; }
+.filetree-refresh { padding: 0 4px; border-radius: 4px; background: transparent; border: none; color: var(--text3); font-size: 10px; cursor: pointer; }
+.filetree-refresh:hover { color: var(--text); }
+.filetree-filter { width: 100%; box-sizing: border-box; padding: 4px 8px; margin-bottom: 6px; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 11px; font-family: 'JetBrains Mono', 'Fira Code', monospace; outline: none; }
+.filetree-filter:focus { border-color: var(--accent); }
+.filetree-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.filetree-empty { padding: 8px; text-align: center; font-size: 11px; color: var(--text3); }
+
+.tree-node { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 0; cursor: pointer; border-radius: 4px; font-size: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); transition: background .1s; }
+.tree-node:hover { background: var(--bg3); }
+.tree-arrow { width: 12px; flex-shrink: 0; text-align: center; font-size: 9px; color: var(--text3); transition: transform .15s; }
+.tree-arrow.open { transform: rotate(90deg); }
+.tree-arrow.hidden { visibility: hidden; }
+.tree-node-icon { flex-shrink: 0; font-size: 13px; }
+.tree-node-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-node-name.deleted { text-decoration: line-through; opacity: .5; }
+.tree-change-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.tree-change-dot.modified { background: var(--yellow); box-shadow: 0 0 4px rgba(245,158,11,.6); }
+.tree-change-dot.created { background: var(--green); box-shadow: 0 0 4px rgba(16,185,129,.6); }
+.tree-change-dot.deleted { background: var(--red); box-shadow: 0 0 4px rgba(239,68,68,.6); }
