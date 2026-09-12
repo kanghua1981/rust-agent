@@ -38,12 +38,6 @@ pub enum PluginError {
     #[error("插件冲突: {0}")]
     Conflict(String),
     
-    #[error("插件依赖未满足: {0}")]
-    Dependency(String),
-    
-    #[error("权限不足: {0}")]
-    Permission(String),
-    
     #[error("IO错误: {0}")]
     Io(#[from] std::io::Error),
     
@@ -54,5 +48,3 @@ pub enum PluginError {
     Json(#[from] serde_json::Error),
 }
 
-/// 插件系统结果类型
-pub type PluginResult<T> = Result<T, PluginError>;

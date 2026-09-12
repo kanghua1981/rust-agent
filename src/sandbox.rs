@@ -758,12 +758,6 @@ fn remount_ro(path: &Path) {
     }
 }
 
-/// Unmount a fuse-overlayfs mount.  Returns true on success.
-/// Public wrapper used by the worker process during initialisation cleanup.
-pub fn unmount_fuse(merged_dir: &Path) {
-    overlay_unmount(merged_dir, false);
-}
-
 fn overlay_unmount(merged_dir: &Path, kernel: bool) -> bool {
     if kernel {
         // Kernel overlayfs: use umount2 syscall with MNT_DETACH

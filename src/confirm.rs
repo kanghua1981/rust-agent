@@ -145,9 +145,3 @@ pub fn confirm(action: &ConfirmAction) -> ConfirmResult {
         }
     }
 }
-
-/// Convenience function: confirm and return bool
-pub fn should_proceed(action: &ConfirmAction) -> bool {
-    let result = confirm(action);
-    matches!(result, ConfirmResult::Yes | ConfirmResult::AlwaysYes)
-}

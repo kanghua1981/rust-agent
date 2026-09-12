@@ -99,34 +99,6 @@ pub struct McpServerEntry {
     pub headers: HashMap<String, String>,
 }
 
-/// Load config from `.agent/mcp.toml` (project) and
-/// `~/.config/rust_agent/mcp.toml` (user, fallback).
-/// Both files are loaded and merged; project entries come first.
-pub fn load_config(project_dir: &Path) -> McpConfig {
-    let mut merged = McpConfig::default();
-
-    // User-level config first (lowest priority)
-    if let Some(user_cfg_path) = dirs::config_dir().map(|d| d.join("rust_agent").join("mcp.toml")) {
-        if let Ok(text) = std::fs::read_to_string(&user_cfg_path) {
-            if let Ok(cfg) = toml::from_str::<McpConfig>(&text) {
-                merged.servers.extend(cfg.servers);
-            }
-        }
-    }
-
-    // Project-level config (highest priority — prepended so it comes first)
-    let project_cfg_path = project_dir.join(".agent").join("mcp.toml");
-    if let Ok(text) = std::fs::read_to_string(&project_cfg_path) {
-        if let Ok(cfg) = toml::from_str::<McpConfig>(&text) {
-            let mut project_servers = cfg.servers;
-            project_servers.extend(merged.servers);
-            merged.servers = project_servers;
-        }
-    }
-
-    merged
-}
-
 // ── Transport abstraction ─────────────────────────────────────────────────────
 
 /// Unified interface over stdio, legacy HTTP+SSE, and new Streamable HTTP transports.
@@ -822,39 +794,6 @@ pub async fn connect_from_entries(
     }
 
     (tools, errors)
-}
-
-/// Spawn all configured MCP servers, complete handshakes, list their tools,
-/// and return a flat `Vec<Box<dyn Tool>>` ready to register in `ToolExecutor`.
-///
-/// Servers that fail to start or respond are logged to `stderr` and skipped
-/// so a broken MCP server never prevents the agent from starting.
-pub async fn connect_all(project_dir: &PathBuf) -> Vec<Box<dyn Tool + Send + Sync>> {
-    let cfg = load_config(project_dir);
-    if cfg.servers.is_empty() {
-        return vec![];
-    }
-
-    let mut tools: Vec<Box<dyn Tool + Send + Sync>> = vec![];
-
-    for entry in &cfg.servers {
-        match connect_server(entry).await {
-            Ok(server_tools) => {
-                tracing::info!(
-                    "MCP client: connected to '{}', {} tool(s) registered",
-                    entry.name,
-                    server_tools.len()
-                );
-                tools.extend(server_tools);
-            }
-            Err(e) => {
-                tracing::warn!("MCP client: skipping server '{}': {}", entry.name, e);
-                eprintln!("[mcp] skipping '{}': {}", entry.name, e);
-            }
-        }
-    }
-
-    tools
 }
 
 async fn connect_server(

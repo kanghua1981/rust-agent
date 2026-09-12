@@ -166,6 +166,7 @@ impl PathManager {
 
 /// Resolve a path using the old logic (for backward compatibility).
 /// This is used during the transition period.
+#[cfg(test)]
 pub fn resolve_path_old(path: &str, project_dir: &Path) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {

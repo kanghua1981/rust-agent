@@ -502,37 +502,6 @@ pub fn resolve_session_name(workdir: &Path, cli_override: Option<&str>) -> Strin
     read_active_session_name(workdir).unwrap_or_else(|| DEFAULT_SESSION_NAME.to_string())
 }
 
-/// Save conversation to local session (backward-compatible wrapper).
-///
-/// Delegates to `save_local_named_session("default", ...)`.
-pub fn save_local_session(conversation: &Conversation, workdir: &Path) -> Result<()> {
-    // Try migration on first access
-    let _ = migrate_old_local_session(workdir);
-    save_local_named_session(DEFAULT_SESSION_NAME, conversation, workdir)?;
-    let _ = write_active_session_name(workdir, DEFAULT_SESSION_NAME);
-    Ok(())
-}
-
-/// Load the local session (backward-compatible wrapper).
-///
-/// Tries the new `.agent/sessions/default.json` first, then falls back to
-/// the old single-file `.agent/session.json`.  Old file is auto-migrated.
-pub fn load_local_session(workdir: &Path) -> Result<Option<SavedSession>> {
-    // Try new layout first
-    if let Some(session) = load_local_named_session(DEFAULT_SESSION_NAME, workdir)? {
-        return Ok(Some(session));
-    }
-    // Fall back to old single-file layout → migrate on load
-    let old_path = local_session_path(workdir);
-    if old_path.exists() {
-        let json = std::fs::read_to_string(&old_path)?;
-        let session: SavedSession = serde_json::from_str(&json)?;
-        let _ = migrate_old_local_session(workdir);
-        return Ok(Some(session));
-    }
-    Ok(None)
-}
-
 /// Restore a saved session into a Conversation
 pub fn restore_conversation(session: &SavedSession) -> Conversation {
     let mut conv = Conversation::with_system_prompt(session.system_prompt.clone());

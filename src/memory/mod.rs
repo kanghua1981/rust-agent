@@ -27,8 +27,6 @@ const MAX_SESSION_LOG: usize = 30;
 
 // Character-level limits (model-independent, more precise than entry counts)
 const MAX_KNOWLEDGE_CHARS: usize = 2200;
-const MAX_FILE_MAP_CHARS: usize = 3000;
-const MAX_SESSION_LOG_CHARS: usize = 4000;
 const MAX_SINGLE_ENTRY_CHARS: usize = 500;
 
 /// A tracked file entry with rich access metadata.

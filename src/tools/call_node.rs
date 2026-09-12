@@ -32,9 +32,7 @@ use crate::confirm::{ConfirmAction, ConfirmResult};
 use crate::output::{AgentOutput, PlanReview};
 use crate::tools::{Tool, ToolDefinition, ToolResult};
 use crate::agent::is_interrupted;
-use crate::workspaces;
 
-const TOTAL_TIMEOUT: Duration = Duration::from_secs(600);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 const INACTIVITY_WARN: Duration = Duration::from_secs(60);
 const INACTIVITY_ABORT: Duration = Duration::from_secs(180);
