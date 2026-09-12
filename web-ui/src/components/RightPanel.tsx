@@ -3,11 +3,13 @@ import { DirectoryTree } from './DirectoryTree';
 import { ChangesList } from './ChangesList';
 import { TaskPanel } from './TaskPanel';
 import { TerminalView } from './Terminal';
+import { FileViewer } from './FileViewer';
+import { canOpenLocally } from '../utils/fileTransfer';
 import { useTaskStore } from '../stores/taskStore';
 import { useAgentStore } from '../stores/agentStore';
 import { useResizable } from '../hooks/useResizable';
 
-type RightTab = 'browse' | 'changes' | 'tasks' | 'terminal';
+type RightTab = 'browse' | 'changes' | 'tasks' | 'terminal' | 'file';
 
 interface Props {
   activeTab: RightTab;
@@ -18,6 +20,11 @@ interface Props {
   onCommit: () => void;
   onCommitFile: (filePath: string) => void;
   onRollback: () => void;
+  // ── File viewer ──
+  onOpenOnServer: (path: string) => void;
+  onOpenLocally: (path: string) => void;
+  onDownload: (path: string) => void;
+  onCloseFile: () => void;
   // ── Terminal ──
   onPtyOpen: (workdir: string | undefined, rows: number, cols: number) => void;
   onPtyInput: (input: string) => void;
@@ -35,6 +42,10 @@ export const RightPanel: React.FC<Props> = ({
   onCommit,
   onCommitFile,
   onRollback,
+  onOpenOnServer,
+  onOpenLocally,
+  onDownload,
+  onCloseFile,
   onPtyOpen,
   onPtyInput,
   onPtyResize,
@@ -48,6 +59,8 @@ export const RightPanel: React.FC<Props> = ({
   const config = useAgentStore(s => s.config);
   const isProcessing = useAgentStore(s => s.isProcessing);
   const sandboxBackend = useAgentStore(s => s.sandboxBackend);
+  const serverUrl = useAgentStore(s => s.serverUrl);
+  const openFile = useAgentStore(s => s.openFile);
 
   const { width, onMouseDown } = useResizable({
     initialWidth: 480,
@@ -82,10 +95,23 @@ export const RightPanel: React.FC<Props> = ({
     if (!isProcessing && sandboxActive) onSandboxListChanges();
   }, [isProcessing]);
 
+  // Opening a file is only useful if you can see it.
+  const openFilePath = openFile?.path;
+  useEffect(() => {
+    if (!openFilePath) return;
+    setCollapsed(prev => {
+      if (!prev) return prev;
+      try { localStorage.setItem('rightpanel-collapsed', 'false'); } catch {}
+      return false;
+    });
+  }, [openFilePath]);
+
   // Contextual tabs: 变更 appears only in sandbox mode (or with pending changes),
-  // 任务 only while tasks exist, so an empty panel never occupies tab space.
+  // 任务 only while tasks exist, 文件 only while a file is open, so an empty
+  // panel never occupies tab space.
   const tabs: { id: RightTab; icon: string; label: string; badge?: number }[] = [
     { id: 'browse', icon: '📂', label: '浏览' },
+    ...(openFile ? [{ id: 'file' as RightTab, icon: '📄', label: '文件' }] : []),
     { id: 'terminal', icon: '🖥', label: '终端' },
     ...(sandboxActive || pendingChanges > 0
       ? [{ id: 'changes' as RightTab, icon: '📝', label: '变更', badge: pendingChanges || undefined }]
@@ -141,6 +167,17 @@ export const RightPanel: React.FC<Props> = ({
         <div className="col fill clip">
           {active === 'browse' && (
             <DirectoryTree collapsed={false} onListDir={onListDir} onOpenFile={onOpenFile} />
+          )}
+
+          {active === 'file' && openFile && (
+            <FileViewer
+              file={openFile}
+              canOpenLocally={canOpenLocally(serverUrl, config.isolation)}
+              onOpenOnServer={onOpenOnServer}
+              onOpenLocally={onOpenLocally}
+              onDownload={onDownload}
+              onClose={onCloseFile}
+            />
           )}
 
           {active === 'terminal' && (

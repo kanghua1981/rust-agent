@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ClientMessage, ServerEvent, ToolCall } from '../types/agent';
 import { v4 as uuidv4 } from 'uuid';
-import { openFileFromServer } from '../utils/fileTransfer';
+import { downloadFile, openFileLocally } from '../utils/fileTransfer';
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -355,15 +355,31 @@ export const useWebSocket = () => {
     sendRaw({ type: 'list_dir', data: { path } });
   }, [sendRaw]);
 
-  const openFileExternal = useCallback(async (path: string) => {
-    // 统一分派：Tauri 本地零传输直开 / 远端与浏览器走锚点下载（服务端需 /file 端点）
+  // ── File actions ───────────────────────────────────────────────────
+  // A file always lives on the server, so "opening" it is one of three
+  // orthogonal actions, and the caller picks which (see FileViewer): view it
+  // in-app, let the server launch its editor, or pull a copy down.
+  const openFileInApp = useCallback((path: string) => {
+    useAgentStore.getState().setOpenFile({ path, loading: true });
+    sendRaw({ type: 'read_file_content', data: { path } });
+  }, [sendRaw]);
+
+  const openFileOnServer = useCallback((path: string) => {
+    sendRaw({ type: 'open_file_external', data: { path } });
+  }, [sendRaw]);
+
+  const openFileOnLocal = useCallback((path: string) => {
     const st = useAgentStore.getState();
-    openFileFromServer(
+    return openFileLocally(
       serverUrl,
       path,
-      st.clusterToken,
       st.workdir || st.connectedWorkdir || undefined,
+      st.config.isolation,
     );
+  }, [serverUrl]);
+
+  const downloadFileFromServer = useCallback((path: string) => {
+    downloadFile(serverUrl, path, useAgentStore.getState().clusterToken);
   }, [serverUrl]);
 
   // ── PTY Terminal ───────────────────────────────────────────────────
@@ -708,11 +724,38 @@ export const useWebSocket = () => {
         lastAssistantMsgIdRef.current = null;
         break;
 
-      case 'error':
+      // ── In-app file viewer ──────────────────────────────────────────
+      case 'file_content_result': {
+        const pending = useAgentStore.getState().openFile;
+        // Drop responses for a file the user has since navigated away from.
+        if (!pending || pending.path !== event.data.path) break;
+        useAgentStore.getState().setOpenFile({
+          path: event.data.path,
+          loading: false,
+          content: event.data.content,
+          size: event.data.size,
+          binary: event.data.binary,
+          truncated: event.data.truncated,
+          error: event.data.error,
+        });
+        break;
+      }
+
+      case 'file_opened_external':
+        // The server launched an editor on its own machine — nothing to render.
+        break;
+
+      case 'error': {
         console.error('[ws] error:', event.data.message);
         setIsProcessing(false);
         addMessage({ id: uuidv4(), role: 'system', content: `错误: ${event.data.message}`, timestamp: Date.now() });
+        // A rejected read_file_content reports here, not as file_content_result.
+        const pending = useAgentStore.getState().openFile;
+        if (pending?.loading && event.data.message?.includes(pending.path)) {
+          useAgentStore.getState().setOpenFile({ ...pending, loading: false, error: event.data.message });
+        }
         break;
+      }
 
       case 'cancelled':
         flushTokens();
@@ -1232,6 +1275,10 @@ export const useWebSocket = () => {
           setStreamingMessageId(null);
           setIsProcessing(false);
           streamingMsgIdRef.current = null;
+          // A pending file read dies with the connection.
+          if (useAgentStore.getState().openFile?.loading) {
+            useAgentStore.getState().setOpenFile(null);
+          }
         }
         // Clean up connection map and inactive queues (belt-and-suspenders)
         if (connMapRef.current.get(id)?.ws === ws) {
@@ -1383,7 +1430,10 @@ export const useWebSocket = () => {
     deletePeer,
     uploadFile,
     listDir,
-    openFileExternal,
+    openFileInApp,
+    openFileOnServer,
+    openFileOnLocal,
+    downloadFileFromServer,
     // PTY Terminal
     ptyOpen,
     ptyInput,

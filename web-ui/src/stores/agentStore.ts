@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, DirEntry } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, DirEntry, OpenFileState } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 import { runMigration } from '../utils/migration';
 
@@ -167,6 +167,13 @@ interface AgentState {
   setSandboxChangesData: (data: SandboxFileChange[] | null) => void;
   setCurrentPath: (path: string) => void;
   setFileList: (files: FileInfo[]) => void;
+  /**
+   * In-app file viewer target. Deliberately flat rather than per-connection:
+   * only the visible tab can request a file, and the result handler ignores
+   * payloads whose path does not match the pending request.
+   */
+  openFile: OpenFileState | null;
+  setOpenFile: (state: OpenFileState | null) => void;
   setSessionInfo: (info: SessionInfo | null) => void;
   setSessionRestoreAvailable: (info: { message_count: number } | null) => void;
   setLocalSessions: (list: SessionMeta[]) => void;
@@ -290,6 +297,7 @@ const initialState = {
   clusterToken: '',
   currentPath: '.',
   fileList: [] as FileInfo[],
+  openFile: null as OpenFileState | null,
 
   // ── Project-First Architecture ──
   projects: (() => {
@@ -797,6 +805,7 @@ export const useAgentStore = create<AgentState>()(
 
       setCurrentPath: (path) => set({ currentPath: path }),
       setFileList: (files) => set({ fileList: files }),
+      setOpenFile: (openFile) => set({ openFile }),
 
       setConfig: (partial) =>
         set((state) => ({ config: { ...state.config, ...partial } })),

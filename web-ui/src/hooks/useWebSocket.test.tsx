@@ -90,6 +90,7 @@ describe('useWebSocket — connection isolation', () => {
       toolCalls: [],
       pendingConfirmations: [],
       connectionStatus: 'disconnected',
+      openFile: null,
     });
   });
 
@@ -125,6 +126,36 @@ describe('useWebSocket — connection isolation', () => {
 
     // No stream_end yet — the buffered tokens must already be visible.
     expect(contents('A')).toEqual(['你好']);
+  });
+
+  it('loads a file into the in-app viewer and ignores results for other paths', () => {
+    const { a, api } = connectTwo();
+
+    act(() => { api.openFileInApp('src/main.rs'); });
+    expect(useAgentStore.getState().openFile).toEqual({ path: 'src/main.rs', loading: true });
+
+    // A response for a file the user is no longer looking at must not land.
+    act(() => { a.emit({ type: 'file_content_result', data: { path: 'other.txt', content: 'x', size: 1 } }); });
+    expect(useAgentStore.getState().openFile?.loading).toBe(true);
+
+    act(() => { a.emit({ type: 'file_content_result', data: { path: 'src/main.rs', content: 'fn main() {}', size: 12 } }); });
+    const opened = useAgentStore.getState().openFile;
+    expect(opened?.loading).toBe(false);
+    expect(opened?.content).toBe('fn main() {}');
+    expect(opened?.size).toBe(12);
+  });
+
+  it('surfaces a rejected read as a viewer error', () => {
+    const { a, api } = connectTwo();
+
+    act(() => { api.openFileInApp('secret.txt'); });
+    act(() => {
+      a.emit({ type: 'error', data: { message: "Access denied: 'secret.txt' is outside the project directory." } });
+    });
+
+    const opened = useAgentStore.getState().openFile;
+    expect(opened?.loading).toBe(false);
+    expect(opened?.error).toContain('Access denied');
   });
 
   it('does not carry buffered text from the slot left behind into the new one', () => {

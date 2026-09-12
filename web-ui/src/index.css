@@ -943,3 +943,16 @@ pre code { background: none; border: none; padding: 0; }
    own .subtabs strips, which keep the --bg2 chrome. */
 .subtabs.root { padding: 12px 24px 0; background: var(--bg); }
 .subtabs.root .subtab.active { background: var(--bg2); }
+
+/* ═══════════════════════════════════════════════════════════════
+   In-app file viewer
+   ═══════════════════════════════════════════════════════════════ */
+.file-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.file-view-head { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.file-view-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-view-size { flex-shrink: 0; font-size: 10px; color: var(--text3); font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.file-view-actions { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; padding: 8px 12px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.file-view-body { flex: 1; min-height: 0; overflow: auto; }
+.file-view-pre { margin: 0; padding: 12px 14px; border: none; border-radius: 0; background: var(--bg); font-size: 12px; line-height: 1.55; white-space: pre; }
+.file-view-note { padding: 10px 14px; font-size: 12px; color: var(--text3); }
+.file-view-error { margin: 12px; padding: 10px 12px; border-radius: 8px; font-size: 12px; color: var(--red); background: var(--red-dim); border: 1px solid rgba(239,68,68,.3); }

@@ -160,6 +160,7 @@ export type ServerEvent =
   | PeerDeletedEvent
   | DirListEvent
   | FileContentEvent
+  | FileOpenedExternalEvent
   | PtyOutputEvent
   | PtyExitEvent
   | PtyErrorEvent;
@@ -356,6 +357,22 @@ export interface FileContentEvent extends BaseMessage {
     truncated?: boolean;
     error?: string;
   };
+}
+
+export interface FileOpenedExternalEvent extends BaseMessage {
+  type: 'file_opened_external';
+  data: { path: string; editor?: string };
+}
+
+/** A file shown in the in-app viewer. */
+export interface OpenFileState {
+  path: string;
+  loading: boolean;
+  content?: string;
+  size?: number;
+  binary?: boolean;
+  truncated?: boolean;
+  error?: string;
 }
 
 // ── 终端 ──
