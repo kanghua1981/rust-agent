@@ -269,14 +269,7 @@ function App() {
   })();
 
   return (
-    <div style={{
-      height: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      background: 'var(--bg)',
-      color: 'var(--text)',
-      overflow: 'hidden',
-    }}>
+    <div className="app-shell">
       <ErrorBoundary>
         <Header
           activeProjectId={activeProjectId}
@@ -291,7 +284,7 @@ function App() {
         <ProjectTabs onNewProject={() => handleOpenConnect()} disconnectProject={disconnect} connectProject={connect} />
       </ErrorBoundary>
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div className="app-row">
         <ErrorBoundary>
           <Sidebar
             activeTab={activeTab}
@@ -305,13 +298,13 @@ function App() {
           />
         </ErrorBoundary>
 
-        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg)' }}>
+        <div className="app-row">
+        <main className="app-main">
           <ErrorBoundary key={activeTab}>
           {activeTab === 'chat' && (
             <>
               {/* Only the active ChatArea is mounted — inactive slots update via _updateSlot in the background. */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div className="app-fill">
                 <ChatArea
                   slotId={activeProjectId ?? 'default'}
                   onConfirm={confirmToolCall}

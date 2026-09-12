@@ -87,7 +87,7 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({ collapsed, onOpenConne
   return (
     <div className="tree">
       <div className="tree-header" onClick={() => setExpanded(!expanded)}>
-        <p className="tree-title" style={{ margin: 0 }}>📁 项目 ({projectList.length})</p>
+        <p className="tree-title">📁 项目 ({projectList.length})</p>
         <div className="tree-actions">
           <button className="tree-add" onClick={(e) => { e.stopPropagation(); onOpenConnect(); }} title="添加项目 (⌘K)">+</button>
           <span className="tree-chevron" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }}>▶</span>
@@ -97,7 +97,7 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({ collapsed, onOpenConne
       {expanded && (
         <div className="tree-list">
           {projectList.length === 0 ? (
-            <p className="tree-empty" style={{ margin: 0 }}>
+            <p className="tree-empty">
               暂无项目<br />
               <button onClick={onOpenConnect}>+ 添加第一个项目</button>
             </p>
