@@ -74,6 +74,26 @@ export const RightPanel: React.FC<Props> = ({
   const isProcessing = useAgentStore(s => s.isProcessing);
   const sandboxBackend = useAgentStore(s => s.sandboxBackend);
 
+  const sandboxActive =
+    connectionStatus === 'connected' &&
+    config.isolation === 'sandbox' &&
+    sandboxBackend !== 'disabled';
+
+  // Contextual tabs: 变更 appears only in sandbox mode (or with pending changes),
+  // 任务 only while tasks exist, so an empty panel never occupies tab space.
+  // `active` falls back to 浏览 when the selected tab is no longer present.
+  const tabs: { id: RightTab; icon: string; label: string; badge?: number }[] = [
+    { id: 'browse', icon: '📂', label: '浏览' },
+    { id: 'terminal', icon: '🖥', label: '终端' },
+    ...(sandboxActive || pendingChanges > 0
+      ? [{ id: 'changes' as RightTab, icon: '📝', label: '变更', badge: pendingChanges || undefined }]
+      : []),
+    ...(tasks.length > 0
+      ? [{ id: 'tasks' as RightTab, icon: '📋', label: '任务', badge: running.length || done.length || undefined }]
+      : []),
+  ];
+  const active: RightTab = tabs.some(t => t.id === activeTab) ? activeTab : 'browse';
+
   useEffect(() => {
     if (connectionStatus === 'connected' && config.isolation === 'sandbox' && sandboxBackend !== 'disabled') {
       onSandboxListChanges();
@@ -183,12 +203,7 @@ export const RightPanel: React.FC<Props> = ({
           background: 'var(--bg2)',
           flexShrink: 0,
         }}>
-          {([
-            { id: 'browse' as RightTab, icon: '📂', label: '浏览' },
-            { id: 'terminal' as RightTab, icon: '🖥', label: '终端' },
-            { id: 'changes' as RightTab, icon: '📝', label: '变更', badge: pendingChanges || undefined },
-            { id: 'tasks' as RightTab, icon: '📋', label: '任务', badge: running.length || (done.length || undefined) },
-          ]).map(tab => (
+          {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => onTabChange(tab.id)}
@@ -200,11 +215,11 @@ export const RightPanel: React.FC<Props> = ({
                 gap: '4px',
                 padding: '8px 10px',
                 border: 'none',
-                borderBottom: activeTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
-                background: activeTab === tab.id ? 'var(--bg)' : 'transparent',
-                color: activeTab === tab.id ? 'var(--accent)' : 'var(--text2)',
+                borderBottom: active === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
+                background: active === tab.id ? 'var(--bg)' : 'transparent',
+                color: active === tab.id ? 'var(--accent)' : 'var(--text2)',
                 fontSize: '12px',
-                fontWeight: activeTab === tab.id ? '600' : '400',
+                fontWeight: active === tab.id ? '600' : '400',
                 cursor: 'pointer',
                 transition: 'all 0.15s',
                 position: 'relative',
@@ -251,7 +266,7 @@ export const RightPanel: React.FC<Props> = ({
 
         {/* Tab content */}
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {activeTab === 'browse' && (
+          {active === 'browse' && (
             <DirectoryTree
               collapsed={false}
               onListDir={onListDir}
@@ -259,7 +274,7 @@ export const RightPanel: React.FC<Props> = ({
             />
           )}
 
-          {activeTab === 'terminal' && (
+          {active === 'terminal' && (
             <TerminalView
               onPtyOpen={onPtyOpen}
               onPtyInput={onPtyInput}
@@ -270,7 +285,7 @@ export const RightPanel: React.FC<Props> = ({
             />
           )}
 
-          {activeTab === 'changes' && (
+          {active === 'changes' && (
             connectionStatus !== 'connected' ? (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', padding: '40px' }}>
                 <p style={{ textAlign: 'center', fontSize: '14px' }}>未连接到服务器</p>
@@ -291,7 +306,7 @@ export const RightPanel: React.FC<Props> = ({
             )
           )}
 
-          {activeTab === 'tasks' && (
+          {active === 'tasks' && (
             <div style={{
               flex: 1,
               overflowY: 'auto',
