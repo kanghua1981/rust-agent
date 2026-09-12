@@ -30,30 +30,14 @@ function useElapsed(startedAt: number, stopped: boolean): string {
 const StatusBadge: React.FC<{ task: TaskSession }> = ({ task }) => {
   const stopped = task.status === 'done' || task.status === 'error';
   const elapsed = useElapsed(task.startedAt, stopped);
-
-  const cfg = {
-    connecting: { color: '#f59e0b', dot: '#f59e0b', label: '连接中' },
-    running:    { color: '#10b981', dot: '#10b981', label: elapsed },
-    done:       { color: '#6b7280', dot: '#10b981', label: '完成' },
-    error:      { color: '#ef4444', dot: '#ef4444', label: '错误' },
+  const label = task.status === 'running' ? elapsed : {
+    connecting: '连接中', done: '完成', error: '错误',
   }[task.status];
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: '5px',
-      fontSize: '11px', color: cfg.color,
-      background: 'var(--bg3)',
-      border: `1px solid ${cfg.color}33`,
-      borderRadius: '12px', padding: '2px 8px',
-      flexShrink: 0,
-    }}>
-      <span style={{
-        width: '6px', height: '6px', borderRadius: '50%',
-        background: cfg.dot,
-        boxShadow: task.status === 'running' ? `0 0 5px ${cfg.dot}` : 'none',
-        display: 'inline-block',
-      }} />
-      {cfg.label}
+    <div className={`task-badge ${task.status}`}>
+      <span className="dot" />
+      {label}
     </div>
   );
 };
@@ -68,39 +52,27 @@ const ToolCallRow: React.FC<{ call: TaskToolCall }> = ({ call }) => {
     multi_edit_file: '✏️', batch_read: '📖',
   };
   const icon = iconMap[call.tool] ?? '🔧';
-  const statusColor = { executing: '#f59e0b', completed: '#10b981', error: '#ef4444' }[call.status];
+  const args = typeof call.input === 'object' && call.input !== null
+    ? JSON.stringify(call.input as object)
+    : null;
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'flex-start', gap: '6px',
-      padding: '4px 8px',
-      background: 'var(--bg3)',
-      borderRadius: '6px',
-      margin: '2px 0',
-      fontSize: '12px',
-      borderLeft: `2px solid ${statusColor}`,
-    }}>
+    <div className={`task-tool ${call.status}`}>
       <span style={{ flexShrink: 0 }}>{icon}</span>
-      <span style={{ color: 'var(--text2)', flex: 1, wordBreak: 'break-all' }}>
-        <span style={{ color: 'var(--accent)', fontWeight: '500' }}>{call.tool}</span>
-        {typeof call.input === 'object' && call.input !== null && (
-          <span style={{ color: 'var(--text3)', marginLeft: '4px' }}>
-            {JSON.stringify(call.input as object).slice(0, 80)}
-            {JSON.stringify(call.input as object).length > 80 ? '…' : ''}
-          </span>
+      <span className="task-tool-body">
+        <span className="task-tool-name">{call.tool}</span>
+        {args && (
+          <span className="task-tool-args">{args.slice(0, 80)}{args.length > 80 ? '…' : ''}</span>
         )}
       </span>
       {call.status === 'executing' && (
-        <span className="spin" style={{ color: '#f59e0b', fontSize: '13px', flexShrink: 0 }}>⟳</span>
+        <span className="spin" style={{ color: 'var(--yellow)', fontSize: 13, flexShrink: 0 }}>⟳</span>
       )}
     </div>
   );
 };
 
 // ── Message row (memo'd) ─────────────────────────────────────────────────────
-
-// Module-level constant for markdown plugins
-const mdPlugins: unknown[] = []; // react-markdown v10 uses default plugins
 
 interface TaskMessageRowProps {
   msg: TaskMessage;
@@ -119,38 +91,22 @@ export const TaskMessageRow = React.memo<TaskMessageRowProps>(({
       };
       const icon = stageIcons[msg.meta.stageLabel as string] ?? '🔵';
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 0 2px' }}>
-          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-          <span style={{
-            fontSize: '10px', fontWeight: '600', color: 'var(--accent)',
-            background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.3)',
-            borderRadius: '10px', padding: '1px 8px',
-          }}>{icon} {msg.meta.stageLabel as string}</span>
-          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+        <div className="task-stage">
+          <div className="line" />
+          <span className="tag">{icon} {msg.meta.stageLabel as string}</span>
+          <div className="line" />
         </div>
       );
     }
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '2px 0' }}>
-        <span style={{
-          fontSize: '11px', color: 'var(--text3)',
-          background: 'var(--bg3)', border: '1px solid var(--border)',
-          borderRadius: '16px', padding: '2px 10px',
-        }}>{msg.content}</span>
-      </div>
+      <div className="task-note"><span>{msg.content}</span></div>
     );
   }
 
   if (msg.role === 'user') {
     return (
-      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 0' }}>
-        <div style={{
-          maxWidth: '85%', background: 'var(--accent)',
-          color: '#fff', borderRadius: '12px 12px 0 12px',
-          padding: '8px 12px', fontSize: '13px', lineHeight: '1.5',
-        }}>
-          {msg.content}
-        </div>
+      <div className="task-msg-user">
+        <div className="task-bubble-user">{msg.content}</div>
       </div>
     );
   }
@@ -176,30 +132,15 @@ export const TaskMessageRow = React.memo<TaskMessageRowProps>(({
   );
 
   return (
-    <div style={{ display: 'flex', gap: '8px', padding: '4px 0', alignItems: 'flex-start' }}>
-      <div style={{
-        width: '24px', height: '24px', borderRadius: '50%', flexShrink: 0,
-        background: 'linear-gradient(135deg, #0ea5e9, #6366f1)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px',
-      }}>🤖</div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+    <div className="task-msg-bot">
+      <div className="task-avatar">🤖</div>
+      <div className="fill">
         {related.length > 0 && (
-          <div style={{ marginBottom: '4px' }}>
+          <div style={{ marginBottom: 4 }}>
             {related.map((c) => <ToolCallRow key={c.id} call={c} />)}
           </div>
         )}
-        {msg.content && (
-          <div style={{
-            background: 'var(--surface)',
-            borderRadius: '0 12px 12px 12px',
-            padding: '8px 12px',
-            fontSize: '13px',
-            lineHeight: '1.6',
-            color: 'var(--text)',
-          }}>
-            {markdownEl}
-          </div>
-        )}
+        {msg.content && <div className="task-bubble-bot">{markdownEl}</div>}
       </div>
     </div>
   );
@@ -239,92 +180,39 @@ const TaskFocusModal: React.FC<{ task: TaskSession; onClose: () => void }> = ({ 
   }, [task.messages.length, task.toolCalls.length]);
 
   const stopped = task.status === 'done' || task.status === 'error';
-  const accentColor = task.status === 'running' ? '#10b981' : task.status === 'error' ? '#ef4444' : '#6b7280';
+  const tone = task.status === 'running' ? 'running' : task.status === 'error' ? 'error' : 'done';
+  const cancelTask = () => {
+    closeTaskWs(task.id);
+    useTaskStore.getState().setTaskStatus(task.id, 'error');
+    useTaskStore.getState().setTaskProcessing(task.id, false);
+  };
 
   return (
-    <div
-      style={{
-        position: 'fixed', inset: 0, zIndex: 1000,
-        background: 'rgba(0,0,0,0.6)',
-        backdropFilter: 'blur(4px)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '24px',
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          width: '100%', maxWidth: '860px', height: '100%', maxHeight: '86vh',
-          display: 'flex', flexDirection: 'column',
-          background: 'var(--bg2)',
-          border: `1px solid ${accentColor}55`,
-          borderRadius: '14px',
-          overflow: 'hidden',
-          boxShadow: `0 0 40px ${accentColor}22, 0 24px 60px rgba(0,0,0,0.5)`,
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="task-focus-backdrop" onClick={onClose}>
+      <div className={`task-focus ${tone}`} onClick={(e) => e.stopPropagation()}>
         {/* Modal header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '10px',
-          padding: '14px 18px',
-          background: 'var(--bg3)',
-          borderBottom: '1px solid var(--border)',
-          flexShrink: 0,
-        }}>
-          <div style={{
-            width: '8px', height: '8px', borderRadius: '50%',
-            background: accentColor,
-            boxShadow: task.status === 'running' ? `0 0 8px ${accentColor}` : 'none',
-            flexShrink: 0,
-          }} />
-          <span style={{ flex: 1, fontSize: '14px', fontWeight: '600', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {task.title}
-          </span>
+        <div className="task-focus-head">
+          <div className={`task-focus-dot ${tone}`} />
+          <span className="task-focus-title">{task.title}</span>
           <StatusBadge task={task} />
           {!stopped && (
-            <button
-              onClick={() => { closeTaskWs(task.id); useTaskStore.getState().setTaskStatus(task.id, 'error'); useTaskStore.getState().setTaskProcessing(task.id, false); }}
-              title="取消任务"
-              style={{
-                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-                color: '#ef4444', fontSize: '13px', borderRadius: '6px',
-                cursor: 'pointer', padding: '3px 8px', flexShrink: 0,
-              }}
-            >■ 取消</button>
+            <button className="btn-cancel" onClick={cancelTask} title="取消任务">■ 取消</button>
           )}
-          <button
-            onClick={onClose}
-            title="关闭（Esc）"
-            style={{
-              background: 'var(--bg3)', border: '1px solid var(--border)',
-              color: 'var(--text2)', fontSize: '18px', borderRadius: '8px',
-              cursor: 'pointer', padding: '2px 8px', flexShrink: 0, lineHeight: 1,
-            }}
-          >×</button>
+          <button className="task-close-btn" onClick={onClose} title="关闭（Esc）">×</button>
         </div>
 
         {/* Prompt bar */}
-        <div style={{
-          padding: '10px 18px 8px',
-          borderBottom: '1px solid var(--border)',
-          flexShrink: 0,
-          fontSize: '12px', color: 'var(--text3)',
-        }}>
-          <span style={{ color: 'var(--text2)' }}>任务：</span>{task.prompt}
+        <div className="task-focus-prompt">
+          <span className="lbl">任务：</span>{task.prompt}
         </div>
 
         {/* Scrollable body */}
         <div
+          className="task-focus-body"
           ref={scrollRef}
           onScroll={() => {
             const el = scrollRef.current;
             if (el) isNearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-          }}
-          style={{
-            flex: 1, overflowY: 'auto',
-            padding: '16px 20px',
-            display: 'flex', flexDirection: 'column', gap: '4px',
           }}
         >
           {task.messages.map((msg) => (
@@ -339,37 +227,20 @@ const TaskFocusModal: React.FC<{ task: TaskSession; onClose: () => void }> = ({ 
         </div>
 
         {/* Footer stat bar */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '16px',
-          padding: '8px 18px',
-          borderTop: '1px solid var(--border)',
-          background: 'var(--bg3)',
-          flexShrink: 0,
-          fontSize: '11px', color: 'var(--text3)',
-        }}>
+        <div className="task-focus-foot">
           <span>消息: {task.messages.filter(m => m.role !== 'system').length}</span>
           <span>工具调用: {task.toolCalls.length}</span>
-          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>连接: {task.serverUrl}</span>
-          {exportStatus && (
-            <span style={{ color: '#10b981', flexShrink: 0 }}>{exportStatus}</span>
-          )}
+          <span className="grow">连接: {task.serverUrl}</span>
+          {exportStatus && <span className="text-ok" style={{ flexShrink: 0 }}>{exportStatus}</span>}
           <button
+            className="btn-tiny"
             onClick={() => exportSessionAsMarkdown({ messages: task.messages, toolCalls: task.toolCalls, extraHeader: `> 任务: ${task.prompt}` }, (p) => { setExportStatus(`✓ ${p}`); setTimeout(() => setExportStatus(null), 3000); }, (e) => setExportStatus(`❌ ${e}`))}
             title="导出为 Markdown"
-            style={{
-              background: 'var(--bg2)', border: '1px solid var(--border)',
-              color: 'var(--text2)', borderRadius: '6px',
-              fontSize: '11px', padding: '3px 8px', cursor: 'pointer', flexShrink: 0,
-            }}
           >↓ MD</button>
           <button
+            className="btn-tiny"
             onClick={() => exportSessionAsJson({ messages: task.messages, toolCalls: task.toolCalls, extraHeader: `> 任务: ${task.prompt}` }, (p) => { setExportStatus(`✓ ${p}`); setTimeout(() => setExportStatus(null), 3000); }, (e) => setExportStatus(`❌ ${e}`))}
             title="导出为 JSON"
-            style={{
-              background: 'var(--bg2)', border: '1px solid var(--border)',
-              color: 'var(--text2)', borderRadius: '6px',
-              fontSize: '11px', padding: '3px 8px', cursor: 'pointer', flexShrink: 0,
-            }}
           >↓ JSON</button>
           <span style={{ flexShrink: 0 }}>Esc 关闭</span>
         </div>
@@ -430,103 +301,48 @@ const TaskPanelInner: React.FC<{
     return idx;
   }, [task.toolCalls]);
 
-  const panelBorder = task.status === 'running'
-    ? '1px solid rgba(16,185,129,0.4)'
-    : task.status === 'error'
-    ? '1px solid rgba(239,68,68,0.3)'
-    : '1px solid var(--border)';
+  const tone = task.status === 'running' ? 'running' : task.status === 'error' ? 'error' : '';
+  const cancelTask = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    closeTaskWs(taskId);
+    useTaskStore.getState().setTaskStatus(taskId, 'error');
+    useTaskStore.getState().setTaskProcessing(taskId, false);
+  };
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column',
-      background: 'var(--bg2)',
-      border: panelBorder,
-      borderRadius: '10px',
-      overflow: 'hidden',
-      boxShadow: task.status === 'running' ? '0 0 12px rgba(16,185,129,0.1)' : 'none',
-      transition: 'box-shadow 0.3s',
-    }}>
+    <div className={`task-panel ${tone}`}>
       {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: '8px',
-        padding: '8px 12px',
-        background: 'var(--bg3)',
-        borderBottom: task.collapsed ? 'none' : '1px solid var(--border)',
-        cursor: 'pointer',
-        userSelect: 'none',
-      }}
+      <div
+        className={`task-panel-head${task.collapsed ? ' collapsed' : ''}`}
         onClick={() => toggleTaskCollapsed(taskId)}
       >
-        <span style={{ fontSize: '12px', color: 'var(--text3)', flexShrink: 0 }}>
-          {task.collapsed ? '▶' : '▼'}
-        </span>
-        <span style={{
-          flex: 1, fontSize: '12px', fontWeight: '500', color: 'var(--text)',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {task.title}
-        </span>
+        <span className="task-chevron">{task.collapsed ? '▶' : '▼'}</span>
+        <span className="task-panel-title">{task.title}</span>
         <StatusBadge task={task} />
+        <button className="task-icon-btn" style={{ fontSize: 13 }} onClick={onOpenFocus} title="展开查看详情">⤢</button>
         <button
-          onClick={onOpenFocus}
-          title="展开查看详情"
-          style={{
-            background: 'transparent', border: 'none',
-            color: 'var(--text3)', fontSize: '13px',
-            cursor: 'pointer', padding: '0 2px', flexShrink: 0,
-            lineHeight: 1,
-          }}
-        >⤢</button>
-        <button
+          className="task-icon-btn" style={{ fontSize: 12 }}
           onClick={(e) => { e.stopPropagation(); exportSessionAsMarkdown({ messages: task.messages, toolCalls: task.toolCalls, extraHeader: `> 任务: ${task.prompt}` }, () => {}, () => {}); }}
-          title="导出导出 Markdown"
-          style={{
-            background: 'transparent', border: 'none',
-            color: 'var(--text3)', fontSize: '12px',
-            cursor: 'pointer', padding: '0 2px', flexShrink: 0,
-            lineHeight: 1,
-          }}
+          title="导出 Markdown"
         >↓</button>
         {!stopped && (
-          <button
-            onClick={(e) => { e.stopPropagation(); closeTaskWs(taskId); useTaskStore.getState().setTaskStatus(taskId, 'error'); useTaskStore.getState().setTaskProcessing(taskId, false); }}
-            title="取消任务"
-            style={{
-              background: 'transparent', border: 'none',
-              color: 'var(--text3)', fontSize: '14px',
-              cursor: 'pointer', padding: '0 2px', flexShrink: 0,
-              lineHeight: 1,
-            }}
-          >■</button>
+          <button className="task-icon-btn" style={{ fontSize: 14 }} onClick={cancelTask} title="取消任务">■</button>
         )}
         <button
+          className="task-icon-btn" style={{ fontSize: 16 }}
           onClick={(e) => { e.stopPropagation(); onClose(taskId); }}
           title="关闭面板"
-          style={{
-            background: 'transparent', border: 'none',
-            color: 'var(--text3)', fontSize: '16px',
-            cursor: 'pointer', padding: '0 2px', flexShrink: 0,
-            lineHeight: 1,
-          }}
         >×</button>
       </div>
 
       {/* Body */}
       {!task.collapsed && (
         <div
+          className="task-panel-body"
           ref={scrollRef}
           onScroll={() => {
             const el = scrollRef.current;
             if (el) isNearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-          }}
-          style={{
-            flex: 1,
-            maxHeight: '320px',
-            overflowY: 'auto',
-            padding: '10px 12px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '2px',
           }}
         >
           {task.messages.map((msg) => (
