@@ -1043,6 +1043,24 @@ export const useWebSocket = () => {
     const targetConn = connMapRef.current.get(slotId);
     if (!targetConn) return;
 
+    // A background turn opens its assistant message here. role_header is otherwise
+    // queued, which would leave stream_start/tokens with no message to attach to.
+    if (event.type === 'role_header') {
+      const msgId = uuidv4();
+      st._updateSlot(slotId, s => ({
+        ...s,
+        messages: [...s.messages, {
+          id: msgId,
+          role: 'assistant' as const,
+          content: '',
+          timestamp: Date.now(),
+          meta: { stageLabel: event.data?.label, stageModel: event.data?.model },
+        }],
+      }));
+      targetConn.lastAssistantMsgId = msgId;
+      return;
+    }
+
     // Streaming tokens: accumulate directly in SlotConn buffers (NO store swap!)
     if (event.type === 'streaming_token') {
       if (event.data?.token && targetConn.streamingMsgId) {
