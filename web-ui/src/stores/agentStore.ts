@@ -42,7 +42,6 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
     thinkingMessageId: null,
     currentMessage: '',
     sessionInfo: null,
-    sessionList: [],
     localSessions: [],
     activeSessionName: null,
     sandboxBackend: 'disabled',
@@ -94,7 +93,6 @@ interface AgentState {
   sandboxChangesData: SandboxFileChange[] | null;
 
   sessionInfo: SessionInfo | null;
-  sessionList: SessionMeta[];
   sessionRestoreAvailable: { message_count: number } | null;
 
   localSessions: SessionMeta[];
@@ -170,8 +168,6 @@ interface AgentState {
   setCurrentPath: (path: string) => void;
   setFileList: (files: FileInfo[]) => void;
   setSessionInfo: (info: SessionInfo | null) => void;
-  setSessionList: (list: SessionMeta[]) => void;
-  removeSessionFromList: (id: string) => void;
   setSessionRestoreAvailable: (info: { message_count: number } | null) => void;
   setLocalSessions: (list: SessionMeta[]) => void;
   setActiveSessionName: (name: string | null) => void;
@@ -268,7 +264,6 @@ const initialState = {
   sandboxChangesData: null as SandboxFileChange[] | null,
 
   sessionInfo: null as SessionInfo | null,
-  sessionList: [] as SessionMeta[],
   sessionRestoreAvailable: null as { message_count: number } | null,
 
   localSessions: [] as SessionMeta[],
@@ -384,7 +379,6 @@ export const useAgentStore = create<AgentState>()(
           pendingChanges: state.pendingChanges,
           sandboxChangesData: state.sandboxChangesData,
           sessionInfo: state.sessionInfo,
-          sessionList: state.sessionList,
           sessionRestoreAvailable: state.sessionRestoreAvailable,
           nodeList: state.nodeList,
           tokenUsage: state.tokenUsage,
@@ -422,7 +416,6 @@ export const useAgentStore = create<AgentState>()(
             pendingChanges: updatedSlot.pendingChanges,
             sandboxChangesData: updatedSlot.sandboxChangesData,
             sessionInfo: updatedSlot.sessionInfo,
-            sessionList: updatedSlot.sessionList,
             sessionRestoreAvailable: updatedSlot.sessionRestoreAvailable,
             nodeList: updatedSlot.nodeList,
             tokenUsage: updatedSlot.tokenUsage,
@@ -487,7 +480,6 @@ export const useAgentStore = create<AgentState>()(
               pendingChanges: nextSlot.pendingChanges,
               sandboxChangesData: nextSlot.sandboxChangesData,
               sessionInfo: nextSlot.sessionInfo,
-              sessionList: nextSlot.sessionList,
               sessionRestoreAvailable: nextSlot.sessionRestoreAvailable,
               nodeList: nextSlot.nodeList,
               tokenUsage: nextSlot.tokenUsage,
@@ -520,7 +512,6 @@ export const useAgentStore = create<AgentState>()(
               pendingChanges: 0,
               sandboxChangesData: null,
               sessionInfo: null,
-              sessionList: [],
               sessionRestoreAvailable: null,
               nodeList: [],
               tokenUsage: null,
@@ -555,7 +546,6 @@ export const useAgentStore = create<AgentState>()(
             sandboxBackend: state.sandboxBackend,
             pendingChanges: state.pendingChanges,
             sessionInfo: state.sessionInfo,
-            sessionList: state.sessionList,
             sessionRestoreAvailable: state.sessionRestoreAvailable,
             nodeList: state.nodeList,
             tokenUsage: state.tokenUsage,
@@ -598,7 +588,6 @@ export const useAgentStore = create<AgentState>()(
           pendingChanges: target.pendingChanges,
           sandboxChangesData: target.sandboxChangesData,
           sessionInfo: target.sessionInfo,
-          sessionList: target.sessionList,
           sessionRestoreAvailable: target.sessionRestoreAvailable,
           nodeList: target.nodeList,
           tokenUsage: target.tokenUsage,
@@ -686,9 +675,6 @@ export const useAgentStore = create<AgentState>()(
 
       setSessionInfo: (info) =>
         set(syncActiveSlot({ sessionInfo: info })),
-
-      setSessionList: (list) =>
-        set(syncActiveSlot({ sessionList: list })),
 
       setSessionRestoreAvailable: (info) =>
         set(syncActiveSlot({ sessionRestoreAvailable: info })),
@@ -812,11 +798,6 @@ export const useAgentStore = create<AgentState>()(
       setCurrentPath: (path) => set({ currentPath: path }),
       setFileList: (files) => set({ fileList: files }),
 
-      removeSessionFromList: (id) =>
-        set((state) => ({
-          sessionList: state.sessionList.filter((s) => s.id !== id),
-        })),
-
       setConfig: (partial) =>
         set((state) => ({ config: { ...state.config, ...partial } })),
 
@@ -869,7 +850,6 @@ export const useAgentStore = create<AgentState>()(
             thinkingMessageId: null,
             currentMessage: '',
             sessionInfo: null,
-            sessionList: [],
             sessionRestoreAvailable: null,
             availableModels: state.availableModels,
             activeModel: state.activeModel,
@@ -888,7 +868,6 @@ export const useAgentStore = create<AgentState>()(
                 thinkingMessageId: null,
                 currentMessage: '',
                 sessionInfo: null,
-                sessionList: [],
                 sessionRestoreAvailable: null,
                 availableModels: state.connections[slotId].availableModels,
                 activeModel: state.connections[slotId].activeModel,
@@ -952,7 +931,6 @@ export const useAgentStore = create<AgentState>()(
           thinkingMessageId: null,
           currentMessage: '',
           sessionInfo: null,
-          sessionList: [],
           sessionRestoreAvailable: null,
           connectedWorkdir: null,
           sandboxBackend: 'disabled',

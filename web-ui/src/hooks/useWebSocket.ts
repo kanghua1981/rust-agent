@@ -144,10 +144,8 @@ export const useWebSocket = () => {
     removePendingConfirmation,
     addDiff,
     setSessionInfo,
-    setSessionList,
     setLocalSessions,
     setActiveSessionName,
-    removeSessionFromList,
     setSessionRestoreAvailable,
     clearSession,
     setSandboxBackend,
@@ -269,18 +267,6 @@ export const useWebSocket = () => {
     sendRaw({ type: 'new_session', data: {} });
   }, [sendRaw]);
 
-  const listSessions = useCallback(() => {
-    sendRaw({ type: 'list_sessions', data: {} });
-  }, [sendRaw]);
-
-  const deleteSession = useCallback((id: string) => {
-    sendRaw({ type: 'delete_session', data: { id } });
-  }, [sendRaw]);
-
-  const loadSessionById = useCallback((id: string) => {
-    clearSession();
-    sendRaw({ type: 'load_session_by_id', data: { id } });
-  }, [sendRaw, clearSession]);
 
   // ── Local named session commands ──────────────────────────────────
   const listLocalSessions = useCallback(() => {
@@ -774,13 +760,6 @@ export const useWebSocket = () => {
         if (event.data.session_name) setActiveSessionName(event.data.session_name);
         break;
 
-      case 'sessions_list':
-        setSessionList(event.data.sessions);
-        break;
-
-      case 'session_deleted':
-        removeSessionFromList(event.data.id);
-        break;
 
       // ── Local named session events ────────────────────────────────
       case 'local_sessions_list': {
@@ -895,8 +874,8 @@ export const useWebSocket = () => {
     config.autoApprove, sendRaw, flushTokens, scheduleFlush,
     updateMessage, addMessage,
     addToolCall, updateToolCall, addPendingConfirmation, addDiff,
-    setIsProcessing, setStreamingMessageId, setThinkingMessageId, setSessionInfo, setSessionList,
-    removeSessionFromList, setSessionRestoreAvailable, clearSession, setSandboxBackend, setPendingChanges,
+    setIsProcessing, setStreamingMessageId, setThinkingMessageId, setSessionInfo,
+    setSessionRestoreAvailable, clearSession, setSandboxBackend, setPendingChanges,
     setPlugins, setAvailableModels, setActiveModel,
   ]);
 
@@ -1380,9 +1359,6 @@ export const useWebSocket = () => {
     deleteEndpoint,
     loadSession,
     newSession,
-    listSessions,
-    deleteSession,
-    loadSessionById,
     listLocalSessions,
     switchLocalSession,
     newLocalSession,

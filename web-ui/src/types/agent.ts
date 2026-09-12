@@ -16,9 +16,6 @@ export type ClientMessage =
   | SandboxRollbackMessage
   | LoadSessionMessage
   | NewSessionMessage
-  | ListSessionsMessage
-  | DeleteSessionMessage
-  | LoadSessionByIdMessage
   | CancelMessage
   | UploadFileMessage
   | ListPluginsMessage
@@ -80,21 +77,6 @@ export interface NewSessionMessage extends BaseMessage {
   data: {};
 }
 
-export interface ListSessionsMessage extends BaseMessage {
-  type: 'list_sessions';
-  data: {};
-}
-
-export interface DeleteSessionMessage extends BaseMessage {
-  type: 'delete_session';
-  data: { id: string };
-}
-
-export interface LoadSessionByIdMessage extends BaseMessage {
-  type: 'load_session_by_id';
-  data: { id: string };
-}
-
 // ── Local named session messages ────────────────────────────────────
 
 export interface ListLocalSessionsMessage extends BaseMessage {
@@ -150,8 +132,6 @@ export type ServerEvent =
   | SessionRestoredEvent
   | SessionAvailableEvent
   | SessionClearedEvent
-  | SessionsListEvent
-  | SessionDeletedEvent
   | LocalSessionsListEvent
   | SessionSwitchedEvent
   | SessionRenamedEvent
@@ -201,16 +181,6 @@ export interface SessionInfo {
   summary?: string;
   working_dir?: string;
   local_session_count?: number;
-}
-
-export interface SessionsListEvent extends BaseMessage {
-  type: 'sessions_list';
-  data: { sessions: SessionMeta[] };
-}
-
-export interface SessionDeletedEvent extends BaseMessage {
-  type: 'session_deleted';
-  data: { id: string; name?: string };
 }
 
 // ── Local named session events ─────────────────────────────────────
@@ -1051,7 +1021,6 @@ export interface ProjectSlot {
   thinkingMessageId: string | null;
   currentMessage: string;
   sessionInfo: SessionInfo | null;
-  sessionList: SessionMeta[];
   localSessions: SessionMeta[];
   activeSessionName: string | null;
   sandboxBackend: string;
