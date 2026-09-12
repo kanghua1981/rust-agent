@@ -149,31 +149,17 @@ export const ChatArea: React.FC<Props> = ({ slotId, onConfirm, onAnswer, onRevie
 
   if (connectionStatus === 'disconnected' || connectionStatus === 'error') {
     return (
-      <div style={{
-        flex: 1, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        color: 'var(--text3)', gap: '12px', padding: '40px',
-      }}>
-        <div style={{
-          width: '60px', height: '60px', borderRadius: '50%',
-          background: 'var(--bg3)', display: 'flex', alignItems: 'center',
-          justifyContent: 'center', fontSize: '28px',
-        }}>
-          🤖
-        </div>
-        <p style={{ fontSize: '16px', fontWeight: '500', color: 'var(--text2)' }}>Rust Agent Web UI</p>
-        <p style={{ fontSize: '13px', textAlign: 'center', maxWidth: '320px', lineHeight: '1.6' }}>
+      <div className="chat-empty">
+        <div className="chat-empty-logo">🤖</div>
+        <p className="chat-empty-title">Rust Agent Web UI</p>
+        <p className="chat-empty-text">
           {connectionStatus === 'error'
             ? '连接失败，请检查服务器地址并重试。'
             : '点击右上角「连接服务器」开始使用 AI 助手。'}
         </p>
-        <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+        <div className="chat-hints">
           {['编写代码', '分析项目', '执行任务', '查找文件'].map(hint => (
-            <span key={hint} style={{
-              padding: '4px 12px', background: 'var(--bg3)',
-              border: '1px solid var(--border)', borderRadius: '16px',
-              fontSize: '12px', color: 'var(--text2)',
-            }}>{hint}</span>
+            <span key={hint} className="chat-hint">{hint}</span>
           ))}
         </div>
       </div>
@@ -182,8 +168,8 @@ export const ChatArea: React.FC<Props> = ({ slotId, onConfirm, onAnswer, onRevie
 
   if (connectionStatus === 'connecting') {
     return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text2)' }}>
-        <span className="spin" style={{ marginRight: '8px' }}>⟳</span> 正在连接…
+      <div className="chat-connecting">
+        <span className="spin" style={{ marginRight: 8 }}>⟳</span> 正在连接…
       </div>
     );
   }
@@ -191,55 +177,16 @@ export const ChatArea: React.FC<Props> = ({ slotId, onConfirm, onAnswer, onRevie
   return (
     <>
       {sessionRestoreAvailable && messages.length === 0 && (
-        <div style={{
-          margin: '12px 16px 0',
-          padding: '12px 16px',
-          background: 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(139,92,246,0.10))',
-          border: '1px solid rgba(99,102,241,0.25)',
-          borderRadius: '10px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '12px',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
-            <span style={{ fontSize: '18px' }}>📋</span>
-            <span style={{ fontSize: '13px', color: 'var(--text)' }}>
+        <div className="restore-banner">
+          <div className="info">
+            <span className="icon">📋</span>
+            <span className="text">
               检测到上次会话（<strong>{sessionRestoreAvailable.message_count}</strong> 条消息）
             </span>
           </div>
-          <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-            <button
-              onClick={onDismissRestore}
-              style={{
-                padding: '5px 12px',
-                background: 'var(--bg3)',
-                color: 'var(--text2)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                fontSize: '12px',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              忽略
-            </button>
-            <button
-              onClick={onRestoreSession}
-              style={{
-                padding: '5px 14px',
-                background: 'var(--accent)',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '6px',
-                fontSize: '12px',
-                fontWeight: '600',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              恢复会话
-            </button>
+          <div className="actions">
+            <button className="btn-secondary" onClick={onDismissRestore}>忽略</button>
+            <button className="btn-primary" onClick={onRestoreSession}>恢复会话</button>
           </div>
         </div>
       )}
