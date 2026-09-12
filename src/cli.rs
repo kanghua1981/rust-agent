@@ -2137,15 +2137,6 @@ async fn handle_nodes_command(peers: &[crate::workspaces::PeerEntry], cluster_to
                                 vec![]
                             };
 
-                        // Populate route table so any:<tag> works immediately.
-                        if !virtual_nodes.is_empty() {
-                            let raw_url = remote.url.as_str();
-                            let base_url = raw_url.splitn(2, '?').next().unwrap_or(raw_url);
-                            crate::workspaces::update_route_table(
-                                &remote.name, base_url, &virtual_nodes,
-                            );
-                        }
-
                         // Print physical server header.
                         println!(
                             "  {} {}  sandbox:{}  {}",

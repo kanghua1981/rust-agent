@@ -7,10 +7,6 @@ pub mod scope;
 pub mod manager;
 pub mod tool_loader;
 pub mod skill_loader;
-/// Plugin load result cache — currently scaffolding, not yet wired into the
-/// load path. Reserved for future optimization (avoid re-scanning plugin dirs
-/// on every startup).
-pub mod cache;
 /// Hook 定义加载器：扫描 hooks/*.toml，解析为 HookDefinition。
 pub mod hook_loader;
 /// Hook 事件总线：注册/注销插件 hook，按执行模式分发事件。

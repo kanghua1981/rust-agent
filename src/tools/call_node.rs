@@ -446,16 +446,6 @@ async fn ws_run_node(
                                         target_name, wd, sb, caps_summary, vnode_table
                                     );
                                 }
-                                if !virtual_nodes.is_empty() {
-                                    let raw_url = if url.contains('?') {
-                                        url.splitn(2, '?').next().unwrap_or(url).to_string()
-                                    } else {
-                                        url.to_string()
-                                    };
-                                    workspaces::update_route_table(
-                                        target_name, &raw_url, &virtual_nodes,
-                                    );
-                                }
                                 output.on_warning(&format!(
                                     "[call_node] node '{}' ready — workdir={} sandbox={}",
                                     target_name, wd, sb

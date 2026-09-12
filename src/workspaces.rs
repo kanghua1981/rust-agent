@@ -304,60 +304,6 @@ pub fn seed_nodes_from_legacy_toml() {
     }
 }
 
-// ── In-process route table (tag → remote node) ───────────────────────────────
-
-/// A resolved route entry: a specific virtual node on a physical server.
-#[derive(Debug, Clone)]
-pub struct RouteEntry {
-    /// Name of the server entry.
-    pub server_name: String,
-    /// WebSocket URL of the physical server.
-    pub server_url: String,
-    /// Virtual workspace name on that server.
-    pub node_name: String,
-    pub workdir: String,
-    pub sandbox: bool,
-    pub tags: Vec<String>,
-}
-
-// Global in-process route table, populated by `/nodes` probes and call_node
-// ready frames.  Entries keyed by (server_name, node_name).
-static ROUTE_TABLE: once_cell::sync::Lazy<std::sync::RwLock<Vec<RouteEntry>>> =
-    once_cell::sync::Lazy::new(|| std::sync::RwLock::new(Vec::new()));
-
-/// Replace all route entries for `server_name` with the supplied virtual nodes.
-pub fn update_route_table(server_name: &str, server_url: &str, virtual_nodes: &[VirtualNodeInfo]) {
-    let Ok(mut table) = ROUTE_TABLE.write() else { return };
-    table.retain(|e| e.server_name != server_name);
-    for vn in virtual_nodes {
-        table.push(RouteEntry {
-            server_name: server_name.to_string(),
-            server_url: server_url.to_string(),
-            node_name: vn.name.clone(),
-            workdir: vn.workdir.clone(),
-            sandbox: vn.sandbox,
-            tags: vn.tags.clone(),
-        });
-    }
-}
-
-/// Return the first route entry whose tags contain `tag`.
-pub fn find_by_tag(tag: &str) -> Option<RouteEntry> {
-    let Ok(table) = ROUTE_TABLE.read() else { return None };
-    table.iter().find(|e| e.tags.iter().any(|t| t == tag)).cloned()
-}
-
-/// Return all route entries whose tags contain `tag`.
-pub fn find_all_by_tag(tag: &str) -> Vec<RouteEntry> {
-    let Ok(table) = ROUTE_TABLE.read() else { return vec![] };
-    table.iter().filter(|e| e.tags.iter().any(|t| t == tag)).cloned().collect()
-}
-
-/// Return a snapshot of the entire route table.
-pub fn get_route_table() -> Result<Vec<RouteEntry>, ()> {
-    ROUTE_TABLE.read().map(|g| g.clone()).map_err(|_| ())
-}
-
 // ── NodeRegistry ──────────────────────────────────────────────────────────────
 //
 // Runtime state of all known nodes: local nodes (always online) and
