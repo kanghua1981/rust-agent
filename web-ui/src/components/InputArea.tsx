@@ -1,6 +1,9 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 
+/** Must match .input-textarea max-height in index.css. */
+const MAX_INPUT_HEIGHT = 320;
+
 interface Props {
   onSend: (text: string) => void;
   onCancel?: () => void;
@@ -27,7 +30,7 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+    el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + 'px';
   }, [currentMessage]);
 
   const handleSend = () => {
