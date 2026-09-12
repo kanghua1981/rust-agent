@@ -286,11 +286,13 @@ function App() {
             activeTab={activeTab}
             onTabChange={setActiveTab}
             onOpenConnect={() => handleOpenConnect()}
-            onQuickConnect={handleConnect}
+            onDisconnect={handleDisconnect}
+            onSwitchToChat={() => setActiveTab('chat')}
+            onListLocalSessions={listLocalSessions}
             onSwitchLocalSession={switchLocalSession}
             onNewLocalSession={newLocalSession}
-            onConnectProject={(id: string) => connect(id)}
-            onEditProject={(id) => handleOpenConnect(id)}
+            onDeleteLocalSession={deleteLocalSession}
+            onRenameLocalSession={renameLocalSession}
           />
         </ErrorBoundary>
 
