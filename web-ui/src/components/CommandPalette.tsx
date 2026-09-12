@@ -139,47 +139,11 @@ export const CommandPalette: React.FC<Props> = ({ open, onClose, extraActions })
   if (!open) return null;
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 1100,
-        background: 'rgba(0,0,0,0.5)',
-        backdropFilter: 'blur(3px)',
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        paddingTop: '16vh',
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '560px',
-          background: 'var(--bg2)',
-          border: '1px solid var(--border)',
-          borderRadius: '14px',
-          boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
-          maxHeight: '60vh',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="palette-backdrop" onClick={onClose}>
+      <div className="palette" onClick={(e) => e.stopPropagation()}>
         {/* Search input */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            padding: '14px 18px',
-            borderBottom: '1px solid var(--border)',
-            flexShrink: 0,
-          }}
-        >
-          <span style={{ fontSize: '16px', flexShrink: 0 }}>🔍</span>
+        <div className="palette-search">
+          <span style={{ fontSize: 16, flexShrink: 0 }}>🔍</span>
           <input
             ref={inputRef}
             type="text"
@@ -190,52 +154,18 @@ export const CommandPalette: React.FC<Props> = ({ open, onClose, extraActions })
             }}
             onKeyDown={handleKeyDown}
             placeholder="输入命令名称搜索…"
-            style={{
-              flex: 1,
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              color: 'var(--text)',
-              fontSize: '14px',
-              fontFamily: 'inherit',
-            }}
           />
-          <span
-            style={{
-              fontSize: '10px',
-              color: 'var(--text3)',
-              background: 'var(--bg3)',
-              border: '1px solid var(--border)',
-              borderRadius: '4px',
-              padding: '2px 6px',
-              flexShrink: 0,
-            }}
-          >
-            Esc
-          </span>
+          <span className="kbd">Esc</span>
         </div>
 
         {/* Results */}
-        <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+        <div ref={listRef} className="palette-list">
           {flatList.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text3)', fontSize: '13px' }}>
-              没有匹配的命令
-            </div>
+            <div className="palette-empty">没有匹配的命令</div>
           ) : (
             [...grouped].map(([category, cmds]) => (
-              <div key={category} style={{ marginBottom: '4px' }}>
-                <div
-                  style={{
-                    fontSize: '10px',
-                    fontWeight: '600',
-                    color: 'var(--text3)',
-                    letterSpacing: '0.08em',
-                    textTransform: 'uppercase',
-                    padding: '8px 10px 4px',
-                  }}
-                >
-                  {category}
-                </div>
+              <div key={category} style={{ marginBottom: 4 }}>
+                <div className="palette-cat">{category}</div>
                 {cmds.map((cmd) => {
                   const idx = flatList.findIndex((f) => f.cmd.id === cmd.id);
                   const selected = idx === selectedIndex;
@@ -245,42 +175,19 @@ export const CommandPalette: React.FC<Props> = ({ open, onClose, extraActions })
                     <div
                       key={cmd.id}
                       data-selected={selected}
+                      className={`palette-item${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}`}
                       onClick={() => execute(cmd)}
                       onMouseEnter={() => setSelectedIndex(idx)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '10px',
-                        padding: '8px 10px',
-                        borderRadius: '8px',
-                        cursor: disabled ? 'not-allowed' : 'pointer',
-                        background: selected ? 'var(--accent-glow)' : 'transparent',
-                        border: selected ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent',
-                        opacity: disabled ? 0.4 : 1,
-                        transition: 'background 0.1s',
-                      }}
                     >
-                      <span
-                        style={{
-                          fontSize: '14px',
-                          width: '20px',
-                          textAlign: 'center',
-                          flexShrink: 0,
-                          color: selected ? 'var(--accent)' : 'var(--text3)',
-                        }}
-                      >
+                      <span className="palette-icon">
                         {cmd.label.includes('切换') || cmd.label.includes('模式') ? '⚡' : '▶'}
                       </span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '13px', fontWeight: '500', color: selected ? 'var(--accent)' : 'var(--text)' }}>
-                          {cmd.label}
-                        </div>
-                        <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '1px' }}>
-                          {cmd.description}
-                        </div>
+                      <div className="fill">
+                        <div className="palette-label">{cmd.label}</div>
+                        <div className="palette-desc">{cmd.description}</div>
                       </div>
                       {disabled && (
-                        <span style={{ fontSize: '10px', color: 'var(--text3)', flexShrink: 0 }}>不可用</span>
+                        <span style={{ fontSize: 10, color: 'var(--text3)', flexShrink: 0 }}>不可用</span>
                       )}
                     </div>
                   );
@@ -291,22 +198,11 @@ export const CommandPalette: React.FC<Props> = ({ open, onClose, extraActions })
         </div>
 
         {/* Footer hint */}
-        <div
-          style={{
-            display: 'flex',
-            gap: '16px',
-            padding: '8px 16px',
-            borderTop: '1px solid var(--border)',
-            background: 'var(--bg3)',
-            flexShrink: 0,
-            fontSize: '10px',
-            color: 'var(--text3)',
-          }}
-        >
+        <div className="palette-foot">
           <span>↑↓ 导航</span>
           <span>↵ 执行</span>
           <span>Esc 关闭</span>
-          <span style={{ marginLeft: 'auto' }}>{flatList.length} 个命令</span>
+          <span className="grow">{flatList.length} 个命令</span>
         </div>
       </div>
     </div>
