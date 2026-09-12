@@ -11,8 +11,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act } from 'react-dom/test-utils';
 import { createRoot } from 'react-dom/client';
 import React from 'react';
-import { useWebSocket } from './useWebSocket';
-import { useAgentStore } from '../stores/agentStore';
+import { useWebSocket } from '../src/hooks/useWebSocket';
+import { useAgentStore } from '../src/stores/agentStore';
 
 // ── Minimal WebSocket double ────────────────────────────────────────────────
 class FakeSocket {

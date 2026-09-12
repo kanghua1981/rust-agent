@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildFileUrl, isLocalServer, localOpenAvailability } from './fileTransfer';
+import { buildFileUrl, isLocalServer, localOpenAvailability } from '../src/utils/fileTransfer';
 
 const setTauri = (present: boolean) => {
   if (present) (globalThis as any).__TAURI__ = { core: { invoke: () => Promise.resolve() } };
