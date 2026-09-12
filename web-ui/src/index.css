@@ -308,3 +308,52 @@ pre code { background: none; border: none; padding: 0; }
 .divider-label { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
 .divider-label::before, .divider-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 .divider-label span { font-size: 10px; color: var(--text3); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Project tree (left sidebar)
+   ═══════════════════════════════════════════════════════════════ */
+.tree { margin-top: 12px; }
+.tree-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding: 4px; cursor: pointer; }
+.tree-title { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text3); }
+.tree-actions { display: flex; align-items: center; gap: 6px; }
+.tree-add { font-size: 12px; color: var(--text3); padding: 0 2px; line-height: 1; }
+.tree-add:hover { color: var(--text); }
+.tree-chevron { font-size: 10px; color: var(--text3); transition: transform .2s; }
+.tree-list { display: flex; flex-direction: column; gap: 3px; }
+.tree-empty { font-size: 11px; color: var(--text3); text-align: center; padding: 12px 0; }
+.tree-empty button { margin-top: 6px; font-size: 11px; color: var(--accent); text-decoration: underline; }
+
+.tree-item { display: flex; align-items: center; padding: 5px 8px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-size: 12px; transition: background .1s, border-color .1s; }
+.tree-item:hover { background: var(--bg3); }
+.tree-item.active { background: var(--accent-glow); border-color: rgba(99,102,241,.3); }
+.tree-item-body { flex: 1; min-width: 0; }
+.tree-item-name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-item.active .tree-item-name { font-weight: 500; }
+.tree-item-sub { font-size: 9px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-session-toggle { font-size: 10px; color: var(--text3); padding: 0 4px; transition: transform .2s; }
+
+.tree-sessions { margin-left: 18px; padding: 2px 0 4px; border-left: 1px solid var(--border); }
+.tree-session { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: var(--text2); }
+.tree-session:hover { background: var(--bg3); }
+.tree-session.active { color: var(--accent); background: rgba(99,102,241,.08); font-weight: 500; }
+.tree-session-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-session-count { font-size: 9px; color: var(--text3); }
+.tree-new-session { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: var(--text3); }
+.tree-new-session:hover { background: var(--bg3); color: var(--accent); }
+.tree-add-project { display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 2px; padding: 5px 8px; border-radius: 6px; border: 1px dashed var(--border); font-size: 11px; color: var(--text3); }
+.tree-add-project:hover { background: var(--bg3); color: var(--text); }
+.tree-mini { display: flex; justify-content: center; padding: 8px 0; }
+.tree-mini .status-dot { margin-right: 0; width: 8px; height: 8px; cursor: pointer; }
+
+/* Status dot */
+.status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; margin-right: 6px; }
+.status-dot.connected { background: var(--green); }
+.status-dot.connecting { background: var(--yellow); }
+.status-dot.error { background: var(--red); }
+.status-dot.disconnected { background: var(--text3); }
+
+/* Context menu */
+.ctx-menu { position: fixed; z-index: 1000; min-width: 140px; padding: 4px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.3); }
+.ctx-menu-item { padding: 6px 10px; font-size: 12px; color: var(--text); border-radius: 4px; cursor: pointer; transition: background .1s; }
+.ctx-menu-item:hover { background: var(--bg3); }
+.ctx-menu-item.danger { color: var(--red); }
