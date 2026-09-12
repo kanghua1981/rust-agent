@@ -10,8 +10,6 @@ pub mod think;
 pub mod read_pdf;
 pub mod load_skill;
 pub mod create_skill;
-pub mod call_node;
-pub mod list_nodes;
 pub mod connect_service;
 pub mod query_service;
 pub mod subscribe_service;
@@ -31,7 +29,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::output::AgentOutput;
 
 /// Definition of a tool that the LLM can use
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +95,7 @@ pub trait Tool: Send + Sync {
 }
 
 impl ToolExecutor {
-    pub fn new(project_dir: PathBuf, output: Arc<dyn AgentOutput>, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
+    pub fn new(project_dir: PathBuf, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
         let mut executor = ToolExecutor {
             tools: HashMap::new(),
             project_dir,
@@ -132,17 +129,6 @@ impl ToolExecutor {
         executor.register(Box::new(todo::TodoReadTool));
         // executor.register(Box::new(git::GitTool)); // Removed - Git operations handled by run_command
 
-        // Only register agent-to-agent tools for the main manager agent, not for
-        // worker sub-agents (to prevent infinite recursion).
-        let agent_role = std::env::var("AGENT_ROLE").unwrap_or_else(|_| "manager".to_string());
-        if agent_role == "manager" {
-            // call_node: unified agent-to-agent delegation.
-            // list_nodes: query parent's /nodes endpoint to discover available targets.
-            // call_sub_agent and spawn_sub_agent are kept as internal modules but
-            // NOT exposed to the LLM to avoid confusion.
-            executor.register(Box::new(call_node::CallNodeTool::new(output.clone())));
-            executor.register(Box::new(list_nodes::ListNodesTool));
-        }
 
         // Service tools are available to all roles.
         executor.register(Box::new(connect_service::ConnectServiceTool));

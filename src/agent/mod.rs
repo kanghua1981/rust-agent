@@ -242,7 +242,7 @@ impl Agent {
         
         let mut agent = Agent {
             config,
-            tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
+            tool_executor: ToolExecutor::new(effective_dir, plugin_manager.clone()),
             conversation,
             memory: memory.clone(),
             total_input_tokens: 0,
@@ -322,7 +322,7 @@ impl Agent {
         
         let mut agent = Agent {
             config,
-            tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
+            tool_executor: ToolExecutor::new(effective_dir, plugin_manager.clone()),
             conversation,
             memory: memory.clone(),
             total_input_tokens: 0,

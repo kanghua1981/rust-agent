@@ -25,7 +25,6 @@ const CACHEABLE_TOOLS: &[&str] = &[
     "batch_read_files",
     "read_pdf",
     "todo_read",
-    "list_nodes",
     "list_services",
 ];
 

@@ -3,12 +3,11 @@
 //! Callers select the subset of features via `ToolLoopOptions` while the core
 //! LLM→tools→results→context cycle is shared.
 
-use std::collections::HashMap;
 
 use crate::confirm;
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
-use crate::output::{AgentOutput, PlanReview};
+use crate::output::PlanReview;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ToolLoopOptions
@@ -166,28 +165,6 @@ impl Agent {
                 })
                 .collect();
 
-            // ── call_node parallel pre-execution ─────────────────────────
-            let parallel_call_nodes: Vec<_> = tool_uses
-                .iter()
-                .filter(|(_, name, _)| name == "call_node")
-                .collect();
-            let mut call_node_cache: HashMap<String, crate::tools::ToolResult> =
-                HashMap::new();
-            if parallel_call_nodes.len() > 1 {
-                self.output.on_warning(&format!(
-                    "[call_node] Running {} nodes in parallel…",
-                    parallel_call_nodes.len()
-                ));
-                let futs = parallel_call_nodes.iter().map(|(id, name, input)| {
-                    let id = id.clone();
-                    let exec = self.tool_executor.execute(name, input);
-                    async move { (id, exec.await) }
-                });
-                let paired = futures::future::join_all(futs).await;
-                for (id, result) in paired {
-                    call_node_cache.insert(id, result);
-                }
-            }
 
             // ── 13. Execute each tool ────────────────────────────────────
             for (tool_id, tool_name, tool_input) in tool_uses {
@@ -366,10 +343,8 @@ impl Agent {
                     }
                 }
 
-                // Execute (with cached call_node result or diff preview)
-                let result = if let Some(cached) = call_node_cache.remove(&tool_id) {
-                    cached
-                } else if matches!(
+                // Execute (with a diff preview for file writes)
+                let result = if matches!(
                     tool_name.as_str(),
                     "edit_file" | "multi_edit_file" | "write_file"
                 ) {

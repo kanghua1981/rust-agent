@@ -36,7 +36,7 @@ impl Tool for QueryServiceTool {
             description: "Send a question to a named external service and return its answer.  \
                           The service must have been registered first with connect_service.  \
                           This is for simple single-round-trip services (model servers, REST APIs) \
-                          — NOT for agent servers. Use call_node to delegate tasks to another agent."
+                          — NOT for agent servers."
                 .to_string(),
             parameters: json!({
                 "type": "object",

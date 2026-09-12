@@ -41,9 +41,9 @@ impl Tool for ConnectServiceTool {
                           WebSocket services and http:// for REST APIs.  The connection persists \
                           for the session so you only need to call this once per service.\n\
                           \n\
-                          IMPORTANT: Do NOT use this for agent servers (agent --mode server). \
-                          Use call_node instead, which implements the correct agent-to-agent \
-                          protocol (ready handshake, user_message, streaming events, confirmations)."
+                          IMPORTANT: This is not for agent servers (agent --mode server) — \
+                          those speak an entirely different protocol (ready handshake, \
+                          user_message, streaming events, confirmations)."
                 .to_string(),
             parameters: json!({
                 "type": "object",

@@ -10,7 +10,6 @@ use anyhow::Context;
 
 use crate::confirm::ConfirmAction;
 use crate::conversation::{ContentBlock, Conversation, Message};
-use crate::output::AgentOutput;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Confirmation level
