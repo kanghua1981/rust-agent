@@ -49,26 +49,34 @@ function App() {
     const targetUrl = st.serverUrl;
     const targetWorkdir = st.workdir;
 
-    // Create a new slot for this connection
-    const slotId = `conn_${Date.now()}`;
-    const hostLabel = (() => {
-      if (targetWorkdir) {
-        return targetWorkdir.split('/').filter(Boolean).pop() || targetWorkdir;
-      }
-      try {
-        const u = new URL(targetUrl.replace(/^ws(s?):/, 'http$1:'));
-        return u.host + (u.pathname && u.pathname !== '/' ? u.pathname : '');
-      } catch {
-        return targetUrl.replace(/^wss?:\/\//, '');
-      }
-    })();
-    st.createConnectionSlot(slotId, hostLabel, targetUrl, targetWorkdir);
+    // A saved workspace with the same server + workdir owns this connection, so
+    // its sidebar row shows the status and its session list. An ad-hoc target
+    // (a URL typed straight into the dialog) still gets a throwaway slot.
+    const project = Object.values(st.projects ?? {}).find(
+      (proj) => proj.serverUrl === targetUrl && (proj.workdir ?? '') === (targetWorkdir ?? ''),
+    );
 
-    // Switch to the new (empty) slot — this clears messages/toolCalls from the flat proxy
-    st.setActiveConnection(slotId);
+    const slotId = project?.id ?? `conn_${Date.now()}`;
+    if (project) {
+      st.openProject(project.id); // creates the slot when missing, then activates it
+    } else {
+      const hostLabel = (() => {
+        if (targetWorkdir) {
+          return targetWorkdir.split('/').filter(Boolean).pop() || targetWorkdir;
+        }
+        try {
+          const u = new URL(targetUrl.replace(/^ws(s?):/, 'http$1:'));
+          return u.host + (u.pathname && u.pathname !== '/' ? u.pathname : '');
+        } catch {
+          return targetUrl.replace(/^wss?:\/\//, '');
+        }
+      })();
+      st.createConnectionSlot(slotId, hostLabel, targetUrl, targetWorkdir);
+      st.setActiveConnection(slotId);
+    }
 
-    // Connect with the new slot
-    connect(slotId);
+    // `st` is the pre-update snapshot, so a slot missing here was just created.
+    if (st.projectSlots[slotId]?.connectionStatus !== 'connected') connect(slotId);
   }, [connect]);
 
   const handleDisconnect = useCallback(() => {
