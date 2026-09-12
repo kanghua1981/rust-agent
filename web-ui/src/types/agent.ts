@@ -27,14 +27,6 @@ export type ClientMessage =
   | ListEndpointsMessage
   | AddEndpointMessage
   | DeleteEndpointMessage
-  | ListNodesMessage
-  | AddNodeMessage
-  | UpdateNodeMessage
-  | DeleteNodeMessage
-  | ListPeersMessage
-  | AddPeerMessage
-  | UpdatePeerMessage
-  | DeletePeerMessage
   | ListLocalSessionsMessage
   | SwitchLocalSessionMessage
   | NewLocalSessionMessage
@@ -151,12 +143,6 @@ export type ServerEvent =
   | ModelDeletedEvent
   | EndpointAddedEvent
   | EndpointDeletedEvent
-  | NodesListEvent
-  | NodeSavedEvent
-  | NodeDeletedEvent
-  | PeersListEvent
-  | PeerSavedEvent
-  | PeerDeletedEvent
   | DirListEvent
   | FileContentEvent
   | PtyOutputEvent
@@ -616,8 +602,6 @@ export interface ReadyEvent extends BaseMessage {
     isolation?: 'normal' | 'container' | 'sandbox';
     sandbox?: boolean;  // legacy, kept for backward compat
     sandbox_backend?: 'overlay' | 'snapshot' | 'disabled';
-    caps?: NodeCapabilities;
-    virtual_nodes?: VirtualNodeInfo[];
     available_models?: ModelInfo[];
     active_model?: string | null;
   };
@@ -638,40 +622,6 @@ export interface EndpointInfo {
   provider: string;
   base_url: string;
   has_api_key: boolean;
-}
-
-export interface NodeCapabilities {
-  arch: string;
-  os: string;
-  cpu_cores: number;
-  ram_gb: number;
-  gpus: Array<{ name: string }>;
-  bins: string[];
-}
-
-export interface VirtualNodeInfo {
-  id: string;
-  name: string;
-  workdir: string;
-  description: string;
-  isolation: 'normal' | 'container' | 'sandbox';
-  sandbox: boolean;  // legacy, kept for backward compat
-  exec_mode?: string;  // "simple" | "plan" | "auto" | undefined
-  tags: string[];
-  createdAt?: string;  // ISO timestamp from DB-stored nodes
-  updatedAt?: string;  // ISO timestamp from DB-stored nodes
-}
-
-/** A remote peer agent server configured for discovery (stored in global.db). */
-export interface PeerInfo {
-  id: string;
-  name: string;
-  url: string;
-  token?: string | null;
-  tags: string[];
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface PongEvent extends BaseMessage {
@@ -829,104 +779,6 @@ export interface EndpointDeletedEvent extends BaseMessage {
   data: { name: string };
 }
 
-// ── Node CRUD client messages (server-managed workspaces) ─────────────
-export interface ListNodesMessage extends BaseMessage {
-  type: 'list_nodes';
-  data: {};
-}
-
-export interface NodeData {
-  id: string;
-  name: string;
-  workdir: string;
-  description?: string;
-  isolation?: 'normal' | 'container' | 'sandbox';
-  sandbox?: boolean;
-  exec_mode?: 'simple' | 'plan' | 'auto';
-  tags?: string[];
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface AddNodeMessage extends BaseMessage {
-  type: 'add_node';
-  data: NodeData;
-}
-
-export interface UpdateNodeMessage extends BaseMessage {
-  type: 'update_node';
-  data: NodeData;
-}
-
-export interface DeleteNodeMessage extends BaseMessage {
-  type: 'delete_node';
-  data: { id: string };
-}
-
-// ── Peer messages (remote agent servers for discovery) ───────────────
-export interface ListPeersMessage extends BaseMessage {
-  type: 'list_peers';
-  data: {};
-}
-
-export interface PeerData {
-  id: string;
-  name: string;
-  url: string;
-  token?: string | null;
-  tags?: string[];
-  enabled?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface AddPeerMessage extends BaseMessage {
-  type: 'add_peer';
-  data: PeerData;
-}
-
-export interface UpdatePeerMessage extends BaseMessage {
-  type: 'update_peer';
-  data: PeerData;
-}
-
-export interface DeletePeerMessage extends BaseMessage {
-  type: 'delete_peer';
-  data: { id: string };
-}
-
-// ── Node events (server-managed workspaces) ──────────────────────────
-export interface NodesListEvent extends BaseMessage {
-  type: 'nodes_list';
-  data: { virtual_nodes: VirtualNodeInfo[] };
-}
-
-export interface NodeSavedEvent extends BaseMessage {
-  type: 'node_saved';
-  data: { node: any; virtual_nodes?: any[] };
-}
-
-export interface NodeDeletedEvent extends BaseMessage {
-  type: 'node_deleted';
-  data: { id: string; virtual_nodes?: any[] };
-}
-
-// ── Peer events (remote agent servers for discovery) ─────────────────
-export interface PeersListEvent extends BaseMessage {
-  type: 'peers_list';
-  data: { peers: PeerInfo[] };
-}
-
-export interface PeerSavedEvent extends BaseMessage {
-  type: 'peer_saved';
-  data: { peer: PeerInfo; peers?: PeerInfo[] };
-}
-
-export interface PeerDeletedEvent extends BaseMessage {
-  type: 'peer_deleted';
-  data: { id: string; peers?: PeerInfo[] };
-}
-
 // 工具类型定义
 export interface ToolCall {
   id: string;
@@ -1034,7 +886,6 @@ export interface ProjectSlot {
   pendingChanges: number;
   sandboxChangesData: SandboxFileChange[] | null;
   tokenUsage: TokenUsage | null;
-  nodeList: VirtualNodeInfo[];
   plugins: PluginInfo[];
   sessionRestoreAvailable: { message_count: number } | null;
   availableModels: ModelInfo[];

@@ -154,8 +154,6 @@ export const useWebSocket = () => {
     setSandboxBackend,
     setPendingChanges,
     setSandboxChangesData,
-    setNodeList,
-    setPeerList,
     setConnectedWorkdir,
     setTokenUsage,
     addConnectionHistory,
@@ -296,45 +294,6 @@ export const useWebSocket = () => {
     sendRaw({ type: 'rename_local_session', data: { old_name: oldName, new_name: newName } });
   }, [sendRaw]);
 
-  // ── Node CRUD (global.db) ──────────────────────────────────────────
-  const listNodes = useCallback(() => {
-    sendRaw({ type: 'list_nodes', data: {} });
-  }, [sendRaw]);
-
-  const addNode = useCallback((node: any) => {
-    // Ensure timestamps are present (Rust Node struct requires them)
-    const now = new Date().toISOString();
-    sendRaw({ type: 'add_node', data: { ...node, createdAt: node.createdAt || now, updatedAt: node.updatedAt || now } });
-  }, [sendRaw]);
-
-  const updateNode = useCallback((node: any) => {
-    const now = new Date().toISOString();
-    sendRaw({ type: 'update_node', data: { ...node, updatedAt: now } });
-  }, [sendRaw]);
-
-  const deleteNode = useCallback((id: string) => {
-    sendRaw({ type: 'delete_node', data: { id } });
-  }, [sendRaw]);
-
-  // ── Peer CRUD (global.db) ───────────────────────────────────────────
-  const listPeers = useCallback(() => {
-    sendRaw({ type: 'list_peers', data: {} });
-  }, [sendRaw]);
-
-  const addPeer = useCallback((peer: any) => {
-    const now = new Date().toISOString();
-    sendRaw({ type: 'add_peer', data: { ...peer, createdAt: peer.createdAt || now, updatedAt: now } });
-  }, [sendRaw]);
-
-  const updatePeer = useCallback((peer: any) => {
-    const now = new Date().toISOString();
-    sendRaw({ type: 'update_peer', data: { ...peer, updatedAt: now } });
-  }, [sendRaw]);
-
-  const deletePeer = useCallback((id: string) => {
-    sendRaw({ type: 'delete_peer', data: { id } });
-  }, [sendRaw]);
-
 
   const uploadFile = useCallback((name: string, content: string, mimeType?: string) => {
     const uploadMsgId = uuidv4();
@@ -426,9 +385,6 @@ export const useWebSocket = () => {
         setSandboxBackend((event.data.sandbox_backend as 'overlay' | 'snapshot' | 'disabled') ?? 'disabled');
         setPendingChanges(0);
         setConnectedWorkdir(event.data.workdir ?? null);
-        if (event.data.virtual_nodes) {
-          setNodeList(event.data.virtual_nodes);
-        }
         if (event.data.available_models) {
           setAvailableModels(event.data.available_models);
         }
@@ -514,48 +470,6 @@ export const useWebSocket = () => {
         break;
       }
 
-      // ── Node events (server-managed workspaces) ─────────────────────────
-      case 'nodes_list': {
-        if (event.data.virtual_nodes) {
-          setNodeList(event.data.virtual_nodes);
-        }
-        break;
-      }
-
-      case 'node_saved': {
-        // The server sends back updated virtual_nodes after mutation
-        if (event.data.virtual_nodes) {
-          setNodeList(event.data.virtual_nodes);
-        }
-        break;
-      }
-
-      case 'node_deleted': {
-        if (event.data.virtual_nodes) {
-          setNodeList(event.data.virtual_nodes);
-        }
-        break;
-      }
-
-      // ── Peer events (global.db — remote agent server discovery) ──────
-      case 'peers_list': {
-        setPeerList(event.data.peers || []);
-        break;
-      }
-
-      case 'peer_saved': {
-        if (event.data.peers) {
-          setPeerList(event.data.peers);
-        }
-        break;
-      }
-
-      case 'peer_deleted': {
-        if (event.data.peers) {
-          setPeerList(event.data.peers);
-        }
-        break;
-      }
 
       case 'upload_file_result':
         if (event.data.success) {
@@ -1413,14 +1327,6 @@ export const useWebSocket = () => {
     newLocalSession,
     deleteLocalSession,
     renameLocalSession,
-    listNodes,
-    addNode,
-    updateNode,
-    deleteNode,
-    listPeers,
-    addPeer,
-    updatePeer,
-    deletePeer,
     uploadFile,
     listDir,
     openFileInApp,

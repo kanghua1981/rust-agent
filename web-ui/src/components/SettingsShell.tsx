@@ -1,10 +1,9 @@
 import React from 'react';
 
-export type SettingsSection = 'general' | 'nodes' | 'models' | 'plugins';
+export type SettingsSection = 'general' | 'models' | 'plugins';
 
 const SECTIONS: { id: SettingsSection; icon: string; label: string }[] = [
   { id: 'general', icon: '⚙️', label: '常规' },
-  { id: 'nodes',   icon: '🌐', label: '节点' },
   { id: 'models',  icon: '🧠', label: '模型' },
   { id: 'plugins', icon: '🧩', label: '插件' },
 ];

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, VirtualNodeInfo, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, DirEntry, OpenFileState } from '../types/agent';
+import { Message, ToolCall, ConnectionStatus, AgentConfig, FileInfo, SessionInfo, SessionMeta, ProjectDefinition, ConnectionHistory, TokenUsage, PluginInfo, ConnectionSlot, ModelInfo, EndpointInfo, DirEntry, OpenFileState } from '../types/agent';
 import { getDefaultServerUrl, getDefaultWorkdir, isDesktopApp } from '../utils/environment';
 import { runMigration } from '../utils/migration';
 
@@ -48,7 +48,6 @@ function createEmptySlot(id: string, label: string, serverUrl: string, workdir?:
     pendingChanges: 0,
     sandboxChangesData: null,
     tokenUsage: null,
-    nodeList: [],
     plugins: [],
     sessionRestoreAvailable: null,
     availableModels: [],
@@ -98,8 +97,6 @@ interface AgentState {
   localSessions: SessionMeta[];
   activeSessionName: string | null;
 
-  nodeList: VirtualNodeInfo[];
-  peerList: any[];  // PeerInfo[] — list of configured remote peer servers
 
   tokenUsage: TokenUsage | null;
 
@@ -186,8 +183,6 @@ interface AgentState {
   deleteProject: (id: string) => void;
 
   clearSession: () => void;
-  setNodeList: (nodes: VirtualNodeInfo[]) => void;
-  setPeerList: (peers: any[]) => void;
   setClusterToken: (token: string) => void;
   setConnectedWorkdir: (workdir: string | null) => void;
   setTokenUsage: (usage: TokenUsage) => void;
@@ -276,8 +271,6 @@ const initialState = {
   localSessions: [] as SessionMeta[],
   activeSessionName: null as string | null,
 
-  nodeList: [] as VirtualNodeInfo[],
-  peerList: [] as any[],
 
   tokenUsage: null as TokenUsage | null,
 
@@ -388,7 +381,6 @@ export const useAgentStore = create<AgentState>()(
           sandboxChangesData: state.sandboxChangesData,
           sessionInfo: state.sessionInfo,
           sessionRestoreAvailable: state.sessionRestoreAvailable,
-          nodeList: state.nodeList,
           tokenUsage: state.tokenUsage,
           plugins: state.plugins,
           availableModels: state.availableModels,
@@ -425,7 +417,6 @@ export const useAgentStore = create<AgentState>()(
             sandboxChangesData: updatedSlot.sandboxChangesData,
             sessionInfo: updatedSlot.sessionInfo,
             sessionRestoreAvailable: updatedSlot.sessionRestoreAvailable,
-            nodeList: updatedSlot.nodeList,
             tokenUsage: updatedSlot.tokenUsage,
             plugins: updatedSlot.plugins,
             availableModels: updatedSlot.availableModels,
@@ -489,7 +480,6 @@ export const useAgentStore = create<AgentState>()(
               sandboxChangesData: nextSlot.sandboxChangesData,
               sessionInfo: nextSlot.sessionInfo,
               sessionRestoreAvailable: nextSlot.sessionRestoreAvailable,
-              nodeList: nextSlot.nodeList,
               tokenUsage: nextSlot.tokenUsage,
               plugins: nextSlot.plugins,
               availableModels: nextSlot.availableModels,
@@ -521,7 +511,6 @@ export const useAgentStore = create<AgentState>()(
               sandboxChangesData: null,
               sessionInfo: null,
               sessionRestoreAvailable: null,
-              nodeList: [],
               tokenUsage: null,
               plugins: [],
               availableModels: [],
@@ -555,7 +544,6 @@ export const useAgentStore = create<AgentState>()(
             pendingChanges: state.pendingChanges,
             sessionInfo: state.sessionInfo,
             sessionRestoreAvailable: state.sessionRestoreAvailable,
-            nodeList: state.nodeList,
             tokenUsage: state.tokenUsage,
             plugins: state.plugins,
             agentMode: state.agentMode,
@@ -597,7 +585,6 @@ export const useAgentStore = create<AgentState>()(
           sandboxChangesData: target.sandboxChangesData,
           sessionInfo: target.sessionInfo,
           sessionRestoreAvailable: target.sessionRestoreAvailable,
-          nodeList: target.nodeList,
           tokenUsage: target.tokenUsage,
           plugins: target.plugins,
           availableModels: target.availableModels,
@@ -693,11 +680,6 @@ export const useAgentStore = create<AgentState>()(
       setActiveSessionName: (name) =>
         set(syncActiveSlot({ activeSessionName: name })),
 
-      setNodeList: (nodes) =>
-        set(syncActiveSlot({ nodeList: nodes })),
-
-      setPeerList: (peers) =>
-        set({ peerList: peers }),
 
       setTokenUsage: (usage) =>
         set(syncActiveSlot({ tokenUsage: usage })),
@@ -945,7 +927,6 @@ export const useAgentStore = create<AgentState>()(
           sandboxBackend: 'disabled',
           pendingChanges: 0,
           sandboxChangesData: null,
-          nodeList: [],
           tokenUsage: null,
           plugins: [],
           availableModels: [],

@@ -4,7 +4,6 @@ import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { InputArea } from './components/InputArea';
 import { SettingsPanel } from './components/SettingsPanel';
-import { NodesPanel } from './components/NodesPanel';
 import { PluginsPanel } from './components/PluginsPanel';
 import { ProjectTabs } from './components/ProjectTabs';
 import { ProjectDialog } from './components/ProjectDialog';
@@ -29,7 +28,7 @@ function App() {
   const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listDir, openFileInApp, openFileOnLocal, downloadFileFromServer, ptyOpen, ptyInput, ptyResize, ptyClose, registerPtyOutput } = useWebSocket();
+  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listDir, openFileInApp, openFileOnLocal, downloadFileFromServer, ptyOpen, ptyInput, ptyResize, ptyClose, registerPtyOutput } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -203,7 +202,6 @@ function App() {
         action: () => setActiveTab('settings'),
       },
       ...([
-        ['nodes', '🌐', '节点管理'],
         ['models', '🧠', '模型管理'],
         ['plugins', '🧩', '插件管理'],
       ] as const).map(([sec, icon, label]) => ({
@@ -335,9 +333,7 @@ function App() {
               {settingsSection === 'general' && (
                 <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />
               )}
-              {settingsSection === 'nodes' && (
-                <NodesPanel isConnected={connectionStatus === 'connected'} onListNodes={listNodes} onAddNode={addNode} onUpdateNode={updateNode} onDeleteNode={deleteNode} onListPeers={listPeers} onAddPeer={addPeer} onUpdatePeer={updatePeer} onDeletePeer={deletePeer} />
-              )}
+
               {settingsSection === 'models' && (
                 <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />
               )}
