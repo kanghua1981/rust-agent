@@ -23,9 +23,12 @@ const AgentAvatar = () => <div className="avatar agent">🤖</div>;
 const formatTime = (ts: number) =>
   new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
-const stageIcons: Record<string, string> = {
-  Planner: '🎯', Executor: '⚡', Checker: '✅', Router: '🔀',
-};
+/** Backend role labels carry a leading emoji: "🤖 Agent" → "Agent". */
+const roleName = (label: string) => label.replace(/^[^\p{L}\p{N}]+/u, '').trim();
+
+/** The main loop reports itself as "Agent"; other roles are worth calling out. */
+const isNoteworthyRole = (label?: string) =>
+  !!label && roleName(label).toLowerCase() !== 'agent';
 
 export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking, toolCalls, diffs }) => {
   const isUser = message.role === 'user';
@@ -52,24 +55,6 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
   };
 
   if (isSystem) {
-    // Message banner (which role/model produced it)
-    if (message.meta?.stageLabel) {
-      const icon = stageIcons[message.meta.stageLabel] ?? '🔵';
-      return (
-        <div className="fade-in stage-banner">
-          <div className="rule" />
-          <span className="stage-pill">
-            <span>{icon}</span>
-            <span>{message.meta.stageLabel}</span>
-            {message.meta.stageModel && (
-              <span className="model">• {message.meta.stageModel.split('/').pop()}</span>
-            )}
-          </span>
-          <div className="rule" />
-        </div>
-      );
-    }
-
     return (
       <div className="fade-in sys-note-wrap">
         <span className="sys-note">{message.content}</span>
@@ -97,9 +82,17 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
       {isUser ? <UserAvatar /> : <AgentAvatar />}
 
       <div className="msg-body">
-        {/* Name + time */}
+        {/* Name + time + which role/model produced this reply */}
         <div className={`msg-head${isUser ? ' user' : ''}`}>
           <span className={`msg-name${isUser ? ' user' : ''}`}>{isUser ? '你' : 'Assistant'}</span>
+          {!isUser && isNoteworthyRole(message.meta?.stageLabel) && (
+            <span className="msg-role">{message.meta!.stageLabel}</span>
+          )}
+          {!isUser && message.meta?.stageModel && (
+            <span className="msg-model" title={message.meta.stageModel}>
+              🧠 {message.meta.stageModel.split('/').pop()}
+            </span>
+          )}
           <span className="msg-time">{formatTime(message.timestamp)}</span>
         </div>
 

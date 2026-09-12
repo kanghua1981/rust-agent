@@ -739,20 +739,20 @@ export const useWebSocket = () => {
         console.warn('[ws] warning:', event.data.message);
         break;
 
-      case 'role_header':
+      case 'role_header': {
+        // The banner describes the reply that follows it, so the role/model ride
+        // on that message instead of becoming a divider between turns.
+        const stageMsgId = uuidv4();
         addMessage({
-          id: uuidv4(),
-          role: 'system',
-          content: `${event.data.label}`,
+          id: stageMsgId,
+          role: 'assistant',
+          content: '',
           timestamp: Date.now(),
           meta: { stageLabel: event.data.label, stageModel: event.data.model },
         });
-        {
-          const stageMsgId = uuidv4();
-          addMessage({ id: stageMsgId, role: 'assistant', content: '', timestamp: Date.now() });
-          lastAssistantMsgIdRef.current = stageMsgId;
-        }
+        lastAssistantMsgIdRef.current = stageMsgId;
         break;
+      }
 
       case 'stage_end':
         if (lastAssistantMsgIdRef.current) {

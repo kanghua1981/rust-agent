@@ -415,11 +415,8 @@ pre code { background: none; border: none; padding: 0; }
 .msg-name { font-size: 12px; font-weight: 600; color: var(--text2); }
 .msg-name.user { color: var(--accent); }
 .msg-time { font-size: 11px; color: var(--text3); }
-
-.stage-banner { display: flex; align-items: center; gap: 8px; padding: 10px 0 4px; }
-.stage-banner .rule { flex: 1; height: 1px; background: var(--border); }
-.stage-pill { display: flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--accent); background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.3); }
-.stage-pill .model { font-size: 10px; font-weight: 400; color: var(--text3); }
+.msg-role { padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; color: var(--accent); background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.3); }
+.msg-model { font-size: 10px; color: var(--text3); font-family: 'JetBrains Mono', 'Fira Code', monospace; }
 .sys-note-wrap { display: flex; justify-content: center; padding: 4px 0; }
 .sys-note { font-size: 12px; color: var(--text3); background: var(--bg3); border: 1px solid var(--border); border-radius: 20px; padding: 3px 12px; }
 
