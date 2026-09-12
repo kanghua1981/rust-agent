@@ -462,3 +462,22 @@ pre code { background: none; border: none; padding: 0; }
 .copy-toast.err { background: rgba(239,68,68,.9); }
 
 .msg-extra { margin-top: 8px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Input area
+   ═══════════════════════════════════════════════════════════════ */
+.input-area { flex-shrink: 0; padding: 8px 20px 10px; background: var(--bg2); border-top: 1px solid var(--border); }
+.input-row { max-width: 800px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
+.input-box { flex: 1; display: flex; overflow: hidden; border-radius: 12px; background: var(--surface); border: 1px solid var(--border2); transition: border-color .15s, box-shadow .15s; }
+.input-box.disabled { background: var(--bg3); border-color: var(--border); }
+.input-textarea { flex: 1; min-height: 36px; max-height: 200px; padding: 8px 12px; background: transparent; color: var(--text); border: none; outline: none; resize: none; line-height: 1.5; font-size: 13px; }
+.input-btn { width: 36px; height: 36px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 9px; border: 1px solid var(--border2); background: var(--bg3); color: var(--text2); font-size: 16px; line-height: 1; transition: background .15s, color .15s, border-color .15s; }
+.input-btn:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+.input-btn:disabled { background: var(--bg3); color: var(--text3); border-color: var(--border); cursor: not-allowed; }
+.input-btn.cancel { background: var(--red); border-color: transparent; color: #fff; }
+.input-btn.cancel:hover:not(:disabled) { background: var(--red); color: #fff; filter: brightness(1.1); }
+.input-btn.dispatch:not(:disabled) { background: rgba(139,92,246,.15); border-color: rgba(139,92,246,.4); color: #8b5cf6; }
+.input-btn.dispatch:hover:not(:disabled) { background: rgba(139,92,246,.25); color: #8b5cf6; }
+.input-btn.send:not(:disabled) { background: var(--accent); border-color: transparent; color: #fff; }
+.input-btn.send:hover:not(:disabled) { background: var(--accent); color: #fff; filter: brightness(1.08); }
+.input-hint { max-width: 800px; margin: 4px auto 0; text-align: center; font-size: 11px; color: var(--text3); }
