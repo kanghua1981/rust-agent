@@ -356,17 +356,13 @@ export const useWebSocket = () => {
   }, [sendRaw]);
 
   // ── File actions ───────────────────────────────────────────────────
-  // A file always lives on the server, so "opening" it is one of three
-  // orthogonal actions, and the caller picks which (see FileViewer): view it
-  // in-app, let the server launch its editor, or pull a copy down.
+  // A file always lives on the server: view it in-app, or pull a copy down.
+  // The in-app viewer offers both (see FileViewer).
   const openFileInApp = useCallback((path: string) => {
     useAgentStore.getState().setOpenFile({ path, loading: true });
     sendRaw({ type: 'read_file_content', data: { path } });
   }, [sendRaw]);
 
-  const openFileOnServer = useCallback((path: string) => {
-    sendRaw({ type: 'open_file_external', data: { path } });
-  }, [sendRaw]);
 
   const openFileOnLocal = useCallback((path: string) => {
     const st = useAgentStore.getState();
@@ -741,9 +737,6 @@ export const useWebSocket = () => {
         break;
       }
 
-      case 'file_opened_external':
-        // The server launched an editor on its own machine — nothing to render.
-        break;
 
       case 'error': {
         console.error('[ws] error:', event.data.message);
@@ -1431,7 +1424,6 @@ export const useWebSocket = () => {
     uploadFile,
     listDir,
     openFileInApp,
-    openFileOnServer,
     openFileOnLocal,
     downloadFileFromServer,
     // PTY Terminal

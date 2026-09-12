@@ -41,7 +41,6 @@ export type ClientMessage =
   | DeleteLocalSessionMessage
   | ListDirMessage
   | ReadFileContentMessage
-  | OpenFileExternalMessage
   | PtyOpenMessage
   | PtyInputMessage
   | PtyResizeMessage
@@ -160,7 +159,6 @@ export type ServerEvent =
   | PeerDeletedEvent
   | DirListEvent
   | FileContentEvent
-  | FileOpenedExternalEvent
   | PtyOutputEvent
   | PtyExitEvent
   | PtyErrorEvent;
@@ -334,10 +332,6 @@ export interface ReadFileContentMessage extends BaseMessage {
   data: { path: string };
 }
 
-export interface OpenFileExternalMessage extends BaseMessage {
-  type: 'open_file_external';
-  data: { path: string };
-}
 
 export interface DirListEvent extends BaseMessage {
   type: 'dir_list_result';
@@ -359,10 +353,6 @@ export interface FileContentEvent extends BaseMessage {
   };
 }
 
-export interface FileOpenedExternalEvent extends BaseMessage {
-  type: 'file_opened_external';
-  data: { path: string; editor?: string };
-}
 
 /** A file shown in the in-app viewer. */
 export interface OpenFileState {

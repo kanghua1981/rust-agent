@@ -29,7 +29,7 @@ function App() {
   const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
-  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listDir, openFileInApp, openFileOnServer, openFileOnLocal, downloadFileFromServer, ptyOpen, ptyInput, ptyResize, ptyClose, registerPtyOutput } = useWebSocket();
+  const { connect, disconnect, sendUserMessage, sendCancel, confirmToolCall, answerQuestion, reviewPlan, newSession, sandboxListChanges, sandboxCommit, sandboxCommitFile, sandboxRollback, uploadFile, listPlugins, enablePlugin, disablePlugin, loadSession, setWorkdirRemote, setModelRemote, fetchModels, addModel, deleteModel, listEndpoints, addEndpoint, deleteEndpoint, listNodes, addNode, updateNode, deleteNode, listPeers, addPeer, updatePeer, deletePeer, switchLocalSession, newLocalSession, deleteLocalSession, renameLocalSession, listDir, openFileInApp, openFileOnLocal, downloadFileFromServer, ptyOpen, ptyInput, ptyResize, ptyClose, registerPtyOutput } = useWebSocket();
   const { reset, config, connectionStatus } = useAgentStore();
   const { dispatchTask } = useAgentPool();
 
@@ -358,7 +358,6 @@ function App() {
             onCommit={sandboxCommit}
             onCommitFile={sandboxCommitFile}
             onRollback={sandboxRollback}
-            onOpenOnServer={openFileOnServer}
             onOpenLocally={openFileOnLocal}
             onDownload={downloadFileFromServer}
             onCloseFile={() => useAgentStore.getState().setOpenFile(null)}

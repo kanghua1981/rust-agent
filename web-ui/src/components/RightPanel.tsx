@@ -21,7 +21,6 @@ interface Props {
   onCommitFile: (filePath: string) => void;
   onRollback: () => void;
   // ── File viewer ──
-  onOpenOnServer: (path: string) => void;
   onOpenLocally: (path: string) => void;
   onDownload: (path: string) => void;
   onCloseFile: () => void;
@@ -42,7 +41,6 @@ export const RightPanel: React.FC<Props> = ({
   onCommit,
   onCommitFile,
   onRollback,
-  onOpenOnServer,
   onOpenLocally,
   onDownload,
   onCloseFile,
@@ -173,7 +171,6 @@ export const RightPanel: React.FC<Props> = ({
             <FileViewer
               file={openFile}
               localOpen={localOpenAvailability(serverUrl, config.isolation)}
-              onOpenOnServer={onOpenOnServer}
               onOpenLocally={onOpenLocally}
               onDownload={onDownload}
               onClose={onCloseFile}

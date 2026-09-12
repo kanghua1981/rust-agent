@@ -6,7 +6,6 @@ interface Props {
   file: OpenFileState;
   /** Whether "open with a local program" is possible here, and why not if it is not. */
   localOpen: LocalOpenAvailability;
-  onOpenOnServer: (path: string) => void;
   onOpenLocally: (path: string) => void;
   onDownload: (path: string) => void;
   onClose: () => void;
@@ -28,7 +27,7 @@ function formatSize(bytes?: number): string {
  * the two external actions are offered as extras rather than as the default.
  */
 export const FileViewer: React.FC<Props> = ({
-  file, localOpen, onOpenOnServer, onOpenLocally, onDownload, onClose,
+  file, localOpen, onOpenLocally, onDownload, onClose,
 }) => {
   const name = file.path.split(/[\\/]/).filter(Boolean).pop() || file.path;
   const content = file.content ?? '';
@@ -44,7 +43,6 @@ export const FileViewer: React.FC<Props> = ({
 
       <div className="file-view-actions">
         <button className="btn-ghost" onClick={() => onDownload(file.path)} title="下载到本地">⬇ 下载</button>
-        <button className="btn-ghost" onClick={() => onOpenOnServer(file.path)} title="让服务器用它自己的编辑器打开">🖥 服务器打开</button>
         {/* Hidden only when the runtime can never do it (a browser has no local
             filesystem access); shown disabled when the cause is fixable. */}
         {localOpen.kind !== 'unsupported' && (
