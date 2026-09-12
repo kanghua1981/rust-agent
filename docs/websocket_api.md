@@ -13,9 +13,7 @@
 | 路径 | 用途 | 类型 |
 |------|------|------|
 | `/agent` 或 `/` | LLM 对话会话（fork worker 子进程） | WebSocket |
-| `/probe` | 获取节点能力快照（不 fork，服务器内联处理） | WebSocket |
-| `/nodes` | 获取所有已知节点列表 | HTTP GET |
-| `/reprobe?peer=<name>` | 按需重新探测指定 peer | HTTP GET |
+| `/file?path=<p>` | 从项目目录下载文件 | HTTP GET |
 
 #### 1.2 WebSocket URL 参数
 
@@ -61,7 +59,7 @@ ws://127.0.0.1:9527/agent?workdir=%2Fhome%2Fuser%2Fmyproject&mode=sandbox&token=
 
 | type | data | 说明 |
 |------|------|------|
-| `ready` | `{ version, workdir, isolation, sandbox, sandbox_backend, caps, virtual_nodes }` | 连接建立后首个事件，包含节点能力信息 |
+| `ready` | `{ version, workdir, isolation, sandbox, sandbox_backend, available_models, active_model }` | 连接建立后首个事件，包含工作目录与模型状态 |
 | `done` | `{ text, id?, pending_changes }` | 一轮对话完成，`text` 是最终回复文本 |
 | `cancelled` | `{ message }` | 任务被中断取消 |
 | `error` | `{ message }` | 致命/一般错误 |
@@ -415,57 +413,6 @@ Worker 收到 WebSocket Ping 帧时自动回复 `pong` 事件：
 
 ---
 
-### 12. 集群/多节点
-
-#### 12.1 `/probe` 端点
-
-客户端连接 `ws://host:9527/probe`，服务器发送一个 `ready` 帧后等待客户端关闭：
-
-```json
-{
-  "type": "ready",
-  "data": {
-    "version": "0.x.x",
-    "workdir": "/path/to/project",
-    "isolation": "sandbox",
-    "sandbox": true,
-    "caps": { ... },
-    "virtual_nodes": [ ... ]
-  }
-}
-```
-
-#### 12.2 `/nodes` HTTP GET 端点
-
-返回所有已知节点 (本地 + 已发现的 peer 子节点)：
-
-```json
-{
-  "nodes": [
-    {
-      "name": "my-local-gpu",
-      "url": "ws://host:9527/agent?workdir=...",
-      "status": "online",
-      "tags": ["gpu", "cuda"],
-      "isolation": "sandbox",
-      "sandbox": true,
-      "description": "...",
-      "workdir": "...",
-      "exec_mode": "auto",
-      "source": "local"
-    }
-  ]
-}
-```
-
-#### 12.3 Peer 自动发现
-
-- 服务器启动时并发探测所有配置的 `[[peer]]` 节点
-- 每 30s 重试离线 peer，每 120s 心跳检测在线 peer
-- Peer 的子节点以 `{node_name}@{peer_name}` 格式注册到路由表
-
----
-
 ### 13. 外部桥接集成指南
 
 > 本节给想要编写外部平台桥接（微信、Telegram、钉钉等）的开发者。
@@ -503,7 +450,7 @@ Worker 收到 WebSocket Ping 帧时自动回复 `pong` 事件：
    │ 用户发消息    │                            │
    │─────────────▶│                            │
    │              │── WS Connect ─────────────▶│
-   │              │◀── ready ──────────────────│  ← 含 workdir/caps/virtual_nodes
+   │              │◀── ready ──────────────────│  ← 含 workdir / 模型状态
    │              │── user_message ───────────▶│
    │              │                            │   Agent 处理中...
    │              │◀── streaming_token ────────│

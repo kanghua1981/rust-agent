@@ -45,7 +45,6 @@
     - [组合式编排（Plan 模式 + 子代理委托）](#组合式编排plan-模式--子代理委托)
       - [Plan 模式（先分析后执行）](#plan-模式先分析后执行)
       - [子代理委托（进程内自委派）](#子代理委托进程内自委派)
-      - [外部节点协作（call_node）](#外部节点协作call_node)
       - [执行中随时打断（Ctrl+\\）](#执行中随时打断ctrl)
   - [📜 会话管理](#-会话管理)
     - [列出历史会话](#列出历史会话)
@@ -87,13 +86,6 @@
     - [Web UI 沙盒面板](#web-ui-沙盒面板)
     - [典型工作流](#典型工作流)
     - [故障排查](#故障排查)
-  - [🤖 多 Agent 协作（节点委派）](#-多-agent-协作节点委派)
-    - [为什么需要多 Agent？](#为什么需要多-agent)
-    - [节点配置（workspaces.toml）](#节点配置workspacestoml)
-    - [`call_node` 统一接口](#call_node-统一接口)
-      - [target 寻址方式](#target-寻址方式)
-    - [工具参数说明](#工具参数说明)
-    - [透明度与安全](#透明度与安全)
   - [🧰 内置工具一览](#-内置工具一览)
     - [外部依赖（可选）](#外部依赖可选)
   - [🔌 MCP集成](#-mcp集成)
@@ -660,9 +652,6 @@ Agent 不再使用固定的流水线 DAG；编排顺序由模型根据任务自�
 - `subagent_terminate` — 结束子代理、释放配额。
 - `output_schema` — 要求子代理返回符合给定 JSON Schema 的结构化结果，便于主代理直接消费。
 
-#### 外部节点协作（call_node）
-
-跨机器/多智能体协作通过 `list_nodes` 发现可用节点，再用 `call_node` 把任务委托给外部节点（按节点名或 `ws://` URL，或用 `any:<tag>` 广播）。
 
 #### 执行中随时打断（Ctrl+\）
 
@@ -996,19 +985,6 @@ git clone https://github.com/example/agent-plugin-xxx .agent/plugins/xxx
 
 安装：`cp -r sample/project-stats .agent/plugins/project-stats`
 
-#### `sample/dev-cluster/`——多节点 + MCP 配置示例
-
-| 组件 | 内容 |
-|------|------|
-| 工具 | `probe_nodes`（探活本地节点 + 远程 peer /health） |
-| 技能 | `multi-node-guide.md`（路由规则 + MCP 工具说明） |
-| `workspaces.toml` | 3 个本地 node（frontend/backend/infra）+ 2 个 peer（gpu-box/ci-runner） |
-| MCP 配置 | stdio 传输（filesystem）、HTTP/SSE 传输（brave-search）、多服务器格式（github + postgres） |
-| Hooks | `agent.start` blocking（启动时探活所有节点） |
-| system_prompt.md | 生产操作确认规则 + 节点路由约束 |
-
-安装：`cp -r sample/dev-cluster .agent/plugins/dev-cluster`
-
 ---
 
 ## ✏️ 自定义系统提示词
@@ -1084,7 +1060,7 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ### 无需确认的操作
 
-`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`think`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services` — 所有只读工具不需要确认。
+`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`think`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services` — 所有只读工具不需要确认。
 
 ---
 
@@ -1304,108 +1280,6 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 
 ---
 
-## 🤖 多 Agent 协作（节点委派）
-
-多 Agent 协作允许主 Agent 将复杂任务分解，并指派给运行在其他机器或子目录的 Agent 实例。
-
-### 为什么需要多 Agent？
-
-- **跨机器执行**：将 GPU 计算、测试构建等任务委派给专用沿界机/构建服务器。
-- **Monorepo 支持**：将 `workdir` 锁定到子目录，避免误触全局代码。
-- **专注度提升**：远端 Agent 只关注局部上下文，Token 消耗更低，响应更精准。
-
-### 节点配置（workspaces.toml）
-
-在 `~/.config/rust_agent/workspaces.toml`（全局）或 `.agent/workspaces.toml`（项目级）配置节点拓扑：
-
-```toml
-# 集群共享 token（可选，保护 /nodes 端点不被未授权访问）
-[cluster]
-token = "my-secret-token-123"
-
-# ── 本机节点：运行在本 server 上，LLM 可直接 call_node target="<name>" ──────
-[[node]]
-name        = "upper-sdk"
-workdir     = "/home/user/upper-project"
-description = "上位机 SDK 工程（Qt + C++）"
-sandbox     = false
-tags        = ["upper", "cpp", "qt"]
-
-[[node]]
-name        = "firmware-bk7236"
-workdir     = "/home/user/firmware/bk7236"
-description = "BK7236 WiFi 芯片固件"
-sandbox     = true
-tags        = ["embedded", "wifi"]
-
-# ── 对等服务器：另一台 agent server，server 进程自动 probe 并展开子节点 ────
-# LLM 看到的是展开后的 "节点名@peer名"，而不是这里的原始条目
-[[peer]]
-name = "gpu-box"
-url  = "ws://192.168.1.20:9527"
-token = "gpu-box-token"   # 可选
-
-[[peer]]
-name = "pi"
-url  = "ws://raspberrypi.local:9527"
-```
-
-**配置说明：**
-
-| 键类型 | 感知方 | 说明 |
-|--------|--------|------|
-| `[[node]]` | LLM + server | 本机可调用节点，有 `workdir`；LLM 可直接 `call_node` |
-| `[[peer]]` | 仅 server | 对等服务器入口，有 `url`；LLM 只看到展开的子节点 |
-| `[cluster]` | server | 集群共享 token，保护 `/nodes` 端点 |
-
-**自动 probe 机制**：server 启动时并发 probe 所有 `[[peer]]`，将其子节点以 `name@peer` 格式写入节点注册表；30s 重试离线节点，120s 心跳保活在线节点。`call_node` 遇到离线节点时会自动触发一次重探。
-
-**不配置此文件** = 通用 Agent，行为与未配置完全一致，可直连 URL 使用。
-
-### `call_node` 统一接口
-
-`call_node` 是唯一的 Agent 委派工具。调用前**先用 `list_nodes` 查看可用节点**。
-
-#### target 寻址方式
-
-| 格式 | 说明 | 示例 |
-|------|------|------|
-| 节点名称 | 通过父服务器 `/nodes` API 解析 | `"build-server"` |
-| 直接 URL | 直连，无需配置 | `"ws://192.168.1.10:9527"` |
-| `any:<tag>` | 路由表中第一个匹配节点 | `"any:gpu"` |
-| `all:<tag>` | 广播给所有匹配节点 | `"all:embedded"` |
-
-**调用示例**：
-```json
-{
-  "target": "gpu-box",
-  "prompt": "重构 frontend/src/components 目录下的所有 React 组件",
-  "workdir": "frontend/src/components",
-  "isolation": "sandbox",
-  "auto_approve": false,
-  "timeout_secs": 600
-}
-```
-
-### 工具参数说明
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `target` | string | 节点名、`ws://` URL 或 `any/all:<tag>`（**必填**） |
-| `prompt` | string | 给远端 Agent 的任务说明（**必填**） |
-| `workdir` | string | 覆盖远端节点的工作目录 |
-| `isolation` | string | 覆盖远端隔离模式：`normal` / `container` / `sandbox` |
-| `auto_approve` | bool | 自动批准远端工具调用（默认 false） |
-| `timeout_secs` | int | 最大等待时间（默认 600 秒） |
-
-### 透明度与安全
-
-- **实时日志**：远端 Agent 的所有工具调用均实时回放到主 Agent 的输出界面。
-- **授权代理**：当远端 Agent 需要写文件或跑命令时，主 Agent 会截获请求并展示确认提示，确保安全受控。
-- **禁止递归**：子 Agent 无法再调用其他 Agent，确保任务拓扑简单清晰。
-
----
-
 ## 🧰 内置工具一览
 
 | 工具 | 图标 | 用途 | 需确认 |
@@ -1422,8 +1296,6 @@ url  = "ws://raspberrypi.local:9527"
 | `think` | 💭 | 内部推理（无副作用） | ❌ |
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
 | `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
-| `call_node` | 🤖 | 委派任务给其他 Agent 节点（按名/URL/标签路由），manager 专用 | ✅ |
-| `list_nodes` | 📶 | 列出当前可用的 Agent 节点（含在线状态），manager 专用 | ❌ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
 | `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
 | `connect_service` | 🔌 | 注册外部服务（WebSocket/HTTP） | ❌ |
