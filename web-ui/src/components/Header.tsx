@@ -70,22 +70,6 @@ const statusConfig: Record<string, { color: string; label: string; dot: string }
   error:        { color: '#ef4444', label: '连接错误', dot: '#ef4444' },
 };
 
-function winCtrlBtnStyle(color: string): React.CSSProperties {
-  return {
-    width: '13px', height: '13px',
-    borderRadius: '50%',
-    background: color,
-    border: 'none',
-    cursor: 'pointer',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: '7px', fontWeight: 'bold',
-    color: 'rgba(0,0,0,0.42)',
-    padding: 0, lineHeight: 1,
-    transition: 'color 0.12s',
-    WebkitAppRegion: 'no-drag',
-  };
-}
-
 export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
   const winMinimize = useCallback(() => { tauriWindowAction('minimize'); }, []);
   const winToggleMax = useCallback(() => { tauriWindowAction('toggleMaximize'); }, []);
@@ -230,15 +214,11 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
       {isTauri && (
         <div
           className="win-ctrl-group"
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
-            marginLeft: connected ? 0 : 'auto',
-            WebkitAppRegion: 'no-drag',
-          } as React.CSSProperties}
+          style={{ marginLeft: connected ? 0 : 'auto' }}
         >
-          <button onClick={winMinimize} title="最小化" style={winCtrlBtnStyle('#f59e0b')}><span style={{ position: 'relative', top: -1 }}>─</span></button>
-          <button onClick={winToggleMax} title="最大化" style={winCtrlBtnStyle('#10b981')}>□</button>
-          <button onClick={winClose} title="关闭" style={winCtrlBtnStyle('#ef4444')}>✕</button>
+          <button className="win-ctrl min" onClick={winMinimize} title="最小化"><span className="glyph">─</span></button>
+          <button className="win-ctrl max" onClick={winToggleMax} title="最大化">□</button>
+          <button className="win-ctrl close" onClick={winClose} title="关闭">✕</button>
         </div>
       )}
     </header>

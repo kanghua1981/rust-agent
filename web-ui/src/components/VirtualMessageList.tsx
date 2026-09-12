@@ -86,7 +86,7 @@ export const VirtualMessageList: React.FC<Props> = ({
     (_index: number, msg: (typeof messages)[number]) => {
       const data = messageDataMap.get(msg.id);
       return (
-        <div style={{ maxWidth: '800px', margin: '0 auto', width: '100%' }}>
+        <div className="virt-item">
           <ErrorBoundary>
             <MessageItem
               message={msg}
@@ -107,7 +107,7 @@ export const VirtualMessageList: React.FC<Props> = ({
       <>
         {/* Inline confirmations */}
         {pendingConfirmations.length > 0 && (
-          <div style={{ maxWidth: '680px', margin: '8px auto 0', padding: '0 24px' }}>
+          <div className="confirm-list">
             {pendingConfirmations.map(c => (
               <ConfirmCard
                 key={c.id}
@@ -122,19 +122,11 @@ export const VirtualMessageList: React.FC<Props> = ({
 
         {/* Processing indicator — only when waiting (not streaming) */}
         {isProcessing && pendingConfirmations.length === 0 && !streamingMessageId && (
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '6px 24px', justifyContent: 'center' }}>
-            <div style={{
-              width: '30px', height: '30px', borderRadius: '50%',
-              background: 'linear-gradient(135deg, #0ea5e9, #6366f1)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
-            }}>🤖</div>
-            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+          <div className="thinking-row">
+            <div className="thinking-avatar">🤖</div>
+            <div className="thinking-dots">
               {[0, 1, 2].map(i => (
-                <div key={i} style={{
-                  width: '6px', height: '6px', borderRadius: '50%',
-                  background: 'var(--accent)',
-                  animation: `blink 1.2s ${i * 0.2}s infinite`,
-                }} />
+                <div key={i} className="dot" style={{ animationDelay: `${i * 0.2}s` }} />
               ))}
             </div>
           </div>
@@ -148,13 +140,9 @@ export const VirtualMessageList: React.FC<Props> = ({
 
   const EmptyPlaceholder = useCallback(() => {
     return (
-      <div style={{
-        flex: 1, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        color: 'var(--text3)', gap: '10px', padding: '40px',
-      }}>
-        <span style={{ fontSize: '36px' }}>💬</span>
-        <p style={{ fontSize: '14px', color: 'var(--text2)' }}>发送消息开始对话</p>
+      <div className="chat-empty">
+        <span style={{ fontSize: 36 }}>💬</span>
+        <p style={{ fontSize: 14, color: 'var(--text2)' }}>发送消息开始对话</p>
       </div>
     );
   }, []);

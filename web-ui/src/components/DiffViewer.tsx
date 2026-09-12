@@ -10,52 +10,27 @@ export const DiffViewer: React.FC<Props> = ({ path, diff }) => {
 
   const lines = (diff ?? '').split('\n');
 
-  const lineColor = (line: string): React.CSSProperties => {
-    if (line.startsWith('+') && !line.startsWith('+++')) return { background: 'rgba(16,185,129,0.12)', color: '#6ee7b7' };
-    if (line.startsWith('-') && !line.startsWith('---')) return { background: 'rgba(239,68,68,0.12)', color: '#fca5a5' };
-    if (line.startsWith('@@')) return { background: 'rgba(99,102,241,0.1)', color: '#a5b4fc' };
-    return { color: 'var(--text2)' };
+  const lineClass = (line: string): string => {
+    if (line.startsWith('+') && !line.startsWith('+++')) return 'add';
+    if (line.startsWith('-') && !line.startsWith('---')) return 'del';
+    if (line.startsWith('@@')) return 'hunk';
+    return '';
   };
 
   return (
-    <div className="fade-in" style={{
-      background: 'var(--surface)',
-      border: '1px solid rgba(99,102,241,0.3)',
-      borderRadius: 'var(--radius)',
-      overflow: 'hidden',
-      marginBottom: '6px',
-    }}>
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          padding: '8px 12px', width: '100%', textAlign: 'left',
-          background: 'rgba(99,102,241,0.08)',
-        }}
-      >
-        <span style={{ fontSize: '14px' }}>📝</span>
-        <span style={{ fontFamily: 'monospace', color: 'var(--accent)', fontSize: '13px', flex: 1 }}>{path}</span>
-        <span style={{
-          fontSize: '11px', color: 'var(--accent)', background: 'var(--accent-glow)',
-          padding: '2px 7px', borderRadius: '10px', fontWeight: '600',
-        }}>diff</span>
-        <span style={{ color: 'var(--text3)', fontSize: '11px' }}>{collapsed ? '▲' : '▼'}</span>
+    <div className="fade-in diff-card">
+      <button className="diff-head" onClick={() => setCollapsed(!collapsed)}>
+        <span style={{ fontSize: 14 }}>📝</span>
+        <span className="diff-path">{path}</span>
+        <span className="diff-badge">diff</span>
+        <span className="diff-caret">{collapsed ? '▲' : '▼'}</span>
       </button>
 
       {!collapsed && (
-        <div style={{ overflowX: 'auto' }}>
-          <pre style={{
-            margin: 0, padding: '10px 0',
-            fontSize: '12px', lineHeight: '1.55',
-            fontFamily: 'monospace',
-            background: 'var(--bg)',
-            maxHeight: '350px',
-            overflowY: 'auto',
-          }}>
+        <div className="diff-scroll">
+          <pre className="diff-pre">
             {lines.map((line, i) => (
-              <div key={i} style={{ padding: '0 14px', ...lineColor(line) }}>
-                {line || ' '}
-              </div>
+              <div key={i} className={`diff-line ${lineClass(line)}`}>{line || ' '}</div>
             ))}
           </pre>
         </div>
