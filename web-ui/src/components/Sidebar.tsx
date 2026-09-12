@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { ProjectTree } from './ProjectTree';
 
-type Tab = 'chat' | 'settings' | 'nodes' | 'plugins' | 'models';
+type Tab = 'chat' | 'settings';
 
 interface SidebarProps {
   activeTab: Tab;
@@ -19,9 +19,6 @@ interface NavDef { tab: Tab; icon: string; label: string }
 
 const NAV: NavDef[] = [
   { tab: 'chat',     icon: '💬', label: '对话' },
-  { tab: 'nodes',    icon: '🌐', label: '节点' },
-  { tab: 'plugins',  icon: '🧩', label: '插件' },
-  { tab: 'models',   icon: '🧠', label: '模型' },
   { tab: 'settings', icon: '⚙️', label: '设置' },
 ];
 
@@ -58,31 +55,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar-collapsed') === 'true'; } catch { return false; }
   });
-  const [navCollapsed, setNavCollapsed] = useState(() => {
-    try { return localStorage.getItem('sidebar-nav-collapsed') === 'true'; } catch { return false; }
-  });
 
   const toggleCollapsed = () => setCollapsed(prev => {
     const next = !prev;
     try { localStorage.setItem('sidebar-collapsed', String(next)); } catch {}
     return next;
   });
-  const toggleNavCollapsed = () => setNavCollapsed(prev => {
-    const next = !prev;
-    try { localStorage.setItem('sidebar-nav-collapsed', String(next)); } catch {}
-    return next;
-  });
 
-  // Selective subscriptions — avoid re-rendering on every streaming token.
-  const nodeList = useAgentStore(s => s.nodeList ?? []);
-  const plugins = useAgentStore(s => s.plugins ?? []);
+  // Selective subscription — avoid re-rendering on every streaming token.
   const pendingCount = useAgentStore(s => (s.pendingConfirmations ?? []).length);
-
-  const badgeFor = (tab: Tab): number | undefined =>
-    tab === 'chat' ? (pendingCount || undefined)
-    : tab === 'nodes' ? (nodeList.length || undefined)
-    : tab === 'plugins' ? (plugins.length || undefined)
-    : undefined;
 
   return (
     <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
@@ -97,45 +78,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="sidebar-body">
-        {!collapsed && (
-          <div
-            className="section-toggle"
-            onClick={toggleNavCollapsed}
-            title={navCollapsed ? '展开导航' : '收起导航'}
-          >
-            <span className="section-label">导航</span>
-            <span
-              className="section-chevron"
-              style={{ transform: navCollapsed ? 'none' : 'rotate(90deg)' }}
-            >▶</span>
-          </div>
-        )}
-
-        {!collapsed && navCollapsed ? (
-          <div className="nav-rail">
-            {NAV.map(item => (
-              <button
-                key={item.tab}
-                className={activeTab === item.tab ? 'active' : undefined}
-                title={item.label}
-                onClick={(e) => { e.stopPropagation(); onTabChange(item.tab); }}
-              >{item.icon}</button>
-            ))}
-          </div>
-        ) : (
-          <div className="nav-list">
-            {NAV.map(item => (
-              <NavItem
-                key={item.tab}
-                item={item}
-                active={activeTab === item.tab}
-                badge={badgeFor(item.tab)}
-                collapsed={collapsed}
-                onClick={() => onTabChange(item.tab)}
-              />
-            ))}
-          </div>
-        )}
+        <div className="nav-list">
+          {NAV.map(item => (
+            <NavItem
+              key={item.tab}
+              item={item}
+              active={activeTab === item.tab}
+              badge={item.tab === 'chat' ? (pendingCount || undefined) : undefined}
+              collapsed={collapsed}
+              onClick={() => onTabChange(item.tab)}
+            />
+          ))}
+        </div>
 
         <ProjectTree
           collapsed={collapsed}

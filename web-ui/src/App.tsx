@@ -15,13 +15,15 @@ import { useAgentStore } from './stores/agentStore';
 import { useAgentPool } from './hooks/useAgentPool';
 
 import { ModelsPanel } from './components/ModelsPanel';
+import { SettingsShell, SettingsSection } from './components/SettingsShell';
 import { CommandPalette, CommandAction } from './components/CommandPalette';
 
-type Tab = 'chat' | 'settings' | 'nodes' | 'plugins' | 'models';
+type Tab = 'chat' | 'settings';
 type RightTab = 'browse' | 'changes' | 'tasks' | 'terminal';
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [rightTab, setRightTab] = useState<RightTab>('browse');
   const [showConnect, setShowConnect] = useState(false);
   const [editProjectId, setEditProjectId] = useState<string | null>(null);
@@ -183,19 +185,33 @@ function App() {
         action: () => handleDisconnect(),
       },
       // 面板导航
-      ...([
-        ['chat', '对话', '💬'],
-        ['nodes', '节点', '🌐'],
-        ['plugins', '插件', '🧩'],
-        ['models', '模型管理', '🧠'],
-        ['settings', '设置', '⚙️'],
-      ] as const).map(([tab, tabLabel]) => ({
-        id: `nav.${tab}`,
-        label: `打开${tabLabel}`,
-        description: `切换到${tabLabel}面板`,
+      {
+        id: 'nav.chat',
+        label: '打开对话',
+        description: '切换到对话面板',
         category: '面板',
-        keywords: `goto ${tab}`,
-        action: () => setActiveTab(tab as Tab),
+        keywords: 'goto chat',
+        action: () => setActiveTab('chat'),
+      },
+      {
+        id: 'nav.settings',
+        label: '打开设置',
+        description: '切换到设置面板',
+        category: '面板',
+        keywords: 'goto settings',
+        action: () => setActiveTab('settings'),
+      },
+      ...([
+        ['nodes', '🌐', '节点管理'],
+        ['models', '🧠', '模型管理'],
+        ['plugins', '🧩', '插件管理'],
+      ] as const).map(([sec, icon, label]) => ({
+        id: `settings.${sec}`,
+        label: `打开${label}`,
+        description: `设置 · ${icon} ${label}`,
+        category: '设置',
+        keywords: `goto ${sec}`,
+        action: () => { setSettingsSection(sec); setActiveTab('settings'); },
       })),
       // 会话操作
       {
@@ -232,11 +248,11 @@ function App() {
       ...(['auto', 'simple', 'plan'] as const).map((m) => ({
         id: `mode.${m}`,
         label: `切换为 ${{ auto: '自动', simple: '单层', plan: '计划' }[m]} 模式`,
-        description:
-          m === 'auto' ? 'Router 自动选择执行策略'
-          : m === 'simple' ? '单层 Agent 循环，速度快'
-          : m === 'plan' ? '先规划再执行'
-          : 'Planner → Executor → Checker 三阶段流水线',
+        description: {
+          auto: '自动选择执行策略',
+          simple: '单层 Agent 循环，速度快',
+          plan: '先规划再执行',
+        }[m],
         category: '运行模式',
         keywords: `mode ${m}`,
         enabled: connected,
@@ -317,10 +333,22 @@ function App() {
               <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} onUpload={handleUpload} />
             </>
           )}
-          {activeTab === 'nodes' && <NodesPanel isConnected={connectionStatus === 'connected'} onListNodes={listNodes} onAddNode={addNode} onUpdateNode={updateNode} onDeleteNode={deleteNode} onListPeers={listPeers} onAddPeer={addPeer} onUpdatePeer={updatePeer} onDeletePeer={deletePeer} />}
-          {activeTab === 'settings' && <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />}
-          {activeTab === 'plugins' && <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />}
-          {activeTab === 'models' && <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />}
+          {activeTab === 'settings' && (
+            <SettingsShell section={settingsSection} onSectionChange={setSettingsSection}>
+              {settingsSection === 'general' && (
+                <SettingsPanel isConnected={connectionStatus === 'connected'} onSetWorkdirRemote={setWorkdirRemote} />
+              )}
+              {settingsSection === 'nodes' && (
+                <NodesPanel isConnected={connectionStatus === 'connected'} onListNodes={listNodes} onAddNode={addNode} onUpdateNode={updateNode} onDeleteNode={deleteNode} onListPeers={listPeers} onAddPeer={addPeer} onUpdatePeer={updatePeer} onDeletePeer={deletePeer} />
+              )}
+              {settingsSection === 'models' && (
+                <ModelsPanel onSetModelRemote={setModelRemote} onFetchModels={fetchModels} onAddModel={addModel} onDeleteModel={deleteModel} onListEndpoints={listEndpoints} onAddEndpoint={addEndpoint} onDeleteEndpoint={deleteEndpoint} />
+              )}
+              {settingsSection === 'plugins' && (
+                <PluginsPanel onEnablePlugin={enablePlugin} onDisablePlugin={disablePlugin} />
+              )}
+            </SettingsShell>
+          )}
           </ErrorBoundary>
         </main>
         <ErrorBoundary>
