@@ -534,6 +534,28 @@ impl Agent {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM request failed after retries")))
     }
 
+    /// Run one LLM call with no user-visible output.
+    ///
+    /// Used for background work — truncation summarization, knowledge
+    /// extraction, memory consolidation — that must not interleave with the
+    /// interactive transcript.
+    async fn call_llm_silent(
+        &self,
+        cfg: &Config,
+        conversation: &Conversation,
+        tools: &[crate::tools::ToolDefinition],
+    ) -> Result<crate::llm::LlmResponse> {
+        let silent = SilentOutput;
+        match cfg.provider {
+            Provider::Anthropic => {
+                streaming::stream_anthropic_response(cfg, conversation, tools, &silent).await
+            }
+            Provider::OpenAI | Provider::Compatible => {
+                streaming::stream_openai_response(cfg, conversation, tools, &silent).await
+            }
+        }
+    }
+
     /// Override the adaptive router for all subsequent messages.
     /// Pass `None` to restore normal router behaviour.
     pub fn set_force_mode(&mut self, mode: Option<crate::router::ExecutionMode>) {
@@ -1053,16 +1075,8 @@ impl Agent {
         conv.system_prompt = "You are a knowledge extractor. Be concise.".to_string();
         conv.add_message(Message::user(&prompt));
 
-        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
         let cfg = self.role_configs.get("summarizer").unwrap_or(&self.config);
-        let result = match cfg.provider {
-            Provider::Anthropic =>
-                streaming::stream_anthropic_response(cfg, &conv, &[], &*silent).await,
-            Provider::OpenAI | Provider::Compatible =>
-                streaming::stream_openai_response(cfg, &conv, &[], &*silent).await,
-        };
-
-        if let Ok(response) = result {
+        if let Ok(response) = self.call_llm_silent(cfg, &conv, &[]).await {
             let text: String = response.content.iter()
                 .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                 .collect();
@@ -1115,14 +1129,8 @@ impl Agent {
         conv.system_prompt = "You are a memory consolidation assistant.".to_string();
         conv.add_message(Message::user(&prompt));
 
-        let silent = Arc::new(SilentOutput) as Arc<dyn AgentOutput>;
         let cfg = self.role_configs.get("summarizer").unwrap_or(&self.config);
-        let response = match cfg.provider {
-            Provider::Anthropic =>
-                streaming::stream_anthropic_response(cfg, &conv, &[], &*silent).await?,
-            Provider::OpenAI | Provider::Compatible =>
-                streaming::stream_openai_response(cfg, &conv, &[], &*silent).await?,
-        };
+        let response = self.call_llm_silent(cfg, &conv, &[]).await?;
 
         let text: String = response.content.iter()
             .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
@@ -1261,8 +1269,10 @@ Summary:"#,
              Keep it under 200 words.".to_string();
         summary_conv.add_message(Message::user(&prompt));
 
-        // Use the main model (or a "summarizer" role if configured)
-        let response = self.call_llm_as_role("summarizer", &summary_conv, &[]).await?;
+        // Run silently (using the "summarizer" role model if configured) so the
+        // background compaction does not interleave with the interactive transcript.
+        let cfg = self.role_configs.get("summarizer").unwrap_or(&self.config);
+        let response = self.call_llm_silent(cfg, &summary_conv, &[]).await?;
 
         if let Some(ref usage) = response.usage {
             self.track_tokens("summarizer", usage);

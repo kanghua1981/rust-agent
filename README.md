@@ -105,9 +105,16 @@ provider = "compatible"
 model = "qwen-max"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key = "sk-xxxxx"  # 可选，不设则 fallback 到环境变量
+
+# 后台任务专用模型（可选）：压缩摘要 / 知识抽取 / 记忆整理
+# 不配置则回退到主模型；这些后台调用是静默的，不打断对话输出
+[roles.summarizer]
+model = "qwen"
 ```
 
 也可以在运行时通过 `/model add <alias>` 交互式添加模型，无需手动编辑文件。
+
+> **后台任务模型**：`[roles.summarizer]` 可为压缩摘要、知识抽取、记忆整理指定一个更便宜的模型（不配置则用主模型）。这些调用静默执行，不会与交互输出交错。
 
 **配置优先级**：`--model CLI参数` > `models.toml default` > `LLM_MODEL 环境变量` > `硬编码默认值`
 
