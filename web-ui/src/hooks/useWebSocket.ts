@@ -966,6 +966,48 @@ export const useWebSocket = () => {
     }
   }, [handleServerEvent]);
 
+  // ── Keep the streaming refs and the pending queue in sync with the active slot ──
+  // The refs declared at the top hold the token/streaming bookkeeping for whichever
+  // connection is active. Every switch must move them, otherwise an in-flight stream
+  // from the previous slot gets flushed into messages that now belong to the new one.
+  // Subscribing to the store (instead of wrapping each call site) covers tab clicks,
+  // project switches, and any future caller of setActiveConnection alike.
+  const activeSyncRef = useRef({ handleServerEvent, flushInactiveBatch });
+  activeSyncRef.current = { handleServerEvent, flushInactiveBatch };
+
+  useEffect(() => {
+    let prevId = useAgentStore.getState().activeProjectId;
+    return useAgentStore.subscribe((state) => {
+      const nextId = state.activeProjectId;
+      if (nextId === prevId) return;
+
+      const prevConn = prevId ? connMapRef.current.get(prevId) : undefined;
+      if (prevConn) saveRefsToConn(prevConn);
+
+      const nextConn = nextId ? connMapRef.current.get(nextId) : undefined;
+      if (nextConn) {
+        nextConn.inactiveTerminated = false;
+        loadRefsFromConn(nextConn);
+        // Tokens buffered before the switch still need to land in the store.
+        if (tokenBufRef.current || thinkingBufRef.current) scheduleFlush();
+        if (nextConn.inactiveFlushTimer) {
+          clearTimeout(nextConn.inactiveFlushTimer);
+          nextConn.inactiveFlushTimer = null;
+        }
+      } else {
+        streamingMsgIdRef.current = null;
+        thinkingMsgIdRef.current = null;
+        lastAssistantMsgIdRef.current = null;
+        tokenBufRef.current = '';
+        thinkingBufRef.current = '';
+      }
+
+      prevId = nextId;
+      // Replay what the newly visible slot accumulated while it was off-screen.
+      if (nextId) activeSyncRef.current.flushInactiveBatch(nextId);
+    });
+  }, []);
+
   /** Accumulate events for an inactive slot — NO timer, no background processing.
    *  Events are flushed only when the user switches to the tab, eliminating the
    *  constant setActiveConnection swaps that were causing UI thrash on every
@@ -1148,9 +1190,9 @@ export const useWebSocket = () => {
         }
         addConnectionHistory(currentServerUrl, currentWorkdir);
         ws.send(JSON.stringify({ type: 'list_plugins', data: {} }));
-
-        // Fetch session lists so sidebar can display them
-        listLocalSessionsRef.current?.();
+        // Ask over this connection's own socket: sendRaw would target whichever
+        // slot happens to be active, filling another workspace's session list.
+        ws.send(JSON.stringify({ type: 'list_local_sessions', data: {} }));
 
         // If user opted for a fresh session, send new_session after connect.
         // This runs BEFORE the server's auto-restore emits session_available,
@@ -1243,59 +1285,6 @@ export const useWebSocket = () => {
     }
   }, [setConnectionStatus, setSessionInfo]);
 
-  // ── Switch active tab (no WS change!) ──
-  // Called by ConnectionTabs or other UI when the user clicks a different tab.
-  // Saves current refs to old connection, loads refs from new connection,
-  // and swaps the flat proxy in the store.
-  const switchToConnection = useCallback((id: string) => {
-    const st = useAgentStore.getState();
-    if (id === st.activeProjectId) return;
-
-    // Flush any pending inactive batches for the target before switching
-    flushInactiveBatch(id);
-
-    // Save current refs to old connection
-    const oldId = st.activeProjectId;
-    const oldConn = oldId ? connMapRef.current.get(oldId) : undefined;
-    if (oldConn) saveRefsToConn(oldConn);
-
-    // Switch to new slot — setActiveConnection saves old slot internally
-    st.setActiveConnection(id);
-
-    // Load refs from new connection (if it has a live WS)
-    const newConn = connMapRef.current.get(id);
-    if (newConn) {
-      // Reset terminated flag — slot is now active and should process events normally
-      newConn.inactiveTerminated = false;
-      // Clear any stale inactive queue entries and timers
-      inactiveQueuesRef.current.delete(id);
-      inactiveTimersRef.current.delete(id);
-      if (newConn.inactiveFlushTimer) {
-        clearTimeout(newConn.inactiveFlushTimer);
-        newConn.inactiveFlushTimer = null;
-      }
-
-      loadRefsFromConn(newConn);
-      // Flush any tokens buffered while inactive, then schedule flush
-      if (newConn.tokenBuf || newConn.thinkingBuf) {
-        flushTokens();
-        scheduleFlush();
-      }
-    } else {
-      // No live WS yet — reset refs
-      streamingMsgIdRef.current = null;
-      thinkingMsgIdRef.current = null;
-      lastAssistantMsgIdRef.current = null;
-      tokenBufRef.current = '';
-      thinkingBufRef.current = '';
-    }
-
-    // If the new slot has no WS yet, auto-connect
-    if (!newConn && st.projectSlots[id]?.serverUrl) {
-      connect(id);
-    }
-  }, [connect, flushInactiveBatch, flushTokens, scheduleFlush]);
-
   // ── Sync execution mode to server ──
   // agentMode is per-slot (per-project), read from active slot
   const agentMode = useAgentStore(s => {
@@ -1384,7 +1373,6 @@ export const useWebSocket = () => {
     listPlugins,
     enablePlugin,
     disablePlugin,
-    switchToConnection,
     isConnected: connectionStatus === 'connected',
   };
 };
