@@ -211,11 +211,6 @@ impl Agent {
         self.interrupt_requested.store(true, Ordering::Relaxed);
     }
 
-    /// Clear the interrupt flag for this session.
-    pub fn clear_interrupt(&self) {
-        self.interrupt_requested.store(false, Ordering::Relaxed);
-    }
-
     /// Check whether an interrupt has been requested for this session.
     pub fn is_interrupted(&self) -> bool {
         self.interrupt_requested.load(Ordering::Relaxed)
@@ -406,11 +401,6 @@ impl Agent {
         self.hook_bus = bus;
     }
 
-    /// 获取 Hook 事件总线共享引用。
-    pub fn hook_bus(&self) -> Option<Arc<crate::plugin::hook_bus::HookBus>> {
-        self.hook_bus.clone()
-    }
-
     /// Switch the active model at runtime.
     pub fn switch_model(&mut self, resolved: &crate::model_manager::ResolvedModel) {
         self.config = self.config.with_resolved_model(resolved);
@@ -577,19 +567,10 @@ impl Agent {
         crate::router::ExecutionMode::BasicLoop
     }
 
-    pub fn output_arc(&self) -> Arc<dyn AgentOutput> {
-        self.output.clone()
-    }
-
     /// Enter or leave plan mode. While on, the model sees only read-only tools
     /// plus exit_plan_mode; an approved plan is required before it can act.
     pub fn set_plan_mode(&mut self, on: bool) {
         self.plan_mode = on;
-    }
-
-    /// Whether plan mode is currently active.
-    pub fn in_plan_mode(&self) -> bool {
-        self.plan_mode
     }
 
 

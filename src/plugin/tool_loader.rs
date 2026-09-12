@@ -54,17 +54,6 @@ impl ToolType {
             _ => None,
         }
     }
-    
-    /// 获取工具类型的默认文件扩展名
-    pub fn default_extension(&self) -> &'static str {
-        match self {
-            ToolType::Shell => "sh",
-            ToolType::Python => "py",
-            ToolType::JavaScript => "js",
-            ToolType::Rust => "rs",
-            ToolType::Builtin => "",
-        }
-    }
 }
 
 /// 工具加载器
@@ -430,12 +419,6 @@ impl ToolLoader {
                 self.loaded_tools.remove(&tool_name);
             }
         }
-    }
-    
-    /// 清除所有已加载的工具
-    pub fn clear(&mut self) {
-        self.loaded_tools.clear();
-        self.plugin_tools.clear();
     }
 }
 

@@ -50,15 +50,6 @@ pub enum IsolationMode {
 }
 
 impl IsolationMode {
-    /// true for Container and Sandbox — both require `setup_rootfs`.
-    pub fn is_containerized(self) -> bool {
-        matches!(self, IsolationMode::Container | IsolationMode::Sandbox)
-    }
-
-    /// true only for Sandbox — overlayfs is mounted.
-    pub fn uses_overlay(self) -> bool {
-        self == IsolationMode::Sandbox
-    }
 }
 
 impl std::fmt::Display for IsolationMode {

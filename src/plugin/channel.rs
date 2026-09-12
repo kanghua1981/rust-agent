@@ -153,20 +153,6 @@ impl ChannelManager {
         }
     }
 
-    /// 停止所有通道子进程
-    pub fn stop_all(&mut self) {
-        for child in &mut self.children {
-            if let Some(ref mut proc) = child.process {
-                let pid = proc.id();
-                let name = &child.config.name;
-                println!("🛑 Stopping channel [{}] (pid {})...", name, pid);
-                let _ = proc.kill();
-                let _ = proc.wait();
-            }
-        }
-        self.children.clear();
-    }
-
     /// 启动后台监控任务（每 10 秒检查一次，自动重启崩溃的进程）
     pub fn spawn_watchdog(mgr: Arc<Mutex<Self>>) {
         tokio::spawn(async move {

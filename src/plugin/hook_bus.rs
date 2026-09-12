@@ -128,24 +128,6 @@ impl HookBus {
 
     // ── 统计 ─────────────────────────────────────────────────────────────────
 
-    /// 已注册 hook 总数。
-    pub fn total_hooks(&self) -> usize {
-        self.hooks
-            .read()
-            .expect("HookBus RwLock poisoned")
-            .values()
-            .map(|v| v.len())
-            .sum()
-    }
-
-    /// 已注册的事件类别数。
-    pub fn event_count(&self) -> usize {
-        self.hooks
-            .read()
-            .expect("HookBus RwLock poisoned")
-            .len()
-    }
-
     // ── Emit ─────────────────────────────────────────────────────────────────
 
     /// **Fire-and-forget**：spawn 异步任务后立即返回，不阻塞调用方。

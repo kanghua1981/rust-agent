@@ -233,11 +233,6 @@ impl ModelsConfig {
         self.resolve(alias)
     }
 
-    /// List all configured aliases (sorted).
-    pub fn aliases(&self) -> Vec<&str> {
-        self.models.keys().map(|s| s.as_str()).collect()
-    }
-
     /// Add or overwrite a model entry.
     pub fn add(&mut self, alias: String, entry: ModelEntry) {
         self.models.insert(alias, entry);

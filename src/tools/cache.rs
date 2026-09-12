@@ -151,17 +151,6 @@ impl ToolResultCache {
             }
         }
     }
-
-    /// Clear the entire cache.
-    pub fn clear(&mut self) {
-        self.entries.clear();
-        self.file_keys.clear();
-    }
-
-    /// Return cache hit/miss stats.
-    pub fn stats(&self) -> (u64, u64) {
-        (self.hits, self.misses)
-    }
 }
 
 /// Apply Layer-2 truncation: if the result exceeds `MAX_RESULT_CHARS`,

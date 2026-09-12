@@ -191,11 +191,6 @@ impl Sandbox {
         &self.working_dir
     }
 
-    /// The real, original project directory.
-    pub fn project_dir(&self) -> &Path {
-        &self.project_dir
-    }
-
     /// Synchronous backend label — does NOT lock the async mutex.
     /// Returns: "disabled" | "overlay"
     pub fn backend_label_sync(&self) -> &'static str {
