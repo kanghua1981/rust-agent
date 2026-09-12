@@ -17,38 +17,24 @@ interface Props {
   diffs: DiffEntry[];
 }
 
-const UserAvatar = () => (
-  <div style={{
-    width: '30px', height: '30px', borderRadius: '50%',
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: '13px', flexShrink: 0, color: '#fff', fontWeight: '700',
-  }}>U</div>
-);
-
-const AgentAvatar = () => (
-  <div style={{
-    width: '30px', height: '30px', borderRadius: '50%',
-    background: 'linear-gradient(135deg, #0ea5e9, #6366f1)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: '14px', flexShrink: 0,
-  }}>🤖</div>
-);
+const UserAvatar = () => <div className="avatar user">U</div>;
+const AgentAvatar = () => <div className="avatar agent">🤖</div>;
 
 const formatTime = (ts: number) =>
   new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
+const stageIcons: Record<string, string> = {
+  Planner: '🎯', Executor: '⚡', Checker: '✅', Router: '🔀',
+};
+
 export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking, toolCalls, diffs }) => {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
-  
-  // 复制功能状态
+
   const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  // Track mount state to avoid setState on unmounted component
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
-  // 复制消息内容到剪贴板
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -68,128 +54,67 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
   if (isSystem) {
     // Message banner (which role/model produced it)
     if (message.meta?.stageLabel) {
-      const stageIcons: Record<string, string> = {
-        Planner: '🎯', Executor: '⚡', Checker: '✅', Router: '🔀',
-      };
       const icon = stageIcons[message.meta.stageLabel] ?? '🔵';
       return (
-        <div className="fade-in" style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          padding: '10px 0 4px',
-        }}>
-          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-          <span style={{
-            fontSize: '11px', fontWeight: '600',
-            color: 'var(--accent)', letterSpacing: '0.06em',
-            background: 'rgba(99,102,241,0.1)',
-            border: '1px solid rgba(99,102,241,0.3)',
-            borderRadius: '12px', padding: '2px 10px',
-            display: 'flex', alignItems: 'center', gap: '5px',
-          }}>
+        <div className="fade-in stage-banner">
+          <div className="rule" />
+          <span className="stage-pill">
             <span>{icon}</span>
             <span>{message.meta.stageLabel}</span>
             {message.meta.stageModel && (
-              <span style={{ color: 'var(--text3)', fontWeight: '400', fontSize: '10px' }}>
-                • {message.meta.stageModel.split('/').pop()}
-              </span>
+              <span className="model">• {message.meta.stageModel.split('/').pop()}</span>
             )}
           </span>
-          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+          <div className="rule" />
         </div>
       );
     }
 
     return (
-      <div className="fade-in" style={{
-        display: 'flex', justifyContent: 'center', padding: '4px 0',
-      }}>
-        <span style={{
-          fontSize: '12px', color: 'var(--text3)',
-          background: 'var(--bg3)', border: '1px solid var(--border)',
-          borderRadius: '20px', padding: '3px 12px',
-        }}>
-          {message.content}
-        </span>
+      <div className="fade-in sys-note-wrap">
+        <span className="sys-note">{message.content}</span>
       </div>
     );
   }
 
-  // For assistant messages, use pre-filtered tool calls from parent
   const relatedToolCalls = isUser ? [] : toolCalls;
   const relatedDiffs = isUser ? [] : diffs;
 
-  // Thinking display: collapsible, defaults to expanded when streaming, collapsed otherwise
+  // Thinking display: collapsible, defaults to expanded while streaming.
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const isCurrentlyThinking = isThinking;
   const hasThinking = !!message.thinking;
   const showThinking = hasThinking || isCurrentlyThinking;
 
-  // 缓存 ReactMarkdown 输出 — 仅在 message.content 变化时重新解析
+  // Cache ReactMarkdown output — only re-parse when content changes.
   const markdownContent = useMemo(
     () => message.content ? <ReactMarkdown remarkPlugins={markdownPlugins}>{message.content}</ReactMarkdown> : null,
     [message.content],
   );
 
   return (
-    <div
-      className="fade-in"
-      style={{
-        display: 'flex',
-        gap: '10px',
-        padding: '6px 0',
-        flexDirection: isUser ? 'row-reverse' : 'row',
-        alignItems: 'flex-start',
-      }}
-    >
+    <div className={`fade-in msg${isUser ? ' user' : ''}`}>
       {isUser ? <UserAvatar /> : <AgentAvatar />}
 
-      <div style={{
-        flex: 1,
-        maxWidth: isUser ? '75%' : '100%',
-        minWidth: 0,
-      }}>
+      <div className="msg-body">
         {/* Name + time */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          marginBottom: '4px',
-          flexDirection: isUser ? 'row-reverse' : 'row',
-        }}>
-          <span style={{ fontSize: '12px', fontWeight: '600', color: isUser ? 'var(--accent)' : 'var(--text2)' }}>
-            {isUser ? '你' : 'Assistant'}
-          </span>
-          <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{formatTime(message.timestamp)}</span>
+        <div className={`msg-head${isUser ? ' user' : ''}`}>
+          <span className={`msg-name${isUser ? ' user' : ''}`}>{isUser ? '你' : 'Assistant'}</span>
+          <span className="msg-time">{formatTime(message.timestamp)}</span>
         </div>
 
         {/* Thinking block (collapsible) */}
         {showThinking && !isUser && (
-          <div style={{ marginBottom: '6px' }}>
+          <div style={{ marginBottom: 6 }}>
             <div
+              className={`thinking-toggle${isCurrentlyThinking ? ' active' : ''}`}
               onClick={() => setThinkingExpanded(!thinkingExpanded)}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: '5px', cursor: 'pointer',
-                fontSize: '12px', color: 'var(--text3)', userSelect: 'none',
-                padding: '3px 8px', borderRadius: '6px',
-                border: '1px solid var(--border)',
-                background: isCurrentlyThinking ? 'rgba(99,102,241,0.06)' : 'transparent',
-                transition: 'background 0.2s',
-              }}
             >
               <span>{thinkingExpanded || isCurrentlyThinking ? '▼' : '▶'}</span>
               <span>💭 {isCurrentlyThinking ? 'Thinking…' : 'Thinking'}</span>
             </div>
             {(thinkingExpanded || isCurrentlyThinking) && message.thinking && (
-              <div style={{
-                marginTop: '4px', padding: '8px 12px',
-                borderRadius: '8px',
-                background: 'var(--bg3)',
-                border: '1px solid var(--border)',
-                fontSize: '12px', color: 'var(--text3)',
-                fontStyle: 'italic', whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word', maxHeight: '300px',
-                overflowY: 'auto',
-              }}>
+              <div className="thinking-body">
                 {message.thinking}
                 {isCurrentlyThinking && <span className="cursor" />}
               </div>
@@ -199,67 +124,22 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
 
         {/* Message bubble */}
         {(message.content || isStreaming) && (
-          <div style={{
-            background: isUser ? 'linear-gradient(135deg, var(--accent), #8b5cf6)' : 'var(--surface)',
-            border: isUser ? 'none' : '1px solid var(--border)',
-            borderRadius: isUser ? '14px 14px 4px 14px' : '4px 14px 14px 14px',
-            padding: '10px 14px',
-            color: isUser ? '#fff' : 'var(--text)',
-            wordBreak: 'break-word',
-            display: 'inline-block',
-            maxWidth: '100%',
-            position: 'relative',
-          }}>
+          <div className={`bubble ${isUser ? 'user' : 'agent'}`}>
             {isUser ? (
-              <span style={{ whiteSpace: 'pre-wrap', fontSize: '14px' }}>{message.content}</span>
+              <span className="bubble-text">{message.content}</span>
             ) : (
-              <div className="md-content" style={{ fontSize: '14px' }}>
+              <div className="md-content">
                 {markdownContent}
                 {isStreaming && <span className="cursor" />}
               </div>
             )}
-            
-            {/* 复制按钮 - 右下角 */}
-            <button
-              onClick={() => copyToClipboard(message.content)}
-              style={{
-                position: 'absolute',
-                bottom: '6px',
-                right: '6px',
-                background: isUser ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.05)',
-                border: 'none',
-                borderRadius: '4px',
-                width: '24px',
-                height: '24px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '12px',
-                color: isUser ? 'rgba(255,255,255,0.8)' : 'var(--text3)',
-                cursor: 'pointer',
-                opacity: 0.6,
-                transition: 'opacity 0.2s',
-              }}
-              onMouseOver={(e) => e.currentTarget.style.opacity = '1'}
-              onMouseOut={(e) => e.currentTarget.style.opacity = '0.6'}
-              title="复制消息"
-            >
+
+            <button className="copy-btn" onClick={() => copyToClipboard(message.content)} title="复制消息">
               {copyStatus === 'success' ? '✓' : copyStatus === 'error' ? '✗' : '📋'}
             </button>
-            
-            {/* 复制状态提示 */}
+
             {copyStatus !== 'idle' && (
-              <div style={{
-                position: 'absolute',
-                bottom: '-24px',
-                right: '0',
-                fontSize: '11px',
-                padding: '2px 6px',
-                background: copyStatus === 'success' ? 'rgba(16,185,129,0.9)' : 'rgba(239,68,68,0.9)',
-                color: '#fff',
-                borderRadius: '4px',
-                whiteSpace: 'nowrap',
-              }}>
+              <div className={`copy-toast ${copyStatus === 'success' ? 'ok' : 'err'}`}>
                 {copyStatus === 'success' ? '已复制' : '复制失败'}
               </div>
             )}
@@ -268,7 +148,7 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
 
         {/* Tool calls inline */}
         {relatedToolCalls.length > 0 && (
-          <div style={{ marginTop: '8px' }}>
+          <div className="msg-extra">
             {relatedToolCalls.map(tc => (
               <ToolCallCard key={tc.id} toolCall={tc} />
             ))}
@@ -277,7 +157,7 @@ export const MessageItem = React.memo<Props>(({ message, isStreaming, isThinking
 
         {/* Diffs inline */}
         {relatedDiffs.length > 0 && (
-          <div style={{ marginTop: '8px' }}>
+          <div className="msg-extra">
             {relatedDiffs.map(d => (
               <DiffViewer key={d.id} path={d.path} diff={d.diff} />
             ))}
