@@ -337,36 +337,6 @@ impl SkillLoader {
         None
     }
     
-    /// 获取插件的所有技能
-    pub fn get_plugin_skills(&self, plugin_id: &str) -> Vec<&SkillDefinition> {
-        let mut skills = Vec::new();
-        
-        if let Some(skill_names) = self.plugin_skills.get(plugin_id) {
-            for skill_name in skill_names {
-                if let Some(skill) = self.loaded_skills.get(skill_name) {
-                    skills.push(skill);
-                }
-            }
-        }
-        
-        skills
-    }
-    
-    /// 按标签获取技能
-    pub fn get_skills_by_tag(&self, tag: &str) -> Vec<&SkillDefinition> {
-        let mut skills = Vec::new();
-        
-        if let Some(skill_names) = self.tag_index.get(tag) {
-            for skill_name in skill_names {
-                if let Some(skill) = self.loaded_skills.get(skill_name) {
-                    skills.push(skill);
-                }
-            }
-        }
-        
-        skills
-    }
-    
     /// 搜索技能
     pub fn search_skills(&self, query: &str) -> Vec<&SkillDefinition> {
         let query_lower = query.to_lowercase();
@@ -424,11 +394,13 @@ impl SkillLoader {
     }
     
     /// 获取所有标签
+    #[cfg(test)]
     pub fn all_tags(&self) -> Vec<&String> {
         self.tag_index.keys().collect()
     }
     
     /// 获取技能统计信息
+    #[cfg(test)]
     pub fn stats(&self) -> SkillStats {
         let mut stats = SkillStats::default();
         
@@ -475,17 +447,11 @@ impl SkillLoader {
             }
         }
     }
-    
-    /// 清除所有已加载的技能
-    pub fn clear(&mut self) {
-        self.loaded_skills.clear();
-        self.plugin_skills.clear();
-        self.tag_index.clear();
-    }
 }
 
 /// 技能统计信息
 #[derive(Debug, Clone, Default)]
+#[cfg(test)]
 pub struct SkillStats {
     /// 技能总数
     pub total: usize,

@@ -198,6 +198,7 @@ impl GlobalDb {
 
     // ── Preferences ───────────────────────────────────────────────────
 
+    #[cfg(test)]
     pub fn get_pref(&self, key: &str) -> rusqlite::Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(
@@ -211,6 +212,7 @@ impl GlobalDb {
         }
     }
 
+    #[cfg(test)]
     pub fn set_pref(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         with_retry(|| {

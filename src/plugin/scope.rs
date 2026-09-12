@@ -43,16 +43,8 @@ impl PluginScope {
         ]
     }
     
-    /// 获取作用域名称
-    pub fn name(&self) -> &'static str {
-        match self {
-            PluginScope::Global => "global",
-            PluginScope::Project => "project",
-            PluginScope::Temporary => "temporary",
-        }
-    }
-    
     /// 从字符串解析作用域
+    #[cfg(test)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "global" => Some(PluginScope::Global),
@@ -136,11 +128,6 @@ impl ScopeManager {
         Self { base_dirs, active_scopes }
     }
     
-    /// 获取基础目录
-    pub fn base_dirs(&self) -> &BaseDirectories {
-        &self.base_dirs
-    }
-    
     /// 确保所有目录存在
     pub fn ensure_directories(&self) -> std::io::Result<()> {
         self.base_dirs.ensure_directories()
@@ -153,6 +140,7 @@ impl ScopeManager {
     
     /// 获取所有作用域的插件目录（按优先级排序）
     /// 若通过 `new_with_scopes` 限制了作用域，则只返回指定作用域的目录。
+    #[cfg(test)]
     pub fn all_plugin_dirs(&self) -> Vec<(PluginScope, PathBuf)> {
         PluginScope::all_scopes()
             .into_iter()
@@ -162,22 +150,6 @@ impl ScopeManager {
             })
             .map(|scope| (scope, scope.directory(&self.base_dirs)))
             .collect()
-    }
-    
-    /// 检查插件目录是否存在
-    pub fn plugin_dir_exists(&self, scope: PluginScope) -> bool {
-        let dir = scope.directory(&self.base_dirs);
-        dir.exists() && dir.is_dir()
-    }
-    
-    /// 获取插件文件路径
-    pub fn plugin_path(&self, scope: PluginScope, plugin_name: &str) -> PathBuf {
-        scope.directory(&self.base_dirs).join(plugin_name)
-    }
-    
-    /// 获取插件元数据文件路径
-    pub fn plugin_meta_path(&self, scope: PluginScope, plugin_name: &str) -> PathBuf {
-        self.plugin_path(scope, plugin_name).join("plugin.toml")
     }
 }
 

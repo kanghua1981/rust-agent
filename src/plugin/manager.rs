@@ -614,34 +614,8 @@ impl PluginManager {
         }
     }
     
-    /// 卸载插件
-    pub fn unload_plugin(&mut self, plugin_id: &str) -> Result<(), PluginError> {
-        if let Some(plugin) = self.plugins.remove(plugin_id) {
-            // 从作用域映射中移除
-            if let Some(scope_plugins) = self.scope_plugins.get_mut(&plugin.scope) {
-                scope_plugins.remove(plugin_id);
-            }
-            
-            // 从名称映射中移除
-            if let Some(name_plugins) = self.name_plugins.get_mut(plugin.name()) {
-                name_plugins.retain(|id| id != plugin_id);
-                if name_plugins.is_empty() {
-                    self.name_plugins.remove(plugin.name());
-                }
-            }
-            
-            // 卸载工具和技能
-            self.tool_loader.unload_plugin_tools(plugin_id);
-            self.skill_loader.unload_plugin_skills(plugin_id);
-            
-            tracing::info!("Unloaded plugin {}", plugin_id);
-            Ok(())
-        } else {
-            Err(PluginError::Load(format!("Plugin not found: {}", plugin_id)))
-        }
-    }
-    
     /// 获取插件统计信息
+    #[cfg(test)]
     pub fn stats(&self) -> PluginStats {
         let mut stats = PluginStats::default();
         
@@ -668,6 +642,7 @@ impl PluginManager {
 
 /// 插件统计信息
 #[derive(Debug, Clone, Default)]
+#[cfg(test)]
 pub struct PluginStats {
     /// 插件总数
     pub total: usize,

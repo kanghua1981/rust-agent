@@ -122,13 +122,6 @@ impl Message {
             .join("\n")
     }
 
-    /// Check if this message contains image content
-    pub fn has_images(&self) -> bool {
-        self.content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::Image { .. }))
-    }
-
     /// Check if this message contains tool use requests
     #[allow(dead_code)]
     pub fn has_tool_use(&self) -> bool {
@@ -510,12 +503,6 @@ Skills management:
         merged
     }
 
-    pub fn clear(&mut self) {
-        self.messages.clear();
-        self.log.clear();
-        self.invalidate_token_estimate();
-    }
-
     /// Append a typed event to the session log, stamping seq/time.
     pub fn record(&mut self, kind: SessionEventKind) {
         let seq = self.log.len() as u64;
@@ -621,6 +608,7 @@ The conversation continues from the most recent messages below.]",
     /// correctness): contiguous sequence numbers, turn/step nesting, and
     /// tool-call/result pairing. Returns a list of problems; empty means the
     /// log is structurally healthy and can be replayed/forked safely.
+    #[cfg(test)]
     pub fn validate_log(&self) -> Vec<String> {
         use std::collections::HashSet;
         let mut problems = Vec::new();
