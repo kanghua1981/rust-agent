@@ -128,87 +128,22 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
     onClose();
   };
 
-  const modalStyle: React.CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(0,0,0,0.55)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  };
-
-  const cardStyle: React.CSSProperties = {
-    background: 'var(--bg2)',
-    border: '1px solid var(--border)',
-    borderRadius: '12px',
-    padding: '24px',
-    width: '480px',
-    maxWidth: '95vw',
-    maxHeight: '85vh',
-    overflowY: 'auto',
-    boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '8px 10px',
-    borderRadius: '6px',
-    border: '1px solid var(--border2)',
-    background: 'var(--bg3)',
-    color: 'var(--text)',
-    fontSize: '13px',
-    outline: 'none',
-    boxSizing: 'border-box',
-  };
-
-  const selectStyle: React.CSSProperties = {
-    ...inputStyle,
-    cursor: 'pointer',
-  };
-
-  const labelStyle: React.CSSProperties = {
-    fontSize: '11px',
-    fontWeight: '600',
-    color: 'var(--text3)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    marginBottom: '4px',
-    display: 'block',
-  };
-
-  const btnStyle = (primary?: boolean): React.CSSProperties => ({
-    padding: '8px 16px',
-    borderRadius: '6px',
-    border: primary ? 'none' : '1px solid var(--border)',
-    background: primary ? 'var(--accent)' : 'transparent',
-    color: primary ? '#fff' : 'var(--text2)',
-    fontSize: '13px',
-    cursor: 'pointer',
-    fontWeight: primary ? '500' : '400',
-  });
-
   return (
-    <div style={modalStyle} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={cardStyle}>
+    <div className="overlay-center" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="dlg-card">
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
-          <h2 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>
-            {editingId ? '编辑项目' : '添加项目'}
-          </h2>
-          <button onClick={onClose} style={{
-            background: 'transparent', border: 'none', color: 'var(--text3)',
-            fontSize: '18px', cursor: 'pointer', padding: '2px 6px',
-          }}>×</button>
+        <div className="dlg-head">
+          <h2>{editingId ? '编辑项目' : '添加项目'}</h2>
+          <button className="dlg-close" onClick={onClose}>×</button>
         </div>
 
         {/* Form */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div className="dlg-form">
           {/* Project name */}
           <div>
-            <label style={labelStyle}>项目名称</label>
+            <label className="form-label up">项目名称</label>
             <input
-              style={inputStyle}
+              className="field"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder={labelFromWorkdir(workdir) || '例如: my-frontend'}
@@ -217,9 +152,9 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
 
           {/* Server URL */}
           <div>
-            <label style={labelStyle}>服务器地址</label>
+            <label className="form-label up">服务器地址</label>
             <input
-              style={inputStyle}
+              className="field"
               value={serverUrl}
               onChange={(e) => setLocalUrl(e.target.value)}
               placeholder="ws://localhost:9527"
@@ -228,9 +163,9 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
 
           {/* Workdir */}
           <div>
-            <label style={labelStyle}>工作目录</label>
+            <label className="form-label up">工作目录</label>
             <input
-              style={inputStyle}
+              className="field"
               value={workdir}
               onChange={(e) => handleWorkdirChange(e.target.value)}
               placeholder="/path/to/project"
@@ -238,11 +173,11 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
           </div>
 
           {/* Isolation + Agent mode */}
-          <div style={{ display: 'flex', gap: '12px' }}>
-            <div style={{ flex: 1 }}>
-              <label style={labelStyle}>隔离模式</label>
+          <div className="row" style={{ gap: 12 }}>
+            <div className="fill">
+              <label className="form-label up">隔离模式</label>
               <select
-                style={selectStyle}
+                className="field"
                 value={isolation}
                 onChange={(e) => setIsolation(e.target.value as any)}
               >
@@ -251,24 +186,23 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
                 <option value="sandbox">沙盒模式</option>
               </select>
             </div>
-            <div style={{ flex: 1 }}>
-              <label style={labelStyle}>运行模式</label>
+            <div className="fill">
+              <label className="form-label up">运行模式</label>
               <select
-                style={selectStyle}
+                className="field"
                 value={agentMode}
                 onChange={(e) => setAgentMode(e.target.value as any)}
               >
                 <option value="auto">自动</option>
                 <option value="simple">单层</option>
                 <option value="plan">计划</option>
-                
               </select>
             </div>
           </div>
 
           {/* Checkboxes */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text2)', cursor: 'pointer' }}>
+          <div className="check-stack">
+            <label className="check-line">
               <input
                 type="checkbox"
                 checked={autoApprove}
@@ -276,7 +210,7 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
               />
               自动确认工具调用
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text2)', cursor: 'pointer' }}>
+            <label className="check-line">
               <input
                 type="checkbox"
                 checked={newSessionOnConnect}
@@ -287,10 +221,10 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
           </div>
 
           {/* Actions */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
+          <div className="dlg-actions end">
             {editingId && (
               <button
-                style={btnStyle()}
+                className="btn-dlg"
                 onClick={() => {
                   setEditingId(null);
                   setLabel('');
@@ -303,62 +237,31 @@ export const ProjectDialog: React.FC<Props> = ({ onConnect, onClose, editProject
                 }}
               >取消编辑</button>
             )}
-            <button style={btnStyle()} onClick={onClose}>取消</button>
-            <button style={btnStyle(true)} onClick={handleSaveAndConnect}>
-              {editingId ? '保存并连接' : '保存并连接'}
-            </button>
+            <button className="btn-dlg" onClick={onClose}>取消</button>
+            <button className="btn-dlg primary" onClick={handleSaveAndConnect}>保存并连接</button>
           </div>
         </div>
 
         {/* Existing projects list */}
         {projectList.length > 0 && (
-          <div style={{ marginTop: '24px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
-            <label style={{ ...labelStyle, marginBottom: '8px' }}>已有项目 ({projectList.length})</label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '180px', overflowY: 'auto' }}>
+          <div className="dlg-section">
+            <label className="form-label up" style={{ marginBottom: 8 }}>已有项目 ({projectList.length})</label>
+            <div className="project-list">
               {projectList.map((p) => (
-                <div
-                  key={p.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '6px 8px',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                    transition: 'background 0.1s',
-                  }}
-                  onMouseOver={(e) => { e.currentTarget.style.background = 'var(--bg3)'; }}
-                  onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                >
+                <div key={p.id} className="project-item">
                   <div
-                    style={{ flex: 1, cursor: 'pointer', minWidth: 0 }}
+                    className="project-item-body"
                     onClick={() => handleSelectProject(p)}
                     title={`${p.serverUrl} → ${p.workdir}`}
                   >
-                    <div style={{ fontWeight: '500', color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {p.label}
-                    </div>
-                    <div style={{ color: 'var(--text3)', fontSize: '10px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <div className="project-item-title">{p.label}</div>
+                    <div className="project-item-sub">
                       {shortUrl(p.serverUrl)} {p.workdir ? `→ ${p.workdir.split('/').filter(Boolean).pop()}` : ''}
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: '4px', flexShrink: 0, marginLeft: '8px' }}>
-                    <button
-                      onClick={() => handleEdit(p)}
-                      title="编辑"
-                      style={{
-                        background: 'transparent', border: 'none', color: 'var(--text3)',
-                        cursor: 'pointer', fontSize: '12px', padding: '2px 4px',
-                      }}
-                    >✎</button>
-                    <button
-                      onClick={() => handleDelete(p.id)}
-                      title="删除"
-                      style={{
-                        background: 'transparent', border: 'none', color: 'var(--text3)',
-                        cursor: 'pointer', fontSize: '12px', padding: '2px 4px',
-                      }}
-                    >🗑</button>
+                  <div className="project-item-actions">
+                    <button className="task-icon-btn" style={{ fontSize: 12 }} onClick={() => handleEdit(p)} title="编辑">✎</button>
+                    <button className="task-icon-btn" style={{ fontSize: 12 }} onClick={() => handleDelete(p.id)} title="删除">🗑</button>
                   </div>
                 </div>
               ))}

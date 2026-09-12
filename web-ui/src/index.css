@@ -787,3 +787,46 @@ pre code { background: none; border: none; padding: 0; }
 .file-path { flex: 1; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11px; color: var(--text); word-break: break-all; }
 .file-size { flex-shrink: 0; font-size: 10px; color: var(--text3); }
 .empty-line { padding-top: 40px; text-align: center; font-size: 13px; color: var(--text3); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Settings panel
+   ═══════════════════════════════════════════════════════════════ */
+.settings-desktop { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; padding: 12px 16px; border-radius: 10px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+.settings-desktop .ttl { font-size: 13px; font-weight: 600; color: #fff; }
+.settings-desktop .sub { margin-top: 2px; font-size: 11px; color: rgba(255,255,255,.8); }
+.settings-group { margin-bottom: 24px; }
+.settings-group-title { margin: 0 0 12px; font-size: 11px; font-weight: 700; color: var(--text3); text-transform: uppercase; letter-spacing: .08em; }
+.settings-box { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); }
+.settings-label { display: block; margin-bottom: 5px; font-size: 12px; font-weight: 600; color: var(--text2); }
+.field-lg { width: 100%; padding: 9px 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; }
+.field-select { width: 100%; padding: 9px 30px 9px 12px; font-family: inherit; cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239499b0' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
+.check-row { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.check-box { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+.settings-actions { display: flex; gap: 10px; margin-top: 8px; }
+.btn-save { flex: 2; padding: 10px; border-radius: 8px; font-size: 13px; font-weight: 600; color: #fff; background: var(--accent); transition: background .2s; }
+.btn-save.saved { background: var(--green); }
+.btn-reset { flex: 1; padding: 10px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--red); background: var(--red-dim); border: 1px solid rgba(239,68,68,.3); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Project dialog
+   ═══════════════════════════════════════════════════════════════ */
+.overlay-center { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.55); }
+.dlg-card { width: 480px; max-width: 95vw; max-height: 85vh; overflow-y: auto; padding: 24px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--border); box-shadow: 0 8px 32px rgba(0,0,0,.4); }
+.dlg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.dlg-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.dlg-close { padding: 2px 6px; background: transparent; border: none; color: var(--text3); font-size: 18px; cursor: pointer; }
+.dlg-form { display: flex; flex-direction: column; gap: 12px; }
+.form-label.up { text-transform: uppercase; letter-spacing: .05em; font-size: 11px; font-weight: 600; color: var(--text3); }
+.check-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); cursor: pointer; }
+.check-stack { display: flex; flex-direction: column; gap: 6px; }
+.dlg-actions.end { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.project-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.project-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: 6px; font-size: 12px; transition: background .1s; }
+.project-item:hover { background: var(--bg3); }
+.project-item-body { flex: 1; min-width: 0; cursor: pointer; }
+.project-item-title { font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-item-sub { font-size: 10px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-item-actions { display: flex; gap: 4px; flex-shrink: 0; margin-left: 8px; }
+.btn-dlg { padding: 8px 16px; border-radius: 6px; font-size: 13px; border: 1px solid var(--border); background: transparent; color: var(--text2); }
+.btn-dlg.primary { border: none; background: var(--accent); color: #fff; font-weight: 500; }
+.dlg-section { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
