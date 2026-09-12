@@ -42,7 +42,7 @@ impl CommandMeta {
 /// All slash commands, in display order.
 ///
 /// Keep entries grouped logically: conversation → session → models/mode →
-/// workspace/nodes → sandbox → misc.
+/// workspace → sandbox → misc.
 pub const ALL_COMMANDS: &[CommandMeta] = &[
     // ── Conversation ─────────────────────────────────────────────────────────
     CommandMeta::new("/help",    "",                           "Show this help message"),
@@ -64,8 +64,7 @@ pub const ALL_COMMANDS: &[CommandMeta] = &[
     CommandMeta::new("/plan",     "<task>|run|show|clear",     "Explore & plan, then execute"),
     // ── Plugins ──────────────────────────────────────────────────────────────
     CommandMeta::new("/plugin",   "[list|enable|disable|info|tools|skills]", "Manage plugins"),
-    // ── Remote nodes ─────────────────────────────────────────────────────────
-    CommandMeta::new("/nodes",    "",                          "Probe remote agent nodes (workspaces.toml [[peer]])"),
+
     // ── Sandbox ──────────────────────────────────────────────────────────────
     CommandMeta::new("/changes",  "",                          "Show sandbox-tracked file changes"),
     CommandMeta::new("/rollback", "",                          "Undo all sandbox changes"),

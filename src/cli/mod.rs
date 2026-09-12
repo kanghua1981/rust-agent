@@ -734,16 +734,6 @@ pub async fn run(
                         handle_plan_command(input, &mut agent).await;
                         continue;
                     }
-                    // /nodes probes all peers in global.db, prints status
-                    if input == "/nodes" {
-                        let db = crate::db::GlobalDb::open_or_create().ok();
-                        let peers: Vec<crate::workspaces::PeerEntry> = db.as_ref()
-                            .map(|d| crate::workspaces::load_peers_from_db(d))
-                            .unwrap_or_default();
-                        let cluster_tok = crate::workspaces::cluster_token_from_env();
-                        handle_nodes_command(&peers, cluster_tok).await;
-                        continue;
-                    }
                     // Sandbox commands need async
                     if input == "/rollback" {
                         handle_rollback_command(&mut agent).await;

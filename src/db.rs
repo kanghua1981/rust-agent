@@ -11,16 +11,13 @@
 //! ```ignore
 //! let db = GlobalDb::open_or_create()?;
 
-pub mod models;
 pub mod migration;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use rusqlite::{Connection, params};
-
-pub use models::*;
+use rusqlite::Connection;
 
 /// Handle to the global database.
 ///
@@ -76,134 +73,12 @@ impl GlobalDb {
     }
 
     // ── Node CRUD (server-managed workspaces) ───────────────────────────
-
-    pub fn list_nodes(&self) -> rusqlite::Result<Vec<Node>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, workdir, description, isolation,
-                    sandbox, exec_mode, tags, created_at, updated_at
-             FROM nodes ORDER BY name"
-        )?;
-        let rows: Vec<Node> = stmt.query_map([], |row| {
-            let tags_str: String = row.get(7)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            Ok(Node {
-                id:          row.get(0)?,
-                name:        row.get(1)?,
-                workdir:     row.get(2)?,
-                description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                isolation:   row.get(4)?,
-                sandbox:     row.get::<_, i32>(5)? != 0,
-                exec_mode:   row.get(6)?,
-                tags,
-                created_at:  row.get(8)?,
-                updated_at:  row.get(9)?,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn save_node(&self, node: &Node) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let tags_json = serde_json::to_string(&node.tags).unwrap_or_default();
-        with_retry(|| {
-            conn.execute(
-                "INSERT INTO nodes (id, name, workdir, description, isolation,
-                 sandbox, exec_mode, tags, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                 ON CONFLICT(id) DO UPDATE SET
-                    name = excluded.name,
-                    workdir = excluded.workdir,
-                    description = excluded.description,
-                    isolation = excluded.isolation,
-                    sandbox = excluded.sandbox,
-                    exec_mode = excluded.exec_mode,
-                    tags = excluded.tags,
-                    updated_at = excluded.updated_at",
-                params![
-                    node.id, node.name, node.workdir, node.description,
-                    node.isolation, node.sandbox as i32, node.exec_mode,
-                    tags_json, node.created_at, node.updated_at
-                ],
-            )
-        })?;
-        Ok(())
-    }
-
-    pub fn delete_node(&self, id: &str) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        with_retry(|| conn.execute("DELETE FROM nodes WHERE id = ?1", params![id]))?;
-        Ok(())
-    }
-
-    // ── Peer CRUD (remote agent servers for discovery) ─────────────────
-
-    pub fn list_peers(&self) -> rusqlite::Result<Vec<Peer>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, url, token, tags, enabled, created_at, updated_at
-             FROM peers ORDER BY name"
-        )?;
-        let rows: Vec<Peer> = stmt.query_map([], |row| {
-            let tags_str: String = row.get(4)?;
-            Ok(Peer {
-                id:         row.get(0)?,
-                name:       row.get(1)?,
-                url:        row.get(2)?,
-                token:      row.get(3)?,
-                tags:       serde_json::from_str(&tags_str).unwrap_or_default(),
-                enabled:    row.get::<_, i32>(5)? != 0,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// List only enabled peers (used by probe loop).
-    pub fn list_enabled_peers(&self) -> rusqlite::Result<Vec<Peer>> {
-        let all = self.list_peers()?;
-        Ok(all.into_iter().filter(|p| p.enabled).collect())
-    }
-
-    pub fn save_peer(&self, peer: &Peer) -> rusqlite::Result<()> {
-        let tags_json = serde_json::to_string(&peer.tags).unwrap_or_default();
-        let conn = self.conn.lock().unwrap();
-        with_retry(|| {
-            conn.execute(
-                "INSERT INTO peers (id, name, url, token, tags, enabled, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(id) DO UPDATE SET
-                     name=?2, url=?3, token=?4, tags=?5, enabled=?6, updated_at=?8",
-                params![
-                    peer.id,
-                    peer.name,
-                    peer.url,
-                    peer.token,
-                    tags_json,
-                    peer.enabled as i32,
-                    peer.created_at,
-                    peer.updated_at,
-                ],
-            )
-        })?;
-        Ok(())
-    }
-
-    pub fn delete_peer(&self, id: &str) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        with_retry(|| conn.execute("DELETE FROM peers WHERE id = ?1", params![id]))?;
-        Ok(())
-    }
-
-    // ── Preferences ───────────────────────────────────────────────────
-
     #[cfg(test)]
     pub fn get_pref(&self, key: &str) -> rusqlite::Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(
             "SELECT value FROM user_preferences WHERE key = ?1",
-            params![key],
+            rusqlite::params![key],
             |row| row.get(0),
         ) {
             Ok(v) => Ok(Some(v)),
@@ -221,7 +96,7 @@ impl GlobalDb {
                  VALUES (?1, ?2, datetime('now'))
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value,
                      updated_at=datetime('now')",
-                params![key, value],
+                rusqlite::params![key, value],
             )
         })?;
         Ok(())

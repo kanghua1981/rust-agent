@@ -29,11 +29,9 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::agent::Agent;
 use crate::config::Config;
 use crate::container::IsolationMode;
-use crate::db::GlobalDb;
 use crate::output::{WsCommand, WsOutput};
 use crate::pty::PtyHandle;
 use crate::sandbox::Sandbox;
-use crate::workspaces;
 
 // ═══════════════════════════════════════════════════════════════════
 //  Extra bind-mount descriptor
@@ -79,9 +77,8 @@ pub async fn run(
     isolation: IsolationMode,
     _worker_id: &str,
     _extra_binds: Vec<BindMount>,
-    global_db: Arc<GlobalDb>,
 ) -> Result<()> {
-    run_async(config, project_dir, isolation, fd, global_db).await
+    run_async(config, project_dir, isolation, fd).await
 }
 
 
@@ -94,7 +91,6 @@ async fn run_async(
     project_dir: PathBuf,
     isolation: IsolationMode,
     fd: i32,
-    global_db: Arc<GlobalDb>,
 ) -> Result<()> {
     // Reconstruct TcpStream from the raw fd inherited from the server process.
     let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
@@ -295,7 +291,6 @@ async fn run_async(
                         &shared_workdir_reader,
                         &shared_mode_reader,
                         &ctrl_tx_reader,
-                        &global_db,
                         &shared_project_dir_reader,
                         &pty_handle_reader,
                     ).await;
@@ -310,12 +305,7 @@ async fn run_async(
         // Dropping user_tx signals the agent loop to exit.
     });
 
-    // Send ready event — include workdir, sandbox, hardware caps and virtual nodes
-    // so remote managers (call_node) can make informed routing decisions.
-    // Use pre-passed workspaces (from server via --workspaces-json) if available;
-    // fall back to collecting from plugin system (CLI/direct worker invocations).
-    // 注意：worker 中的 PluginManager 仅用于读取配置，enable/disable 操作
-    let (node_caps, virtual_nodes) = workspaces::probe_capabilities();
+    // Send ready event — workdir, sandbox state and model selection.
 
     // ── Auto-restore local session (same as CLI mode) ─────────────────
     // Worker mode: resolve which named session to load, then auto-restore
@@ -379,8 +369,6 @@ async fn run_async(
         // legacy field for older clients
         "sandbox": isolation == IsolationMode::Sandbox,
         "sandbox_backend": agent.sandbox.backend_label_sync(),
-        "caps": node_caps,
-        "virtual_nodes": virtual_nodes,
         "available_models": available_models,
         "active_model": agent.config.model_alias,
     }));

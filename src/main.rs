@@ -29,7 +29,6 @@ mod security;
 mod server;
 mod ui;
 mod worker;
-mod workspaces;
 
 use std::sync::Arc;
 
@@ -220,9 +219,10 @@ async fn main() -> Result<()> {
     // Load config
     let config = config::Config::load(&args)?;
 
-    // Initialize global database (presets, workflows, execution history)
-    let global_db = std::sync::Arc::new(db::GlobalDb::open_or_create()?);
-    tracing::info!("Global DB ready: {}", global_db.path().display());
+    // Open the global database. Nothing reads it at runtime yet, but opening
+    // it applies any pending schema migrations.
+    let _global_db = std::sync::Arc::new(db::GlobalDb::open_or_create()?);
+    tracing::info!("Global DB ready: {}", _global_db.path().display());
 
     // Determine project directory
     let project_dir = if let Some(ref workdir) = args.workdir {
@@ -251,7 +251,7 @@ async fn main() -> Result<()> {
         };
         // Nodes are loaded from global.db by the worker — no need to pass
         // a serialized workspace list.
-        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![], global_db).await;
+        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![]).await;
     }
 
     // Server mode has its own event loop — launch and return
@@ -262,7 +262,7 @@ async fn main() -> Result<()> {
             let _ = pm.load_all_plugins();
             pm.collect_channels()
         };
-        return server::run(config, project_dir, &args.host, args.port, args.isolation, channel_configs, global_db).await;
+        return server::run(config, project_dir, &args.host, args.port, args.isolation, channel_configs).await;
     }
 
     // MCP server mode: expose tools as a JSON-RPC 2.0 MCP tool server over stdio.

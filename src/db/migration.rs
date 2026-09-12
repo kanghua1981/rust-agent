@@ -45,6 +45,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "drop_presets",
         sql: include_str!("../../sql/migrations/006_drop_presets.sql"),
     },
+    Migration {
+        version: 7,
+        name: "drop_nodes_peers",
+        sql: include_str!("../../sql/migrations/007_drop_nodes_peers.sql"),
+    },
 ];
 
 /// Run any pending migrations on `conn`.
