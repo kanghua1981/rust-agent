@@ -7,9 +7,6 @@ pub struct RunCommandTool;
 
 #[async_trait::async_trait]
 impl Tool for RunCommandTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Shell)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

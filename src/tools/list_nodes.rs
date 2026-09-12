@@ -22,9 +22,6 @@ pub struct ListNodesTool;
 
 #[async_trait]
 impl Tool for ListNodesTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::AgentComms)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

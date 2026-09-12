@@ -41,94 +41,6 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value,
 }
 
-/// Toolset categories for grouping tools into logical families.
-///
-/// Used by the role system (planner/executor/checker) and for
-/// runtime enable/disable of tool groups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Toolset {
-    FileRead,
-    FileWrite,
-    Search,
-    Shell,
-    AgentComms,
-    Memory,
-    Browser,
-    Skill,
-    Think,
-    UploadImage,
-}
-
-impl Toolset {
-    /// Human-readable label for display and configuration.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Toolset::FileRead => "file_read",
-            Toolset::FileWrite => "file_write",
-            Toolset::Search => "search",
-            Toolset::Shell => "shell",
-            Toolset::AgentComms => "agent_comms",
-            Toolset::Memory => "memory",
-            Toolset::Browser => "browser",
-            Toolset::Skill => "skill",
-            Toolset::Think => "think",
-            Toolset::UploadImage => "upload_image",
-        }
-    }
-
-    /// Parse from a label string.
-    pub fn from_label(s: &str) -> Option<Self> {
-        match s {
-            "file_read" => Some(Toolset::FileRead),
-            "file_write" => Some(Toolset::FileWrite),
-            "search" => Some(Toolset::Search),
-            "shell" => Some(Toolset::Shell),
-            "agent_comms" => Some(Toolset::AgentComms),
-            "memory" => Some(Toolset::Memory),
-            "browser" => Some(Toolset::Browser),
-            "skill" => Some(Toolset::Skill),
-            "think" => Some(Toolset::Think),
-            "upload_image" => Some(Toolset::UploadImage),
-            _ => None,
-        }
-    }
-
-    /// Default toolsets for a planner role (explore, understand, plan).
-    pub fn planner_toolsets() -> Vec<Toolset> {
-        vec![
-            Toolset::FileRead,
-            Toolset::Search,
-            Toolset::Think,
-            Toolset::Skill,
-            Toolset::Memory,
-        ]
-    }
-
-    /// Default toolsets for an executor role (modify, build, run).
-    pub fn executor_toolsets() -> Vec<Toolset> {
-        vec![
-            Toolset::FileRead,
-            Toolset::FileWrite,
-            Toolset::Search,
-            Toolset::Shell,
-            Toolset::Browser,
-            Toolset::Think,
-            Toolset::Skill,
-            Toolset::Memory,
-        ]
-    }
-
-    /// Default toolsets for a checker role (verify, test, review).
-    pub fn checker_toolsets() -> Vec<Toolset> {
-        vec![
-            Toolset::FileRead,
-            Toolset::Search,
-            Toolset::Shell,
-            Toolset::Think,
-        ]
-    }
-}
-
 /// Result of executing a tool
 #[derive(Debug, Clone)]
 pub struct ToolResult {
@@ -174,13 +86,6 @@ pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult;
 
-    /// Which toolset this tool belongs to.  Used for role-based filtering.
-    /// Default returns `None`; implement for built-in tools to enable
-    /// toolset-based grouping.
-    fn toolset(&self) -> Option<Toolset> {
-        None
-    }
-    
     /// Execute with path manager (optional, for tools that need advanced path handling)
     async fn execute_with_path_manager(
         &self, 
@@ -410,42 +315,6 @@ impl ToolExecutor {
             .map(|t| t.definition())
             .filter(|d| READONLY_TOOLS.contains(&d.name.as_str()))
             .collect()
-    }
-
-    /// Get tool definitions filtered by a set of toolsets.
-    ///
-    /// Useful for role-based tool restriction: planner gets file_read+search+think,
-    /// executor gets file_write+shell+browser, etc.
-    pub fn definitions_for_toolsets(&self, toolsets: &[Toolset]) -> Vec<ToolDefinition> {
-        self.tools
-            .values()
-            .filter(|t| {
-                t.toolset()
-                    .map(|ts| toolsets.contains(&ts))
-                    .unwrap_or(true) // Tools without a toolset tag are always included
-            })
-            .map(|t| t.definition())
-            .collect()
-    }
-
-    /// Check whether a tool name belongs to a specific toolset.
-    pub fn tool_in_toolset(&self, tool_name: &str, toolset: Toolset) -> bool {
-        self.tools
-            .get(tool_name)
-            .and_then(|t| t.toolset())
-            .map(|ts| ts == toolset)
-            .unwrap_or(false)
-    }
-
-    /// Get all active toolsets (those with at least one registered tool).
-    pub fn active_toolsets(&self) -> Vec<Toolset> {
-        let mut sets: Vec<Toolset> = self.tools
-            .values()
-            .filter_map(|t| t.toolset())
-            .collect();
-        sets.sort_by_key(|s| s.label());
-        sets.dedup();
-        sets
     }
 
     /// Execute a tool by name.

@@ -9,9 +9,6 @@ pub struct BatchReadFilesTool;
 
 #[async_trait::async_trait]
 impl Tool for BatchReadFilesTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::FileRead)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

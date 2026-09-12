@@ -738,9 +738,6 @@ impl BrowserTool {
 
 #[async_trait::async_trait]
 impl Tool for BrowserTool {
-    fn toolset(&self) -> Option<crate::tools::Toolset> {
-        Some(crate::tools::Toolset::Browser)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

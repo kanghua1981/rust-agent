@@ -18,9 +18,6 @@ pub struct ListDirTool;
 
 #[async_trait::async_trait]
 impl Tool for ListDirTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Search)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

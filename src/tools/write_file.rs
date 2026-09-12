@@ -6,9 +6,6 @@ pub struct WriteFileTool;
 
 #[async_trait::async_trait]
 impl Tool for WriteFileTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::FileWrite)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

@@ -6,9 +6,6 @@ pub struct EditFileTool;
 
 #[async_trait::async_trait]
 impl Tool for EditFileTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::FileWrite)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

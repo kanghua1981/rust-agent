@@ -180,9 +180,6 @@ pub struct TodoWriteTool;
 
 #[async_trait::async_trait]
 impl Tool for TodoWriteTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Memory)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -282,9 +279,6 @@ pub struct TodoUpdateTool;
 
 #[async_trait::async_trait]
 impl Tool for TodoUpdateTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Memory)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -375,9 +369,6 @@ pub struct TodoReadTool;
 
 #[async_trait::async_trait]
 impl Tool for TodoReadTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Memory)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

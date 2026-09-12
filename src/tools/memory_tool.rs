@@ -167,9 +167,6 @@ impl MemoryTool {
 
 #[async_trait::async_trait]
 impl Tool for MemoryTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Memory)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

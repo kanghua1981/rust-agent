@@ -12,9 +12,6 @@ pub struct ThinkTool;
 
 #[async_trait::async_trait]
 impl Tool for ThinkTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Think)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

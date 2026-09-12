@@ -11,9 +11,6 @@ pub struct FileSearchTool;
 
 #[async_trait::async_trait]
 impl Tool for GrepSearchTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Search)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -197,9 +194,6 @@ impl GrepSearchTool {
 
 #[async_trait::async_trait]
 impl Tool for FileSearchTool {
-    fn toolset(&self) -> Option<super::Toolset> {
-        Some(super::Toolset::Search)
-    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
