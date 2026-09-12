@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildFileUrl, isLocalServer, canOpenLocally } from './fileTransfer';
+import { buildFileUrl, isLocalServer, localOpenAvailability } from './fileTransfer';
 
 const setTauri = (present: boolean) => {
   if (present) (globalThis as any).__TAURI__ = { core: { invoke: () => Promise.resolve() } };
@@ -24,16 +24,24 @@ describe('fileTransfer', () => {
     expect(isLocalServer('ws://10.0.0.5:9527')).toBe(false);
   });
 
-  it('only opens locally on the same filesystem with no container in between', () => {
+  it('hides the local open in a browser, since nothing can make it work', () => {
+    expect(localOpenAvailability('ws://localhost:9527', 'normal')).toEqual({ kind: 'unsupported' });
+  });
+
+  it('explains why a local open is blocked when the cause is fixable', () => {
     setTauri(true);
-    expect(canOpenLocally('ws://localhost:9527', 'normal')).toBe(true);
-    // Container/sandbox paths are the server's, not the desktop's.
-    expect(canOpenLocally('ws://localhost:9527', 'container')).toBe(false);
-    expect(canOpenLocally('ws://localhost:9527', 'sandbox')).toBe(false);
-    // A remote server's path does not exist locally.
-    expect(canOpenLocally('ws://10.0.0.5:9527', 'normal')).toBe(false);
-    // Without Tauri there is no local filesystem to open.
-    setTauri(false);
-    expect(canOpenLocally('ws://localhost:9527', 'normal')).toBe(false);
+    expect(localOpenAvailability('ws://localhost:9527', 'normal')).toEqual({ kind: 'available' });
+
+    // A remote server's path does not exist on this machine.
+    const remote = localOpenAvailability('ws://10.0.0.5:9527', 'normal');
+    expect(remote.kind).toBe('blocked');
+    expect(remote.kind === 'blocked' ? remote.reason : '').toContain('远端');
+
+    // Container/sandbox paths belong to the server, not to the desktop.
+    for (const mode of ['container', 'sandbox'] as const) {
+      const blocked = localOpenAvailability('ws://localhost:9527', mode);
+      expect(blocked.kind).toBe('blocked');
+      expect(blocked.kind === 'blocked' ? blocked.reason : '').toContain('隔离');
+    }
   });
 });

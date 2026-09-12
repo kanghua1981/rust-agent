@@ -376,7 +376,8 @@ pre code { background: none; border: none; padding: 0; }
 .select-sm { padding: 4px 8px; min-width: 100px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--text); font-size: 11px; cursor: pointer; appearance: none; }
 .select-sm:hover { background: var(--surface); }
 .btn-ghost { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--text2); font-size: 11px; transition: background .15s, color .15s; }
-.btn-ghost:hover { background: var(--surface); color: var(--text); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+.btn-ghost:disabled { opacity: .45; cursor: not-allowed; }
 .btn-danger { padding: 5px 14px; border-radius: 7px; font-size: 13px; font-weight: 500; color: var(--red); background: var(--red-dim); border: 1px solid rgba(239,68,68,.3); transition: opacity .15s; }
 .btn-danger:hover { opacity: .85; }
 
@@ -952,6 +953,7 @@ pre code { background: none; border: none; padding: 0; }
 .file-view-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-view-size { flex-shrink: 0; font-size: 10px; color: var(--text3); font-family: 'JetBrains Mono', 'Fira Code', monospace; }
 .file-view-actions { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; padding: 8px 12px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.file-view-hint { margin-top: -1px; padding: 6px 12px 8px; font-size: 11px; color: var(--text3); background: var(--bg2); border-bottom: 1px solid var(--border); }
 .file-view-body { flex: 1; min-height: 0; overflow: auto; }
 .file-view-pre { margin: 0; padding: 12px 14px; border: none; border-radius: 0; background: var(--bg); font-size: 12px; line-height: 1.55; white-space: pre; }
 .file-view-note { padding: 10px 14px; font-size: 12px; color: var(--text3); }

@@ -4,7 +4,7 @@ import { ChangesList } from './ChangesList';
 import { TaskPanel } from './TaskPanel';
 import { TerminalView } from './Terminal';
 import { FileViewer } from './FileViewer';
-import { canOpenLocally } from '../utils/fileTransfer';
+import { localOpenAvailability } from '../utils/fileTransfer';
 import { useTaskStore } from '../stores/taskStore';
 import { useAgentStore } from '../stores/agentStore';
 import { useResizable } from '../hooks/useResizable';
@@ -172,7 +172,7 @@ export const RightPanel: React.FC<Props> = ({
           {active === 'file' && openFile && (
             <FileViewer
               file={openFile}
-              canOpenLocally={canOpenLocally(serverUrl, config.isolation)}
+              localOpen={localOpenAvailability(serverUrl, config.isolation)}
               onOpenOnServer={onOpenOnServer}
               onOpenLocally={onOpenLocally}
               onDownload={onDownload}

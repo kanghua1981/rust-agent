@@ -1,10 +1,11 @@
 import React from 'react';
 import type { OpenFileState } from '../types/agent';
+import type { LocalOpenAvailability } from '../utils/fileTransfer';
 
 interface Props {
   file: OpenFileState;
-  /** Whether "open with a local program" is valid here (see canOpenLocally). */
-  canOpenLocally: boolean;
+  /** Whether "open with a local program" is possible here, and why not if it is not. */
+  localOpen: LocalOpenAvailability;
   onOpenOnServer: (path: string) => void;
   onOpenLocally: (path: string) => void;
   onDownload: (path: string) => void;
@@ -27,7 +28,7 @@ function formatSize(bytes?: number): string {
  * the two external actions are offered as extras rather than as the default.
  */
 export const FileViewer: React.FC<Props> = ({
-  file, canOpenLocally, onOpenOnServer, onOpenLocally, onDownload, onClose,
+  file, localOpen, onOpenOnServer, onOpenLocally, onDownload, onClose,
 }) => {
   const name = file.path.split(/[\\/]/).filter(Boolean).pop() || file.path;
   const content = file.content ?? '';
@@ -44,10 +45,18 @@ export const FileViewer: React.FC<Props> = ({
       <div className="file-view-actions">
         <button className="btn-ghost" onClick={() => onDownload(file.path)} title="下载到本地">⬇ 下载</button>
         <button className="btn-ghost" onClick={() => onOpenOnServer(file.path)} title="让服务器用它自己的编辑器打开">🖥 服务器打开</button>
-        {canOpenLocally && (
-          <button className="btn-ghost" onClick={() => onOpenLocally(file.path)} title="用本机默认程序打开,编辑原地生效">✎ 本机打开</button>
+        {/* Hidden only when the runtime can never do it (a browser has no local
+            filesystem access); shown disabled when the cause is fixable. */}
+        {localOpen.kind !== 'unsupported' && (
+          <button
+            className="btn-ghost"
+            disabled={localOpen.kind === 'blocked'}
+            onClick={() => { if (localOpen.kind === 'available') onOpenLocally(file.path); }}
+            title="用本机默认程序打开,编辑原地生效"
+          >✎ 本机打开</button>
         )}
       </div>
+      {localOpen.kind === 'blocked' && <div className="file-view-hint">{localOpen.reason}</div>}
 
       <div className="file-view-body">
         {file.loading ? (
