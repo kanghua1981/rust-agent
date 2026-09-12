@@ -6,14 +6,12 @@ import type { TokenUsage } from '../types/agent';
 
 // ── Tauri frameless window helpers ───────────────────────────────────
 // Only functional inside a Tauri desktop app; silently ignored in browsers.
-// Uses Tauri v2 IPC internals directly to avoid bundler module resolution.
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 async function tauriWindowAction(action: 'minimize' | 'toggleMaximize' | 'close') {
   try {
     const internals = (window as any).__TAURI_INTERNALS__;
     if (!internals) return;
-    // Tauri v2 window IPC requires a label — default is 'main' if not set in tauri.conf.json
     const label = internals.metadata?.currentWindow?.label ?? 'main';
     const cmd: Record<string, string> = {
       minimize: 'plugin:window|minimize',
@@ -49,7 +47,6 @@ interface SlotSnapshot {
   tokenUsage: TokenUsage | null;
 }
 
-// Fallback for missing/invalid slot — same pattern as ChatArea
 const emptySlot: SlotSnapshot = {
   connectionStatus: 'disconnected',
   serverUrl: '',
@@ -66,14 +63,13 @@ const emptySlot: SlotSnapshot = {
   tokenUsage: null,
 };
 
-const statusConfig = {
+const statusConfig: Record<string, { color: string; label: string; dot: string }> = {
   disconnected: { color: '#6b7280', label: '未连接', dot: '#374151' },
   connecting:   { color: '#f59e0b', label: '连接中…', dot: '#f59e0b' },
   connected:    { color: '#10b981', label: '已连接',  dot: '#10b981' },
   error:        { color: '#ef4444', label: '连接错误', dot: '#ef4444' },
 };
 
-// macOS-style window control button styles
 function winCtrlBtnStyle(color: string): React.CSSProperties {
   return {
     width: '13px', height: '13px',
@@ -91,13 +87,12 @@ function winCtrlBtnStyle(color: string): React.CSSProperties {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
-  // ── Tauri window control callbacks (stable refs) ──────────────────
   const winMinimize = useCallback(() => { tauriWindowAction('minimize'); }, []);
   const winToggleMax = useCallback(() => { tauriWindowAction('toggleMaximize'); }, []);
   const winClose = useCallback(() => { tauriWindowAction('close'); }, []);
-  // ✅  Read directly from the ACTIVE slot (same pattern as ChatArea).
-  //     No flat-proxy subscriptions → immune to setActiveConnection swaps
-  //     during inactive-tab event processing.
+
+  // Read directly from the ACTIVE slot (same pattern as ChatArea): immune to
+  // setActiveConnection swaps during inactive-tab event processing.
   const slot = useAgentStore(
     useShallow((s) => {
       const id = activeProjectId;
@@ -121,342 +116,114 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
     })
   );
 
-  // agentMode is now per-slot — read from active slot (above)
-  // isolation is still global config
   const isolation = useAgentStore(s => s.config.isolation) ?? 'container';
 
   const {
     connectionStatus, serverUrl, workdir, isProcessing,
-    sandboxBackend, pendingChanges,
-    msgCount, toolCallCount, pendingConfCount,
+    pendingChanges, msgCount, toolCallCount, pendingConfCount,
     availableModels, activeModel, agentMode, tokenUsage,
   } = slot;
 
-  const cfg = statusConfig[connectionStatus as keyof typeof statusConfig] ?? statusConfig.disconnected;
+  const cfg = statusConfig[connectionStatus] ?? statusConfig.disconnected;
+  const connected = connectionStatus === 'connected';
 
   return (
     <header
       data-tauri-drag-region={isTauri ? '' : undefined}
-      style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      padding: isTauri ? '0 6px 0 20px' : '0 20px',
-      height: '52px',
-      background: 'var(--bg2)',
-      borderBottom: '1px solid var(--border)',
-      flexShrink: 0,
-      gap: '16px',
-      userSelect: isTauri ? 'none' : undefined,
-    }}>
+      className={`header${isTauri ? ' tauri' : ''}`}
+    >
       {/* Logo + title — Tauri drag region */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', WebkitAppRegion: isTauri ? 'drag' : undefined } as React.CSSProperties}>
-        <div style={{
-          width: '28px', height: '28px',
-          background: 'linear-gradient(135deg, var(--accent), #8b5cf6)',
-          borderRadius: '7px',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '14px', flexShrink: 0,
-        }}>🤖</div>
-        <span style={{ fontWeight: '600', color: 'var(--text)', fontSize: '15px', letterSpacing: '-0.3px' }}>
-          Rust Agent
-        </span>
+      <div className="header-brand" style={{ WebkitAppRegion: isTauri ? 'drag' : undefined } as React.CSSProperties}>
+        <div className="header-logo">🤖</div>
+        <span className="header-title">Rust Agent</span>
       </div>
 
       {/* Status pill - clickable to open connection modal */}
-      <button
-        onClick={onOpenConnect}
-        style={{
-          display: 'flex', alignItems: 'center', gap: '6px',
-          padding: '4px 10px',
-          background: 'var(--bg3)',
-          border: '1px solid var(--border)',
-          borderRadius: '20px',
-          flexShrink: 0,
-          cursor: 'pointer',
-          transition: 'all 0.15s',
-        }}
-        onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg4)'}
-        onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg3)'}
-      >
-        <span style={{
-          width: '7px', height: '7px', borderRadius: '50%',
+      <button className="status-pill" onClick={onOpenConnect}>
+        <span className="dot" style={{
           background: cfg.dot,
-          boxShadow: connectionStatus === 'connected' ? `0 0 6px ${cfg.dot}` : 'none',
-          display: 'inline-block',
-          flexShrink: 0,
+          boxShadow: connected ? `0 0 6px ${cfg.dot}` : 'none',
         }} />
-        <span style={{ fontSize: '12px', color: cfg.color, fontWeight: '500' }}>{cfg.label}</span>
-        {isProcessing && <span className="spin" style={{ fontSize: '11px', color: 'var(--accent)' }}>⟳</span>}
+        <span className="lbl" style={{ color: cfg.color }}>{cfg.label}</span>
+        {isProcessing && <span className="spin" style={{ fontSize: 11, color: 'var(--accent)' }}>⟳</span>}
       </button>
 
       {/* Center: server info */}
-      {connectionStatus === 'connected' && (
-        <div style={{
-          flex: 1, display: 'flex', alignItems: 'center', gap: '12px',
-          overflow: 'hidden', minWidth: 0,
-        }}>
-          <span className="truncate" style={{ fontSize: '12px', color: 'var(--text3)', fontFamily: 'monospace' }}>
-            {serverUrl}
-          </span>
-          {workdir && (
-            <span className="truncate" style={{ fontSize: '12px', color: 'var(--text2)', fontFamily: 'monospace' }}>
-              📂 {workdir}
-            </span>
-          )}
-          {/* Isolation mode badge */}
+      {connected && (
+        <div className="header-info">
+          <span className="truncate header-mono" style={{ color: 'var(--text3)' }}>{serverUrl}</span>
+          {workdir && <span className="truncate header-mono" style={{ color: 'var(--text2)' }}>📂 {workdir}</span>}
+
           {isolation === 'sandbox' ? (
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: '4px',
-              padding: '2px 8px',
-              background: pendingChanges > 0 ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.12)',
-              border: `1px solid ${pendingChanges > 0 ? 'rgba(245,158,11,0.4)' : 'rgba(16,185,129,0.3)'}`,
-              borderRadius: '10px',
-              fontSize: '11px', fontWeight: '500',
-              color: pendingChanges > 0 ? '#f59e0b' : '#10b981',
-              flexShrink: 0,
-            }}>
+            <span className={`chip ${pendingChanges > 0 ? 'warn' : 'ok'}`}>
               🔒 沙盒{pendingChanges > 0 ? ` · ${pendingChanges} 待提交` : ''}
             </span>
           ) : isolation === 'container' ? (
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: '4px',
-              padding: '2px 8px',
-              background: 'rgba(59,130,246,0.12)',
-              border: '1px solid rgba(59,130,246,0.3)',
-              borderRadius: '10px',
-              fontSize: '11px', fontWeight: '500',
-              color: '#3b82f6',
-              flexShrink: 0,
-            }}>
-              🔲 容器
-            </span>
+            <span className="chip info">🔲 容器</span>
           ) : (
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: '4px',
-              padding: '2px 8px',
-              background: 'rgba(107,114,128,0.12)',
-              border: '1px solid rgba(107,114,128,0.3)',
-              borderRadius: '10px',
-              fontSize: '11px', fontWeight: '500',
-              color: '#6b7280',
-              flexShrink: 0,
-            }}>
-              🕑3 无容器
-            </span>
+            <span className="chip muted">🕑 无容器</span>
           )}
         </div>
       )}
 
-      {/* Stats badges - 只在连接状态下显示 */}
-      {connectionStatus === 'connected' && (
-        <div style={{ display: 'flex', gap: '6px', flexShrink: 0, marginLeft: 'auto' }}>
-          {/* 消息数量徽章 */}
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '4px',
-            padding: '2px 8px',
-            background: 'var(--bg3)',
-            border: '1px solid var(--border)',
-            borderRadius: '10px',
-            fontSize: '11px',
-            fontWeight: '500',
-            color: 'var(--text2)',
-            flexShrink: 0,
-          }}>
-            <span>💬</span>
-            <span>{msgCount}</span>
-          </div>
-          
-          {/* 工具调用徽章 */}
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '4px',
-            padding: '2px 8px',
-            background: 'var(--bg3)',
-            border: '1px solid var(--border)',
-            borderRadius: '10px',
-            fontSize: '11px',
-            fontWeight: '500',
-            color: 'var(--text2)',
-            flexShrink: 0,
-          }}>
-            <span>🔨</span>
-            <span>{toolCallCount}</span>
-          </div>
-
-          {/* Token 用量徽章 */}
+      {/* Stats badges */}
+      {connected && (
+        <div className="row" style={{ gap: 6, flexShrink: 0, marginLeft: 'auto' }}>
+          <div className="chip neutral"><span>💬</span><span>{msgCount}</span></div>
+          <div className="chip neutral"><span>🔨</span><span>{toolCallCount}</span></div>
           <TokenUsageBadge tokenUsage={tokenUsage} />
-          
-          {/* 待确认徽章（只在有确认时显示） */}
           {pendingConfCount > 0 && (
-            <div style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              padding: '2px 8px',
-              background: 'rgba(245,158,11,0.15)',
-              border: '1px solid rgba(245,158,11,0.4)',
-              borderRadius: '10px',
-              fontSize: '11px',
-              fontWeight: '500',
-              color: '#f59e0b',
-              flexShrink: 0,
-            }}>
-              <span>⏳</span>
-              <span>{pendingConfCount}</span>
-            </div>
+            <div className="chip warn"><span>⏳</span><span>{pendingConfCount}</span></div>
           )}
         </div>
       )}
 
-      {/* 快捷操作工具栏 - 只在连接状态下显示 */}
-      {connectionStatus === 'connected' && (
-        <div style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          gap: '6px', 
-          marginLeft: '12px',
-          flexShrink: 0,
-        }}>
-          
-          {/* 模型选择器 — 仅在有可用模型列表时显示 */}
+      {/* Quick actions */}
+      {connected && (
+        <div className="header-actions">
           {availableModels.length > 0 && (
-            <div style={{ position: 'relative' }}>
-              <select
-                value={activeModel ?? ''}
-                onChange={(e) => {
-                  const alias = e.target.value;
-                  if (alias) onSetModelRemote?.(alias);
-                }}
-                style={{
-                  padding: '4px 8px',
-                  background: 'var(--bg3)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  color: 'var(--text)',
-                  cursor: 'pointer',
-                  appearance: 'none',
-                  minWidth: '100px',
-                }}
-                title="切换模型"
-              >
-                {availableModels.map(m => (
-                  <option key={m.alias} value={m.alias}>
-                    🧠 {m.alias} ({m.provider})
-                  </option>
-                ))}
-              </select>
-            </div>
+            <select
+              className="select-sm"
+              value={activeModel ?? ''}
+              onChange={(e) => { const alias = e.target.value; if (alias) onSetModelRemote?.(alias); }}
+              title="切换模型"
+            >
+              {availableModels.map(m => (
+                <option key={m.alias} value={m.alias}>🧠 {m.alias} ({m.provider})</option>
+              ))}
+            </select>
           )}
 
-          {/* 运行模式快捷切换 */}
-          <div style={{ position: 'relative' }}>
-            <select
-              value={agentMode || 'auto'}
-              onChange={(e) => {
-                const newMode = e.target.value as 'auto' | 'simple' | 'plan';
-                useAgentStore.getState().setAgentMode(newMode);
-              }}
-              style={{
-                padding: '4px 8px',
-                background: 'var(--bg3)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                fontSize: '11px',
-                color: 'var(--text)',
-                cursor: 'pointer',
-                appearance: 'none',
-                minWidth: '100px',
-              }}
-              title="切换运行模式"
-            >
-              <option value="auto">🤖 自动</option>
-              <option value="simple">⚡ 单层</option>
-              <option value="plan">📋 计划</option>
-              
-            </select>
-          </div>
+          <select
+            className="select-sm"
+            value={agentMode || 'auto'}
+            onChange={(e) => useAgentStore.getState().setAgentMode(e.target.value as 'auto' | 'simple' | 'plan')}
+            title="切换运行模式"
+          >
+            <option value="auto">🤖 自动</option>
+            <option value="simple">⚡ 单层</option>
+            <option value="plan">📋 计划</option>
+          </select>
 
-          {/* 清空会话按钮 */}
           <button
+            className="btn-ghost"
             onClick={() => {
-              if (window.confirm('确定要清空当前会话的所有消息吗？此操作不可撤销。')) {
-                onNewSession?.();
-              }
+              if (window.confirm('确定要清空当前会话的所有消息吗？此操作不可撤销。')) onNewSession?.();
             }}
-            style={{
-              padding: '4px 10px',
-              background: 'var(--bg3)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              fontSize: '11px',
-              color: 'var(--text2)',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              transition: 'all 0.15s',
-            }}
-            onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg4)'}
-            onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg3)'}
             title="清空会话 (Ctrl+Shift+C)"
           >
-            <span>🗑️</span>
-            <span>清空</span>
+            <span>🗑️</span><span>清空</span>
           </button>
 
-          {/* 新建会话按钮 */}
-          <button
-            onClick={() => {
-              onNewSession?.();
-            }}
-            style={{
-              padding: '4px 10px',
-              background: 'var(--bg3)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              fontSize: '11px',
-              color: 'var(--text2)',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              transition: 'all 0.15s',
-            }}
-            onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg4)'}
-            onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg3)'}
-            title="新建会话 (Ctrl+Shift+N)"
-          >
-            <span>➕</span>
-            <span>新建</span>
+          <button className="btn-ghost" onClick={() => onNewSession?.()} title="新建会话 (Ctrl+Shift+N)">
+            <span>➕</span><span>新建</span>
           </button>
-
         </div>
       )}
 
-      {/* Disconnect button - only shown when connected */}
-      {connectionStatus === 'connected' && (
-        <button
-          onClick={onDisconnect}
-          style={{
-            padding: '5px 14px',
-            background: 'var(--red-dim)',
-            color: 'var(--red)',
-            borderRadius: '7px',
-            fontWeight: '500',
-            fontSize: '13px',
-            border: '1px solid rgba(239,68,68,0.3)',
-            transition: 'opacity 0.15s',
-          }}
-          onMouseOver={(e) => (e.currentTarget.style.opacity = '0.85')}
-          onMouseOut={(e) => (e.currentTarget.style.opacity = '1')}
-        >
-          断开
-        </button>
+      {/* Disconnect */}
+      {connected && (
+        <button className="btn-danger" onClick={onDisconnect}>断开</button>
       )}
 
       {/* Tauri window controls — macOS-style traffic lights */}
@@ -464,11 +231,12 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
         <div
           className="win-ctrl-group"
           style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          flexShrink: 0, marginLeft: connectionStatus === 'connected' ? '0' : 'auto',
-          WebkitAppRegion: 'no-drag',
-        } as React.CSSProperties}>
-          <button onClick={winMinimize} title="最小化" style={winCtrlBtnStyle('#f59e0b')}><span style={{position:'relative',top:'-1px'}}>─</span></button>
+            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+            marginLeft: connected ? 0 : 'auto',
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
+        >
+          <button onClick={winMinimize} title="最小化" style={winCtrlBtnStyle('#f59e0b')}><span style={{ position: 'relative', top: -1 }}>─</span></button>
           <button onClick={winToggleMax} title="最大化" style={winCtrlBtnStyle('#10b981')}>□</button>
           <button onClick={winClose} title="关闭" style={winCtrlBtnStyle('#ef4444')}>✕</button>
         </div>
