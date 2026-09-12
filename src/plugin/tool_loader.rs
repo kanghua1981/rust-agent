@@ -389,13 +389,13 @@ impl ToolLoader {
     }
     
     /// 执行Rust工具
-    async fn execute_rust_tool(&self, tool: &ToolDefinition, parameters: &Value) -> Result<Value, PluginError> {
+    async fn execute_rust_tool(&self, _tool: &ToolDefinition, _parameters: &Value) -> Result<Value, PluginError> {
         // Rust工具需要先编译，这里简化处理
         Err(PluginError::Load("Rust tool execution not yet implemented".to_string()))
     }
     
     /// 执行内置工具
-    async fn execute_builtin_tool(&self, tool: &ToolDefinition, parameters: &Value) -> Result<Value, PluginError> {
+    async fn execute_builtin_tool(&self, _tool: &ToolDefinition, _parameters: &Value) -> Result<Value, PluginError> {
         // 内置工具需要插件提供实现
         Err(PluginError::Load("Builtin tool execution requires plugin implementation".to_string()))
     }

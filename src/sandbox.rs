@@ -590,9 +590,9 @@ fn overlay_commit(
 fn overlay_commit_file(
     project_dir: &Path,
     upper_dir: &Path,
-    work_dir: &Path,
-    merged_dir: &Path,
-    kernel: bool,
+    _work_dir: &Path,
+    _merged_dir: &Path,
+    _kernel: bool,
     file_path: &str,
 ) -> CommitResult {
     let target_path = PathBuf::from(file_path);

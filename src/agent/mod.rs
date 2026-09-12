@@ -6,22 +6,20 @@ mod confirmation;
 mod plan_mode;
 mod tool_loop;
 
-pub use interrupt::{clear_guidance, clear_interrupt, is_guidance_requested, is_interrupted, request_guidance, request_interrupt};
+pub use interrupt::{clear_guidance, clear_interrupt, is_interrupted, request_guidance, request_interrupt};
 pub(crate) use interrupt::register_session_interrupt;
-pub use confirmation::{ask_user_definition, build_confirm_action, needs_confirmation, with_ask_user, ConfirmationLevel};
 pub(crate) use tool_loop::ToolLoopOptions;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::config::{Config, Provider};
-use crate::confirm::ConfirmAction;
 use crate::context;
-use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
+use crate::conversation::{ContentBlock, Conversation, Message, Role};
 use crate::memory::{LocalFileMemory, MemoryEvent, MemoryProvider};
 use crate::model_manager;
 use crate::output::{AgentOutput, SilentOutput};
@@ -231,7 +229,7 @@ impl Agent {
             tracing::warn!("Failed to create memory provider: {}, falling back to local file memory", e);
             Arc::new(LocalFileMemory::load(&project_dir))
         });
-        let mut conversation = Conversation::new(&project_dir);
+        let conversation = Conversation::new(&project_dir);
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();

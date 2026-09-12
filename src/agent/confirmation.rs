@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::confirm::ConfirmAction;
-use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
+use crate::conversation::{ContentBlock, Conversation, Message};
 use crate::output::AgentOutput;
 
 // ═══════════════════════════════════════════════════════════════════════════

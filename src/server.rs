@@ -55,7 +55,7 @@ pub async fn run(
     }
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = sigchld_handler as libc::sighandler_t;
+        sa.sa_sigaction = sigchld_handler as *const () as libc::sighandler_t;
         libc::sigemptyset(&mut sa.sa_mask);
         sa.sa_flags = libc::SA_RESTART | libc::SA_NOCLDSTOP;
         libc::sigaction(libc::SIGCHLD, &sa, std::ptr::null_mut());
@@ -701,7 +701,7 @@ async fn probe_peer_once(
 async fn probe_and_update(
     peer: &crate::workspaces::PeerEntry,
     cluster_token: Option<&str>,
-    port: u16,
+    _port: u16,
 ) {
     let tok = peer.token.as_deref().or(cluster_token);
     match probe_peer_once(&peer.url, tok).await {

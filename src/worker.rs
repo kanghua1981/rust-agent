@@ -30,7 +30,7 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::container::IsolationMode;
 use crate::db::GlobalDb;
-use crate::output::{AgentOutput, WsCommand, WsOutput};
+use crate::output::{WsCommand, WsOutput};
 use crate::pty::PtyHandle;
 use crate::sandbox::Sandbox;
 use crate::workspaces;

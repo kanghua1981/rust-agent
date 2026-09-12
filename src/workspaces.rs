@@ -6,7 +6,6 @@
 //! DB in a future version.  The cluster token is taken from the
 //! `AGENT_CLUSTER_TOKEN` environment variable.
 
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 

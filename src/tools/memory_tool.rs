@@ -40,7 +40,7 @@ struct SecurityScanResult {
 /// - Excessive length (> MAX_ENTRY_CHARS)
 ///
 /// Inspired by hermes-agent's `_scan_memory_content()`.
-fn scan_memory_content(content: &str, action: &str) -> SecurityScanResult {
+fn scan_memory_content(content: &str, _action: &str) -> SecurityScanResult {
     let mut warnings: Vec<String> = Vec::new();
 
     // ── Length check ────────────────────────────────────────────────────

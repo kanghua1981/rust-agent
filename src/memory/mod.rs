@@ -14,9 +14,8 @@ pub mod http;
 pub mod intelligent;
 
 // Re-export commonly used items so external code can use `crate::memory::*`
-pub use provider::{LocalFileMemory, MemoryEvent, MemoryProvider, NullMemory};
-pub use factory::{create_memory_provider, MemoryBackend, MemoryConfig};
-pub use intelligent::IntelligentMemory;
+pub use provider::{LocalFileMemory, MemoryEvent, MemoryProvider};
+pub use factory::{create_memory_provider, MemoryConfig};
 
 use std::path::{Path, PathBuf};
 use tracing::debug;

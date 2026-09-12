@@ -43,7 +43,7 @@ impl PtyHandle {
             pixel_height: 0,
         };
 
-        let mut pair = pty_system
+        let pair = pty_system
             .openpty(size)
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 

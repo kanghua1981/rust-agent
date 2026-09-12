@@ -698,7 +698,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let project_dir = temp_dir.path().to_path_buf();
         
-        let mut manager = PluginManager::new(project_dir);
+        let manager = PluginManager::new(project_dir);
         
         // 测试初始状态
         assert_eq!(manager.list_plugins().len(), 0);

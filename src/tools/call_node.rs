@@ -621,7 +621,7 @@ impl Tool for CallNodeTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, _project_dir: &Path) -> ToolResult {
         let input: CallNodeInput = match serde_json::from_value(input.clone()) {
             Ok(i) => i,
             Err(e) => return ToolResult::error(format!("Invalid input: {}", e)),
