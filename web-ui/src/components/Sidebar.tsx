@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
-import { SessionList } from './SessionList';
+import { ProjectTree } from './ProjectTree';
 
 type Tab = 'chat' | 'settings';
 
@@ -8,9 +8,9 @@ interface SidebarProps {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenConnect: () => void;
-  onDisconnect: () => void;
+  onEditProject: (id: string) => void;
+  onConnectProject: (id: string) => void;
   onSwitchToChat: () => void;
-  onListLocalSessions: () => void;
   onSwitchLocalSession: (name: string) => void;
   onNewLocalSession: (name: string) => void;
   onDeleteLocalSession: (name: string) => void;
@@ -46,9 +46,8 @@ const NavItem: React.FC<{
 );
 
 export const Sidebar: React.FC<SidebarProps> = ({
-  activeTab, onTabChange, onOpenConnect, onDisconnect, onSwitchToChat,
-  onListLocalSessions, onSwitchLocalSession, onNewLocalSession,
-  onDeleteLocalSession, onRenameLocalSession,
+  activeTab, onTabChange, onOpenConnect, onEditProject, onConnectProject, onSwitchToChat,
+  onSwitchLocalSession, onNewLocalSession, onDeleteLocalSession, onRenameLocalSession,
 }) => {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebar-collapsed') === 'true'; } catch { return false; }
@@ -60,12 +59,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return next;
   });
 
-  // Selective subscriptions — avoid re-rendering on every streaming token.
+  // Selective subscription — avoid re-rendering on every streaming token.
   const pendingCount = useAgentStore(s => (s.pendingConfirmations ?? []).length);
-  const connectionStatus = useAgentStore(s => s.connectionStatus);
-  const serverUrl = useAgentStore(s => s.serverUrl);
-  const workdir = useAgentStore(s => s.workdir);
-  const connected = connectionStatus === 'connected';
 
   return (
     <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
@@ -93,36 +88,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ))}
         </div>
 
-        {!collapsed && (
-          <SessionList
-            isConnected={connected}
-            onSwitchToChat={onSwitchToChat}
-            onListLocalSessions={onListLocalSessions}
-            onSwitchLocalSession={onSwitchLocalSession}
-            onNewLocalSession={onNewLocalSession}
-            onDeleteLocalSession={onDeleteLocalSession}
-            onRenameLocalSession={onRenameLocalSession}
-          />
-        )}
-
-        {!collapsed && (
-          <div className="conn-block">
-            <div className="side-head">
-              <span className="side-title">连接</span>
-              <button className="side-add" onClick={onOpenConnect} title="连接 / 切换项目">＋</button>
-            </div>
-            <div className="conn-row">
-              <span className={`dot ${connectionStatus}`} />
-              <span className="conn-text">{connected ? serverUrl : '未连接'}</span>
-            </div>
-            {connected && workdir && (
-              <div className="conn-row">📂<span className="conn-text">{workdir}</span></div>
-            )}
-            {connected && (
-              <button className="btn-ghost conn-open" onClick={onDisconnect}>断开连接</button>
-            )}
-          </div>
-        )}
+        <ProjectTree
+          collapsed={collapsed}
+          onOpenConnect={onOpenConnect}
+          onEditProject={onEditProject}
+          onConnectProject={onConnectProject}
+          onSwitchToChat={onSwitchToChat}
+          onSwitchLocalSession={onSwitchLocalSession}
+          onNewLocalSession={onNewLocalSession}
+          onDeleteLocalSession={onDeleteLocalSession}
+          onRenameLocalSession={onRenameLocalSession}
+        />
       </div>
     </aside>
   );

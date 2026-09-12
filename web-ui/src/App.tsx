@@ -286,9 +286,9 @@ function App() {
             activeTab={activeTab}
             onTabChange={setActiveTab}
             onOpenConnect={() => handleOpenConnect()}
-            onDisconnect={handleDisconnect}
+            onEditProject={(id) => handleOpenConnect(id)}
+            onConnectProject={(id) => connect(id)}
             onSwitchToChat={() => setActiveTab('chat')}
-            onListLocalSessions={listLocalSessions}
             onSwitchLocalSession={switchLocalSession}
             onNewLocalSession={newLocalSession}
             onDeleteLocalSession={deleteLocalSession}
