@@ -117,10 +117,10 @@ mod tests {
         let v = current_version(&conn).unwrap();
         assert!(v >= 5, "expected at least migration 5, got {}", v);
 
-        // Spot-check that a table exists
+        // Spot-check a surviving table (the presets table is dropped by 006).
         let cnt: i64 = conn
-            .query_row("SELECT COUNT(*) FROM presets", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM user_preferences", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(cnt, 0);
+        assert!(cnt >= 3, "expected the seeded user_preferences rows, got {cnt}");
     }
 }

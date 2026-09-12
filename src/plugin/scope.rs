@@ -217,7 +217,7 @@ mod tests {
         let project_dir_path = manager.plugin_dir(PluginScope::Project);
         let temp_dir_path = manager.plugin_dir(PluginScope::Temporary);
         
-        assert!(global_dir.to_string_lossy().contains(".rust-agent/plugins"));
+        assert!(global_dir.to_string_lossy().contains("rust_agent/plugins"));
         assert!(project_dir_path.to_string_lossy().contains(".agent/plugins"));
         assert!(temp_dir_path.to_string_lossy().contains("rust-agent-plugins"));
         

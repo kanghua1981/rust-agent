@@ -831,3 +831,59 @@ The conversation continues from the most recent messages below.]",
         *self.token_estimate_cache.lock().unwrap() = TokenEstimateCache::default();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_round_trip_preserves_surface_and_validates() {
+        let mut c = Conversation::with_system_prompt("sys".to_string());
+        c.append_turn_start(1);
+        c.add_message(Message::user("hello"));
+        c.add_message(Message::assistant(vec![ContentBlock::Text {
+            text: "hi".to_string(),
+        }]));
+        c.append_turn_end(1);
+
+        assert!(c.validate_log().is_empty(), "log problems: {:?}", c.validate_log());
+        assert!(c.log_is_consistent());
+
+        let restored = Conversation::from_log(c.to_log());
+        assert!(restored.validate_log().is_empty());
+        assert!(restored.log_is_consistent());
+
+        let before: Vec<Role> = c.messages.iter().map(|m| m.role.clone()).collect();
+        let after: Vec<Role> = restored.derive_messages().iter().map(|m| m.role.clone()).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn validate_log_flags_tool_call_without_result() {
+        let mut c = Conversation::with_system_prompt("sys".to_string());
+        c.record(SessionEventKind::ToolCall {
+            id: "t1".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({}),
+        });
+        let problems = c.validate_log();
+        assert!(
+            problems.iter().any(|p| p.contains("without a ToolResult")),
+            "expected an unpaired-tool-call problem, got: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn validate_log_flags_seq_gap() {
+        let mut c = Conversation::with_system_prompt("sys".to_string());
+        c.record(SessionEventKind::TurnStart { turn: 1 });
+        c.record(SessionEventKind::TurnEnd { turn: 1 });
+        // Corrupt: drop an event so the sequence numbers are no longer contiguous.
+        c.log.remove(0);
+        let problems = c.validate_log();
+        assert!(
+            problems.iter().any(|p| p.contains("seq gap")),
+            "expected a seq-gap problem, got: {problems:?}"
+        );
+    }
+}

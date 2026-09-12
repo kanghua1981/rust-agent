@@ -201,7 +201,7 @@ scan_directories = ["mcp", "tools", "skills", "hooks"]
         assert_eq!(meta.permissions.requires_approval, false);
         assert_eq!(meta.dependencies.len(), 1);
         assert_eq!(meta.dependencies.get("file-utils").unwrap(), ">=1.0.0");
-        assert_eq!(meta.id(), "git-tools@1.0.0");
+        assert_eq!(meta.id(), "git-tools");
     }
     
     #[test]

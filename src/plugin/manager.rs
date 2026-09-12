@@ -730,7 +730,7 @@ mod tests {
         let path = PathBuf::from("/tmp/test-plugin");
         let instance = PluginInstance::new(meta, PluginScope::Global, path);
         
-        assert_eq!(instance.id(), "test-plugin@1.0.0");
+        assert_eq!(instance.id(), "test-plugin");
         assert_eq!(instance.name(), "test-plugin");
         assert!(!instance.is_enabled());
         

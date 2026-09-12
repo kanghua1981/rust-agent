@@ -789,3 +789,278 @@ pub async fn stream_openai_response(
         usage: Some(Usage { input_tokens, output_tokens }),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Provider;
+    use crate::conversation::Message;
+    use crate::memory::MemoryConfig;
+    use crate::output::SilentOutput;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn test_config(
+        base_url: String,
+        provider: Provider,
+        thinking: Option<bool>,
+        effort: Option<String>,
+    ) -> Config {
+        Config {
+            api_key: "test-key".to_string(),
+            model: "test-model".to_string(),
+            provider,
+            base_url,
+            max_tokens: 128,
+            temperature: 0.0,
+            max_conversation_turns: 100,
+            max_tool_iterations: 5,
+            model_alias: None,
+            sub_agents: BTreeMap::new(),
+            extra_binds: Vec::new(),
+            memory: MemoryConfig::default(),
+            thinking_enabled: thinking,
+            reasoning_effort: effort,
+        }
+    }
+
+    fn test_conversation() -> Conversation {
+        let mut c = Conversation::with_system_prompt("you are a test".to_string());
+        c.add_message(Message::user("hi"));
+        c
+    }
+
+    fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// One-shot HTTP/1.1 server that answers with `body` as an SSE stream and
+    /// returns the raw request it received (for request-format assertions).
+    async fn spawn_mock(body: &'static str) -> (String, Arc<tokio::sync::Mutex<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let cap = captured.clone();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf: Vec<u8> = Vec::new();
+                let mut tmp = [0u8; 4096];
+                loop {
+                    let n = match sock.read(&mut tmp).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = find(&buf, b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
+                        let cl: usize = head
+                            .split("content-length:")
+                            .nth(1)
+                            .and_then(|s| s.split("\r\n").next())
+                            .and_then(|s| s.trim().parse().ok())
+                            .unwrap_or(0);
+                        if buf.len() >= pos + 4 + cl {
+                            break;
+                        }
+                    }
+                }
+                *cap.lock().await = String::from_utf8_lossy(&buf).to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+        (format!("http://{}", addr), captured)
+    }
+
+    const ANTHROPIC_SSE: &str = r#"event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":12}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" world"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.txt\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+
+    const OPENAI_SSE: &str = r#"data: {"choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":" there"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"b.txt\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":5}}
+
+data: [DONE]
+
+"#;
+
+    #[test]
+    fn api_base_strips_trailing_v1_and_slashes() {
+        assert_eq!(api_base("https://api.openai.com"), "https://api.openai.com");
+        assert_eq!(api_base("https://api.openai.com/v1"), "https://api.openai.com");
+        assert_eq!(api_base("https://api.openai.com/v1/"), "https://api.openai.com");
+        assert_eq!(api_base("http://localhost:8080/"), "http://localhost:8080");
+        assert_eq!(
+            api_base("https://api.deepseek.com/anthropic"),
+            "https://api.deepseek.com/anthropic"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_parses_thinking_text_tool_and_usage() {
+        let (base, captured) = spawn_mock(ANTHROPIC_SSE).await;
+        let cfg = test_config(base, Provider::Anthropic, Some(true), None);
+        let conv = test_conversation();
+
+        let resp = stream_anthropic_response(&cfg, &conv, &[], &SilentOutput)
+            .await
+            .expect("stream should parse");
+
+        let thinking = resp.content.iter().find_map(|b| match b {
+            ContentBlock::Thinking { thinking, .. } => Some(thinking.clone()),
+            _ => None,
+        });
+        assert_eq!(thinking.as_deref(), Some("pondering"));
+
+        let text = resp.content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(text.as_deref(), Some("Hello world"));
+
+        let (name, input) = resp
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolUse { name, input, .. } => Some((name.clone(), input.clone())),
+                _ => None,
+            })
+            .expect("tool_use block");
+        assert_eq!(name, "read_file");
+        assert_eq!(input["path"], "a.txt");
+
+        assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
+        let usage = resp.usage.expect("usage");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 7);
+
+        let req = captured.lock().await.clone();
+        assert!(
+            req.starts_with("POST /v1/messages "),
+            "request line: {:?}",
+            req.lines().next()
+        );
+        let lower = req.to_lowercase();
+        assert!(lower.contains("x-api-key: test-key"));
+        assert!(lower.contains("anthropic-version: 2023-06-01"));
+        assert!(req.contains("\"model\":\"test-model\""));
+        assert!(req.contains("\"stream\":true"));
+        assert!(req.contains("\"thinking\""));
+    }
+
+    #[tokio::test]
+    async fn openai_stream_parses_reasoning_text_tool_and_usage() {
+        let (base, captured) = spawn_mock(OPENAI_SSE).await;
+        let cfg = test_config(base, Provider::Compatible, None, None);
+        let conv = test_conversation();
+
+        let resp = stream_openai_response(&cfg, &conv, &[], &SilentOutput)
+            .await
+            .expect("stream should parse");
+
+        let thinking = resp.content.iter().find_map(|b| match b {
+            ContentBlock::Thinking { thinking, .. } => Some(thinking.clone()),
+            _ => None,
+        });
+        assert_eq!(thinking.as_deref(), Some("think"));
+
+        let text = resp.content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(text.as_deref(), Some("Hi there"));
+
+        let (name, input) = resp
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolUse { name, input, .. } => Some((name.clone(), input.clone())),
+                _ => None,
+            })
+            .expect("tool_use block");
+        assert_eq!(name, "read_file");
+        assert_eq!(input["path"], "b.txt");
+
+        assert_eq!(resp.stop_reason.as_deref(), Some("tool_calls"));
+        let usage = resp.usage.expect("usage");
+        assert_eq!(usage.input_tokens, 9);
+        assert_eq!(usage.output_tokens, 5);
+
+        let req = captured.lock().await.clone();
+        assert!(req.starts_with("POST /v1/chat/completions "));
+        let lower = req.to_lowercase();
+        assert!(lower.contains("authorization: bearer test-key"));
+        assert!(req.contains("\"stream_options\":{\"include_usage\":true}"));
+    }
+
+    #[tokio::test]
+    async fn base_url_ending_in_v1_is_not_doubled() {
+        let (base, captured) = spawn_mock(OPENAI_SSE).await;
+        let cfg = test_config(format!("{base}/v1"), Provider::Compatible, None, None);
+        let conv = test_conversation();
+
+        let _ = stream_openai_response(&cfg, &conv, &[], &SilentOutput)
+            .await
+            .expect("stream should parse");
+
+        let req = captured.lock().await.clone();
+        assert_eq!(
+            req.lines().next().unwrap(),
+            "POST /v1/chat/completions HTTP/1.1"
+        );
+    }
+}
