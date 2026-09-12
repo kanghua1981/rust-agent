@@ -26,8 +26,6 @@ interface HeaderProps {
   activeProjectId: string | null;
   onOpenConnect: () => void;
   onDisconnect: () => void;
-  onNewSession?: () => void;
-  onSetModelRemote?: (alias: string) => void;
 }
 
 // Slot snapshot interface: all header-relevant fields, guaranteed non-null.
@@ -41,9 +39,6 @@ interface SlotSnapshot {
   msgCount: number;
   toolCallCount: number;
   pendingConfCount: number;
-  availableModels: Array<{ alias: string; model: string; provider: string }>;
-  activeModel: string | null;
-  agentMode: 'auto' | 'simple' | 'plan';
   tokenUsage: TokenUsage | null;
 }
 
@@ -57,9 +52,6 @@ const emptySlot: SlotSnapshot = {
   msgCount: 0,
   toolCallCount: 0,
   pendingConfCount: 0,
-  availableModels: [],
-  activeModel: null,
-  agentMode: 'auto',
   tokenUsage: null,
 };
 
@@ -70,7 +62,7 @@ const statusConfig: Record<string, { color: string; label: string; dot: string }
   error:        { color: '#ef4444', label: '连接错误', dot: '#ef4444' },
 };
 
-export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, onDisconnect, onNewSession, onSetModelRemote }) => {
+export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, onDisconnect }) => {
   const winMinimize = useCallback(() => { tauriWindowAction('minimize'); }, []);
   const winToggleMax = useCallback(() => { tauriWindowAction('toggleMaximize'); }, []);
   const winClose = useCallback(() => { tauriWindowAction('close'); }, []);
@@ -92,9 +84,6 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
         msgCount: c.messages?.length ?? 0,
         toolCallCount: c.toolCalls?.length ?? 0,
         pendingConfCount: c.pendingConfirmations?.length ?? 0,
-        availableModels: c.availableModels,
-        activeModel: c.activeModel,
-        agentMode: c.agentMode,
         tokenUsage: c.tokenUsage ?? null,
       };
     })
@@ -104,8 +93,7 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
 
   const {
     connectionStatus, serverUrl, workdir, isProcessing,
-    pendingChanges, msgCount, toolCallCount, pendingConfCount,
-    availableModels, activeModel, agentMode, tokenUsage,
+    pendingChanges, msgCount, toolCallCount, pendingConfCount, tokenUsage,
   } = slot;
 
   const cfg = statusConfig[connectionStatus] ?? statusConfig.disconnected;
@@ -159,49 +147,6 @@ export const Header: React.FC<HeaderProps> = ({ activeProjectId, onOpenConnect, 
           {pendingConfCount > 0 && (
             <div className="chip warn"><span>⏳</span><span>{pendingConfCount}</span></div>
           )}
-        </div>
-      )}
-
-      {/* Quick actions */}
-      {connected && (
-        <div className="header-actions">
-          {availableModels.length > 0 && (
-            <select
-              className="select-sm"
-              value={activeModel ?? ''}
-              onChange={(e) => { const alias = e.target.value; if (alias) onSetModelRemote?.(alias); }}
-              title="切换模型"
-            >
-              {availableModels.map(m => (
-                <option key={m.alias} value={m.alias}>🧠 {m.alias} ({m.provider})</option>
-              ))}
-            </select>
-          )}
-
-          <select
-            className="select-sm"
-            value={agentMode || 'auto'}
-            onChange={(e) => useAgentStore.getState().setAgentMode(e.target.value as 'auto' | 'simple' | 'plan')}
-            title="切换运行模式"
-          >
-            <option value="auto">🤖 自动</option>
-            <option value="simple">⚡ 单层</option>
-            <option value="plan">📋 计划</option>
-          </select>
-
-          <button
-            className="btn-ghost"
-            onClick={() => {
-              if (window.confirm('确定要清空当前会话的所有消息吗？此操作不可撤销。')) onNewSession?.();
-            }}
-            title="清空会话 (Ctrl+Shift+C)"
-          >
-            <span>🗑️</span><span>清空</span>
-          </button>
-
-          <button className="btn-ghost" onClick={() => onNewSession?.()} title="新建会话 (Ctrl+Shift+N)">
-            <span>➕</span><span>新建</span>
-          </button>
         </div>
       )}
 

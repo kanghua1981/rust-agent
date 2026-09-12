@@ -349,7 +349,6 @@ pre code { background: none; border: none; padding: 0; }
 .header-title { font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -.3px; }
 .header-info { flex: 1; display: flex; align-items: center; gap: 12px; overflow: hidden; min-width: 0; }
 .header-mono { font-size: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
-.header-actions { display: flex; align-items: center; gap: 6px; margin-left: 12px; flex-shrink: 0; }
 
 .status-pill { display: flex; align-items: center; gap: 6px; padding: 4px 10px; flex-shrink: 0; border-radius: 20px; background: var(--bg3); border: 1px solid var(--border); transition: background .15s; }
 .status-pill:hover { background: var(--surface); }
@@ -462,7 +461,10 @@ pre code { background: none; border: none; padding: 0; }
 .input-btn.dispatch:hover:not(:disabled) { background: rgba(139,92,246,.25); color: #8b5cf6; }
 .input-btn.send:not(:disabled) { background: var(--accent); border-color: transparent; color: #fff; }
 .input-btn.send:hover:not(:disabled) { background: var(--accent); color: #fff; filter: brightness(1.08); }
-.input-hint { max-width: 800px; margin: 6px auto 0; text-align: center; font-size: 11px; color: var(--text3); }
+.input-meta { max-width: 800px; margin: 6px auto 0; display: flex; align-items: center; gap: 10px; }
+.input-meta-left { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.input-meta .select-sm { max-width: 170px; }
+.input-hint { flex-shrink: 0; font-size: 11px; color: var(--text3); white-space: nowrap; }
 
 /* ═══════════════════════════════════════════════════════════════
    Tool call card

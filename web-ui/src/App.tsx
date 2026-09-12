@@ -130,13 +130,6 @@ function App() {
               newSession();
               break;
               
-            case 'c': // Ctrl+Shift+C: 清空会话
-              e.preventDefault();
-              if (window.confirm('确定要清空当前会话吗？')) {
-                newSession();
-              }
-              break;
-              
             case 'm': // Ctrl+Shift+M: 切换运行模式
               e.preventDefault();
               const store = useAgentStore.getState();
@@ -223,17 +216,6 @@ function App() {
         enabled: connected,
         action: () => newSession(),
       },
-      {
-        id: 'session.clear',
-        label: '清空会话',
-        description: '清除当前所有对话消息',
-        category: '会话',
-        keywords: 'clear reset',
-        enabled: connected,
-        action: () => {
-          if (window.confirm('确定要清空当前会话吗？')) newSession();
-        },
-      },
       // 模型切换（动态）
       ...store.availableModels.map((m) => ({
         id: `model.${m.alias}`,
@@ -291,8 +273,6 @@ function App() {
           activeProjectId={activeProjectId}
           onOpenConnect={() => handleOpenConnect()}
           onDisconnect={handleDisconnect}
-          onNewSession={newSession}
-          onSetModelRemote={setModelRemote}
         />
       </ErrorBoundary>
 
@@ -330,7 +310,14 @@ function App() {
                   onDismissRestore={() => useAgentStore.getState().setSessionRestoreAvailable(null)}
                 />
               </div>
-              <InputArea onSend={sendUserMessage} onCancel={sendCancel} onDispatch={dispatchTask} onUpload={handleUpload} />
+              <InputArea
+                onSend={sendUserMessage}
+                onCancel={sendCancel}
+                onDispatch={dispatchTask}
+                onUpload={handleUpload}
+                onSetModelRemote={setModelRemote}
+                onNewSession={newSession}
+              />
             </>
           )}
           {activeTab === 'settings' && (

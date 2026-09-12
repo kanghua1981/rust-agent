@@ -9,10 +9,24 @@ interface Props {
   onCancel?: () => void;
   onDispatch?: (text: string) => void;
   onUpload?: (file: File) => void;
+  /** Switch the model used for the next turn (WebSocket action). */
+  onSetModelRemote?: (alias: string) => void;
+  /** Start a fresh session (WebSocket action). */
+  onNewSession?: () => void;
 }
 
-export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpload }) => {
-  const { connectionStatus, isProcessing, currentMessage, setCurrentMessage } = useAgentStore();
+export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpload, onSetModelRemote, onNewSession }) => {
+  // Selective subscriptions — this component renders on every keystroke, so it
+  // must not subscribe to messages/tool calls that change on each streamed token.
+  const connectionStatus = useAgentStore(s => s.connectionStatus);
+  const isProcessing = useAgentStore(s => s.isProcessing);
+  const currentMessage = useAgentStore(s => s.currentMessage);
+  const setCurrentMessage = useAgentStore(s => s.setCurrentMessage);
+  const setAgentMode = useAgentStore(s => s.setAgentMode);
+  const availableModels = useAgentStore(s => s.availableModels);
+  const activeModel = useAgentStore(s => s.activeModel);
+  const agentMode = useAgentStore(s => s.agentMode);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -99,7 +113,40 @@ export const InputArea: React.FC<Props> = ({ onSend, onCancel, onDispatch, onUpl
         )}
       </div>
 
-      <p className="input-hint">Enter 发送 · Ctrl+Enter 后台执行 · Shift+Enter 换行</p>
+      <div className="input-meta">
+        <div className="input-meta-left">
+          {availableModels.length > 0 && (
+            <select
+              className="select-sm model-pick"
+              value={activeModel ?? ''}
+              onChange={(e) => { const alias = e.target.value; if (alias) onSetModelRemote?.(alias); }}
+              disabled={!connected}
+              title="本轮使用的模型"
+            >
+              {activeModel == null && <option value="">默认模型</option>}
+              {availableModels.map(m => (
+                <option key={m.alias} value={m.alias}>🧠 {m.alias}</option>
+              ))}
+            </select>
+          )}
+          <select
+            className="select-sm"
+            value={agentMode || 'auto'}
+            onChange={(e) => setAgentMode(e.target.value as 'auto' | 'simple' | 'plan')}
+            title="本轮使用的运行模式"
+          >
+            <option value="auto">🤖 自动</option>
+            <option value="simple">⚡ 单层</option>
+            <option value="plan">📋 计划</option>
+          </select>
+          {connected && onNewSession && (
+            <button className="btn-ghost" onClick={onNewSession} title="新建会话 (Ctrl+Shift+N)">
+              <span>➕</span><span>新会话</span>
+            </button>
+          )}
+        </div>
+        <span className="input-hint">Enter 发送 · Ctrl+Enter 后台 · Shift+Enter 换行</span>
+      </div>
     </div>
   );
 };
