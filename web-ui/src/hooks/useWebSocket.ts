@@ -38,7 +38,6 @@ interface SlotConn {
   lastAssistantMsgId: string | null;
   tokenBuf: string;
   thinkingBuf: string;
-  flushTimer: ReturnType<typeof setTimeout> | null;
   /** Timer that flushes buffered tokens for this *inactive* slot vua _updateSlot */
   inactiveFlushTimer: ReturnType<typeof setTimeout> | null;
   /** Flag: a done/error/cancelled event has been received; stop queueing */
@@ -60,14 +59,18 @@ export const useWebSocket = () => {
   // ── Helpers: sync global refs to/from a specific connection ──
   // These are only needed for tab switching — save/restore the token buffering state
   // that lives outside the zustand store.
+  //
+  // Saving must not touch the flush timer: the refs still belong to the active
+  // connection, and cancelling the pending flush here (this runs after every
+  // active event) would keep streamed text buffered until the turn ends.
+  // loadRefsFromConn() cancels it, because that call is what hands the buffer to
+  // a different connection.
   const saveRefsToConn = (conn: SlotConn) => {
     conn.streamingMsgId = streamingMsgIdRef.current;
     conn.thinkingMsgId = thinkingMsgIdRef.current;
     conn.lastAssistantMsgId = lastAssistantMsgIdRef.current;
     conn.tokenBuf = tokenBufRef.current;
     conn.thinkingBuf = thinkingBufRef.current;
-    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-    conn.flushTimer = null;
   };
 
   const loadRefsFromConn = (conn: SlotConn) => {
@@ -1191,7 +1194,6 @@ export const useWebSocket = () => {
         lastAssistantMsgId: null,
         tokenBuf: '',
         thinkingBuf: '',
-        flushTimer: null,
         inactiveFlushTimer: null,
         inactiveTerminated: false,
       };

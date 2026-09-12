@@ -112,6 +112,21 @@ describe('useWebSocket — connection isolation', () => {
     expect(contents('A')).toEqual(['A1A2']);
   });
 
+  it('lands streamed text on the active slot before the turn ends', () => {
+    const { a } = connectTwo();
+
+    act(() => {
+      a.emit({ type: 'role_header', data: { label: '🤖 Agent', model: 'test-model' } });
+      a.emit({ type: 'stream_start', data: {} });
+      a.emit({ type: 'streaming_token', data: { token: '你' } });
+      a.emit({ type: 'streaming_token', data: { token: '好' } });
+    });
+    settle();
+
+    // No stream_end yet — the buffered tokens must already be visible.
+    expect(contents('A')).toEqual(['你好']);
+  });
+
   it('does not carry buffered text from the slot left behind into the new one', () => {
     const { a, b } = connectTwo();
 
