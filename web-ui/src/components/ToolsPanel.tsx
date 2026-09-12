@@ -7,13 +7,9 @@ export const ToolsPanel: React.FC = () => {
 
   if (toolCalls.length === 0) {
     return (
-      <div style={{
-        flex: 1, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        color: 'var(--text3)', gap: '10px',
-      }}>
-        <span style={{ fontSize: '32px' }}>🔧</span>
-        <p style={{ fontSize: '14px', color: 'var(--text2)' }}>暂无工具调用记录</p>
+      <div className="tool-empty">
+        <span style={{ fontSize: 32 }}>🔧</span>
+        <p style={{ fontSize: 14, color: 'var(--text2)' }}>暂无工具调用记录</p>
       </div>
     );
   }
@@ -24,11 +20,9 @@ export const ToolsPanel: React.FC = () => {
   const pending   = toolCalls.filter(t => t.status === 'pending');
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+    <div className="tool-panel-wrap">
       {/* Summary */}
-      <div style={{
-        display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap',
-      }}>
+      <div className="tool-panel-summary">
         {[
           { label: '全部', count: toolCalls.length, color: 'var(--text2)' },
           { label: '执行中', count: executing.length, color: 'var(--blue)' },
@@ -36,15 +30,8 @@ export const ToolsPanel: React.FC = () => {
           { label: '错误', count: errored.length, color: 'var(--red)' },
           { label: '待确认', count: pending.length, color: 'var(--yellow)' },
         ].map(s => (
-          <div key={s.label} style={{
-            display: 'flex', alignItems: 'center', gap: '4px',
-            padding: '4px 10px',
-            background: 'var(--bg3)',
-            border: '1px solid var(--border)',
-            borderRadius: '16px',
-            fontSize: '12px',
-          }}>
-            <span style={{ color: s.color, fontWeight: '600', fontFamily: 'monospace' }}>{s.count}</span>
+          <div key={s.label} className="stat-pill">
+            <span className="stat-count" style={{ color: s.color }}>{s.count}</span>
             <span style={{ color: 'var(--text2)' }}>{s.label}</span>
           </div>
         ))}

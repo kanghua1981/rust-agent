@@ -101,21 +101,21 @@ export const RightPanel: React.FC<Props> = ({
       <div className="rail-collapsed" onClick={toggleCollapsed} title="展开右侧面板">
         <span className="rail-label">面板</span>
         {running.length > 0 && (
-          <div className="col center" style={{ gap: 4 }}>
+          <div className="col center gap-1">
             <span className="dot-live" />
-            <span className="text-sm weight-600" style={{ color: 'var(--green)' }}>{running.length}</span>
+            <span className="text-sm weight-600 text-ok">{running.length}</span>
           </div>
         )}
         {pendingChanges > 0 && (
-          <span className="text-xs weight-600" style={{ color: 'var(--yellow)' }}>{pendingChanges}</span>
+          <span className="text-xs weight-600 text-warn">{pendingChanges}</span>
         )}
-        <span className="text-xs" style={{ color: 'var(--text3)', marginTop: 'auto' }}>▶</span>
+        <span className="text-xs text-3 mt-auto">▶</span>
       </div>
     );
   }
 
   return (
-    <div className="row" style={{ flexShrink: 0 }}>
+    <div className="right-shell">
       <div className="resize-handle" onMouseDown={onMouseDown} />
 
       <div className="right-panel" style={{ width: `${width}px` }}>
@@ -132,14 +132,13 @@ export const RightPanel: React.FC<Props> = ({
             </button>
           ))}
           <button
-            className="icon-btn"
+            className="icon-btn panel-collapse"
             onClick={toggleCollapsed}
             title="折叠右侧面板"
-            style={{ margin: '0 8px', flexShrink: 0 }}
           >◀</button>
         </div>
 
-        <div className="col fill" style={{ overflow: 'hidden' }}>
+        <div className="col fill clip">
           {active === 'browse' && (
             <DirectoryTree collapsed={false} onListDir={onListDir} onOpenFile={onOpenFile} />
           )}
@@ -177,7 +176,7 @@ export const RightPanel: React.FC<Props> = ({
           {active === 'tasks' && (
             <div className="panel-scroll">
               {tasks.length === 0 ? (
-                <div className="text-sm" style={{ textAlign: 'center', color: 'var(--text3)', paddingTop: 40 }}>暂无后台任务</div>
+                <div className="empty-line">暂无后台任务</div>
               ) : (
                 <>
                   {running.map(t => <TaskPanel key={t.id} taskId={t.id} onClose={removeTask} />)}
