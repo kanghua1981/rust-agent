@@ -1,13 +1,9 @@
-pub mod anthropic;
-pub mod openai;
+//! Shared LLM response types.
+//!
+//! [`crate::streaming`] is the single model-call path (streaming); this module
+//! holds the response types it returns.
 
-use anyhow::Result;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-
-use crate::config::{Config, Provider};
-use crate::conversation::Conversation;
-use crate::tools::ToolDefinition;
 
 /// Response from the LLM
 #[derive(Debug, Clone)]
@@ -21,22 +17,4 @@ pub struct LlmResponse {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
-}
-
-/// Trait for LLM clients
-#[async_trait]
-pub trait LlmClient: Send + Sync {
-    async fn send_message(
-        &self,
-        conversation: &Conversation,
-        tools: &[ToolDefinition],
-    ) -> Result<LlmResponse>;
-}
-
-/// Create an LLM client based on config
-pub fn create_client(config: &Config) -> Box<dyn LlmClient> {
-    match config.provider {
-        Provider::Anthropic => Box::new(anthropic::AnthropicClient::new(config)),
-        Provider::OpenAI | Provider::Compatible => Box::new(openai::OpenAIClient::new(config)),
-    }
 }

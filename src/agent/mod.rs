@@ -22,7 +22,6 @@ use crate::config::{Config, Provider};
 use crate::confirm::ConfirmAction;
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, ImageSource, Message, Role};
-use crate::llm::{self, LlmClient};
 use crate::memory::{LocalFileMemory, MemoryEvent, MemoryProvider};
 use crate::model_manager;
 use crate::output::{AgentOutput, SilentOutput};
@@ -36,7 +35,6 @@ use crate::tools::ToolExecutor;
 pub struct Agent {
     pub config: Config,
     pub project_dir: PathBuf,
-    client: Box<dyn LlmClient>,
     pub(crate) tool_executor: ToolExecutor,
     pub conversation: Conversation,
     pub memory: Arc<dyn MemoryProvider>,
@@ -226,7 +224,6 @@ impl Agent {
     }
 
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
-        let client = llm::create_client(&config);
         let memory: Arc<dyn MemoryProvider> = crate::memory::create_memory_provider(
             &config.memory,
             &project_dir,
@@ -252,7 +249,6 @@ impl Agent {
         
         let mut agent = Agent {
             config,
-            client,
             tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
             memory: memory.clone(),
@@ -316,7 +312,6 @@ impl Agent {
 
     /// Create agent with a restored conversation
     pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
-        let client = llm::create_client(&config);
         let memory: Arc<dyn MemoryProvider> = Arc::new(LocalFileMemory::load(&project_dir));
         let conv_depth = conversation.delegation_depth;
         let models_cfg = model_manager::load();
@@ -334,7 +329,6 @@ impl Agent {
         
         let mut agent = Agent {
             config,
-            client,
             tool_executor: ToolExecutor::new(effective_dir, output.clone(), plugin_manager.clone()),
             conversation,
             memory: memory.clone(),
@@ -420,10 +414,8 @@ impl Agent {
     }
 
     /// Switch the active model at runtime.
-    /// Rebuilds the underlying LLM client with the new config.
     pub fn switch_model(&mut self, resolved: &crate::model_manager::ResolvedModel) {
         self.config = self.config.with_resolved_model(resolved);
-        self.client = llm::create_client(&self.config);
     }
 
     /// Drain all pending service push events and display them via
