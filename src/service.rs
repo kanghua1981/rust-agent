@@ -313,10 +313,6 @@ impl ServiceManager {
             .collect()
     }
 
-    /// Whether a named service exists and reports as connected.
-    pub fn is_connected(&self, name: &str) -> bool {
-        self.clients.get(name).map(|c| c.is_connected()).unwrap_or(false)
-    }
 }
 
 impl Default for ServiceManager {

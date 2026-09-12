@@ -50,7 +50,7 @@
 //! `filesystem__read_file`, `github__search_repositories`, etc.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
