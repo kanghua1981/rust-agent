@@ -749,3 +749,41 @@ pre code { background: none; border: none; padding: 0; }
 .plugin-link { color: var(--accent); text-decoration: none; }
 .plugin-tools-label { font-size: 11px; font-weight: 600; color: var(--text2); }
 .tag.mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Sandbox changes list
+   ═══════════════════════════════════════════════════════════════ */
+.changes-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex-shrink: 0; padding: 10px 12px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.changes-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.changes-count { margin-left: 6px; font-size: 11px; color: var(--text3); }
+.badge-backend { margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 600; background: var(--bg3); color: var(--text3); }
+.badge-backend.overlay { background: var(--green-dim); color: var(--green); }
+.badge-backend.snapshot { background: var(--yellow-dim); color: var(--yellow); }
+
+.btn-mini { padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--text2); font-size: 11px; }
+.btn-mini:hover { color: var(--text); }
+.btn-mini:disabled { opacity: .5; cursor: not-allowed; }
+.btn-mini.danger { background: var(--red-dim); border-color: rgba(239,68,68,.3); color: #f87171; }
+.btn-mini.accent { background: var(--accent-glow); border-color: rgba(99,102,241,.3); color: #818cf8; }
+
+.dlg-overlay { position: absolute; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.6); }
+.dlg { width: 90%; max-width: 380px; padding: 24px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--border); box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.dlg-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; color: var(--text); }
+.dlg-text { margin: 0 0 20px; font-size: 13px; color: var(--text2); }
+.dlg-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.btn-lg { padding: 7px 16px; border-radius: 8px; font-size: 13px; }
+.btn-lg.ghost { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
+.btn-lg.confirm { background: var(--accent); color: #fff; font-weight: 600; }
+.btn-lg.confirm.danger { background: var(--red); }
+
+.file-card { overflow: hidden; border-radius: 8px; background: var(--bg2); border: 1px solid var(--border); }
+.file-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; }
+.file-row.clickable { cursor: pointer; }
+.file-row.clickable:hover { background: var(--bg3); }
+.kind-badge { flex-shrink: 0; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 700; background: var(--bg3); color: var(--text3); }
+.kind-badge.modified { background: rgba(245,158,11,.2); color: var(--yellow); }
+.kind-badge.created { background: rgba(16,185,129,.2); color: var(--green); }
+.kind-badge.deleted { background: rgba(239,68,68,.2); color: var(--red); }
+.file-path { flex: 1; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11px; color: var(--text); word-break: break-all; }
+.file-size { flex-shrink: 0; font-size: 10px; color: var(--text3); }
+.empty-line { padding-top: 40px; text-align: center; font-size: 13px; color: var(--text3); }

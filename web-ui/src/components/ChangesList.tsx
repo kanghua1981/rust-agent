@@ -9,12 +9,12 @@ interface Props {
   onRollback: () => void;
 }
 
-const kindBadge = (kind: string): { label: string; bg: string; color: string } => {
+const kindBadge = (kind: string): { label: string; cls: string } => {
   switch (kind) {
-    case 'modified':  return { label: 'M', bg: 'rgba(245,158,11,0.2)', color: '#f59e0b' };
-    case 'created':   return { label: 'C', bg: 'rgba(16,185,129,0.2)', color: '#10b981' };
-    case 'deleted':   return { label: 'D', bg: 'rgba(239,68,68,0.2)',  color: '#ef4444' };
-    default:          return { label: 'U', bg: 'var(--bg3)',            color: 'var(--text3)' };
+    case 'modified':  return { label: 'M', cls: 'modified' };
+    case 'created':   return { label: 'C', cls: 'created' };
+    case 'deleted':   return { label: 'D', cls: 'deleted' };
+    default:          return { label: 'U', cls: 'untracked' };
   }
 };
 
@@ -45,123 +45,49 @@ export const ChangesList: React.FC<Props> = ({ onSandboxListChanges, onCommit, o
   };
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div className="panel">
       {/* Toolbar */}
-      <div style={{
-        padding: '10px 12px',
-        borderBottom: '1px solid var(--border)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        background: 'var(--bg2)',
-        flexShrink: 0,
-        flexWrap: 'wrap',
-      }}>
-        <div style={{ flex: 1, minWidth: '120px' }}>
-          <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)' }}>
-            沙盒变更
-          </span>
+      <div className="changes-bar">
+        <div className="fill" style={{ minWidth: 120 }}>
+          <span className="changes-title">沙盒变更</span>
           {sandboxChangesData !== null && (
-            <span style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--text3)' }}>
-              {sandboxChangesData.length} 个文件
-            </span>
+            <span className="changes-count">{sandboxChangesData.length} 个文件</span>
           )}
-          <span style={{
-            marginLeft: '6px',
-            background: sandboxBackend === 'overlay' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
-            color: sandboxBackend === 'overlay' ? '#10b981' : '#f59e0b',
-            borderRadius: '6px',
-            padding: '1px 6px',
-            fontSize: '10px',
-            fontWeight: '600',
-          }}>
+          <span className={`badge-backend ${sandboxBackend === 'overlay' ? 'overlay' : 'snapshot'}`}>
             {sandboxBackend === 'overlay' ? 'overlay' : '快照'}
           </span>
         </div>
 
+        <button className="btn-mini" onClick={onSandboxListChanges}>🔄 刷新</button>
         <button
-          onClick={onSandboxListChanges}
-          style={{
-            padding: '4px 10px', borderRadius: '6px',
-            background: 'var(--bg3)', color: 'var(--text2)',
-            border: '1px solid var(--border)', fontSize: '11px', cursor: 'pointer',
-          }}
-        >
-          🔄 刷新
-        </button>
-
-        <button
+          className="btn-mini danger"
           onClick={() => setConfirmAction('rollback')}
-          style={{
-            padding: '4px 10px', borderRadius: '6px',
-            background: 'rgba(239,68,68,0.15)', color: '#f87171',
-            border: '1px solid rgba(239,68,68,0.3)', fontSize: '11px',
-            cursor: pendingChanges === 0 ? 'not-allowed' : 'pointer',
-            opacity: pendingChanges === 0 ? 0.5 : 1,
-          }}
           disabled={pendingChanges === 0}
-        >
-          ↩ 回滚
-        </button>
-
+        >↩ 回滚</button>
         <button
+          className="btn-mini accent"
           onClick={() => setConfirmAction('commit')}
-          style={{
-            padding: '4px 10px', borderRadius: '6px',
-            background: 'rgba(99,102,241,0.15)', color: '#818cf8',
-            border: '1px solid rgba(99,102,241,0.3)', fontSize: '11px',
-            cursor: pendingChanges === 0 ? 'not-allowed' : 'pointer',
-            opacity: pendingChanges === 0 ? 0.5 : 1,
-          }}
           disabled={pendingChanges === 0}
-        >
-          ✅ 提交
-        </button>
+        >✅ 提交</button>
       </div>
 
       {/* Confirm dialog overlay */}
       {confirmAction && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 100,
-          background: 'rgba(0,0,0,0.6)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <div style={{
-            background: 'var(--bg2)',
-            border: '1px solid var(--border)',
-            borderRadius: '12px',
-            padding: '24px',
-            maxWidth: '380px',
-            width: '90%',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-          }}>
-            <p style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text)', marginBottom: '10px' }}>
+        <div className="dlg-overlay">
+          <div className="dlg">
+            <p className="dlg-title">
               {confirmAction === 'commit' ? '确认提交变更？' : '确认回滚变更？'}
             </p>
-            <p style={{ fontSize: '13px', color: 'var(--text2)', marginBottom: '20px' }}>
+            <p className="dlg-text">
               {confirmAction === 'commit'
                 ? `将把沙盒中的 ${pendingChanges} 个变更写入真实文件系统，操作不可撤销。`
                 : `将丢弃沙盒中的所有 ${pendingChanges} 个变更，恢复到操作前的状态。`}
             </p>
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+            <div className="dlg-actions">
+              <button className="btn-lg ghost" onClick={() => setConfirmAction(null)}>取消</button>
               <button
-                onClick={() => setConfirmAction(null)}
-                style={{
-                  padding: '7px 16px', borderRadius: '8px',
-                  background: 'var(--bg3)', color: 'var(--text2)',
-                  border: '1px solid var(--border)', fontSize: '13px', cursor: 'pointer',
-                }}
-              >
-                取消
-              </button>
-              <button
+                className={`btn-lg confirm${confirmAction === 'rollback' ? ' danger' : ''}`}
                 onClick={() => handleConfirm(confirmAction)}
-                style={{
-                  padding: '7px 16px', borderRadius: '8px',
-                  background: confirmAction === 'commit' ? 'rgba(99,102,241,0.8)' : 'rgba(239,68,68,0.8)',
-                  color: '#fff',
-                  border: 'none', fontSize: '13px', cursor: 'pointer', fontWeight: '600',
-                }}
               >
                 {confirmAction === 'commit' ? '确认提交' : '确认回滚'}
               </button>
@@ -173,56 +99,29 @@ export const ChangesList: React.FC<Props> = ({ onSandboxListChanges, onCommit, o
       {/* File list */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px' }}>
         {sandboxChangesData === null ? (
-          <div style={{ textAlign: 'center', color: 'var(--text3)', paddingTop: '40px', fontSize: '13px' }}>
-            点击"刷新"查看变更列表
-          </div>
+          <div className="empty-line">点击"刷新"查看变更列表</div>
         ) : sandboxChangesData.length === 0 ? (
-          <div style={{ textAlign: 'center', color: 'var(--text3)', paddingTop: '40px', fontSize: '13px' }}>
-            沙盒中没有未提交的变更
-          </div>
+          <div className="empty-line">沙盒中没有未提交的变更</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div className="col" style={{ gap: 4 }}>
             {sandboxChangesData.map((file: SandboxFileChange) => {
               const badge = kindBadge(file.kind);
               const hasDiff = !!file.diff;
               const isExpanded = expandedDiffs.has(file.path);
 
               return (
-                <div key={file.path} style={{
-                  background: 'var(--bg2)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  overflow: 'hidden',
-                }}>
+                <div key={file.path} className="file-card">
                   {/* File row */}
                   <div
+                    className={`file-row${hasDiff ? ' clickable' : ''}`}
                     onClick={() => hasDiff && toggleDiff(file.path)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: '8px',
-                      padding: '7px 10px',
-                      cursor: hasDiff ? 'pointer' : 'default',
-                    }}
-                    onMouseOver={e => { if (hasDiff) (e.currentTarget as HTMLElement).style.background = 'var(--bg3)'; }}
-                    onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = ''; }}
                   >
-                    <span style={{
-                      background: badge.bg, color: badge.color,
-                      borderRadius: '4px', padding: '1px 5px',
-                      fontSize: '10px', fontWeight: '700',
-                      flexShrink: 0,
-                    }}>
-                      {badge.label}
-                    </span>
+                    <span className={`kind-badge ${badge.cls}`}>{badge.label}</span>
 
-                    <span style={{
-                      flex: 1, fontFamily: 'monospace', fontSize: '11px',
-                      color: 'var(--text)', wordBreak: 'break-all',
-                    }}>
-                      {file.path}
-                    </span>
+                    <span className="file-path">{file.path}</span>
 
                     {(file.original_size !== null || file.current_size !== null) && (
-                      <span style={{ fontSize: '10px', color: 'var(--text3)', flexShrink: 0 }}>
+                      <span className="file-size">
                         {file.kind === 'created'
                           ? formatSize(file.current_size)
                           : file.kind === 'deleted'
@@ -234,31 +133,16 @@ export const ChangesList: React.FC<Props> = ({ onSandboxListChanges, onCommit, o
 
                     {file.kind !== 'deleted' && (
                       <button
+                        className="btn-xs primary"
                         onClick={(e) => {
                           e.stopPropagation();
                           onCommitFile(file.path);
                         }}
                         title={`提交 ${file.path}`}
-                        style={{
-                          padding: '2px 7px',
-                          borderRadius: '4px',
-                          background: 'rgba(99,102,241,0.15)',
-                          color: '#818cf8',
-                          border: '1px solid rgba(99,102,241,0.3)',
-                          fontSize: '10px',
-                          cursor: 'pointer',
-                          flexShrink: 0,
-                        }}
-                      >
-                        ✓
-                      </button>
+                      >✓</button>
                     )}
 
-                    {hasDiff && (
-                      <span style={{ fontSize: '11px', color: 'var(--text3)', flexShrink: 0 }}>
-                        {isExpanded ? '▲' : '▼'}
-                      </span>
-                    )}
+                    {hasDiff && <span className="file-size">{isExpanded ? '▲' : '▼'}</span>}
                   </div>
 
                   {/* Diff viewer */}
