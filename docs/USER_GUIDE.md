@@ -1057,7 +1057,7 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ### 无需确认的操作
 
-`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`think`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services` — 所有只读工具不需要确认。
+`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`think`、`load_skill`、`todo`、`memory` — 所有只读工具不需要确认。
 
 ---
 
@@ -1292,14 +1292,12 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 | `list_directory` | 📂 | 列出目录内容 | ❌ |
 | `think` | 💭 | 内部推理（无副作用） | ❌ |
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
+| `upload_image` | 🖼️ | 把本地图片加入对话（供视觉模型） | ❌ |
+| `todo` | ✅ | 项目任务清单（每轮注入上下文） | ❌ |
+| `memory` | 🧠 | 管理持久记忆（.agent/memory.md） | ❌ |
 | `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
 | `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
-| `connect_service` | 🔌 | 注册外部服务（WebSocket/HTTP） | ❌ |
-| `query_service` | ❓ | 向已注册的外部服务发送请求 | ❌ |
-| `subscribe_service` | 📡 | 订阅服务的推送事件 | ❌ |
-| `unsubscribe_service` | 📡 | 取消服务订阅 | ❌ |
-| `list_services` | 📋 | 列出所有已注册的外部服务 | ❌ |
 
 ### 外部依赖（可选）
 

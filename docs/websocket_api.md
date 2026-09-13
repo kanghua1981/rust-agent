@@ -208,7 +208,7 @@ ws://127.0.0.1:9527/agent?workdir=%2Fhome%2Fuser%2Fmyproject&mode=sandbox&token=
 | type | data | 说明 |
 |------|------|------|
 | `context_warning` | `{ usage_percent, estimated_tokens, max_tokens }` | 上下文窗口压力告警 |
-| `service_notification` | `{ source, level, message }` | 外部服务推送通知 |
+| `notification` | `{ source, level, message }` | 外部推送通知（如 MCP server 消息） |
 | `pong` | `{}` | 心跳响应 |
 
 ---

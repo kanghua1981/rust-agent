@@ -25,7 +25,7 @@ use crate::model_manager;
 use crate::output::{AgentOutput, SilentOutput};
 use crate::path_manager;
 use crate::sandbox::Sandbox;
-use crate::service::{ServiceEvent, SERVICE_EVENT_TX};
+use crate::notify;
 use crate::streaming;
 use crate::tools::ToolExecutor;
 
@@ -71,10 +71,10 @@ pub struct Agent {
     /// When false (default), sessions are stored in the project's `.agent/session.json`.
     /// When true, sessions are stored in the global `~/.local/share/rust_agent/sessions/`.
     pub global_session: bool,
-    /// Receiver for push notifications from external services.
+    /// Receiver for notifications pushed from outside the tool loop.
     /// Drained at safe points (between tool iterations) and displayed via
-    /// `AgentOutput::on_service_notification`.
-    service_events: tokio::sync::broadcast::Receiver<ServiceEvent>,
+    /// `AgentOutput::on_notification`.
+    notifications: tokio::sync::broadcast::Receiver<notify::Notification>,
     /// When set, overrides the adaptive router for every message.
     /// `None` means use the normal router logic.
     pub force_mode: Option<crate::router::ExecutionMode>,
@@ -258,7 +258,7 @@ impl Agent {
             sandbox,
             path_manager,
             global_session: false,
-            service_events: SERVICE_EVENT_TX.subscribe(),
+            notifications: notify::subscribe(),
             force_mode: None,
 
             plugin_manager,
@@ -336,7 +336,7 @@ impl Agent {
             sandbox,
             path_manager,
             global_session: false,
-            service_events: SERVICE_EVENT_TX.subscribe(),
+            notifications: notify::subscribe(),
             force_mode: None,
 
             plugin_manager,
@@ -400,25 +400,25 @@ impl Agent {
         self.config = self.config.with_resolved_model(resolved);
     }
 
-    /// Drain all pending service push events and display them via
-    /// `AgentOutput::on_service_notification`.
+    /// Drain all pending notifications and display them via
+    /// `AgentOutput::on_notification`.
     ///
     /// Called at **safe points** — between tool iterations in the main loop
     /// and between REPL prompts in cli.rs — so notifications never interrupt
     /// LLM streaming mid-token.
-    pub(crate) fn drain_service_events(&mut self) {
+    pub(crate) fn drain_notifications(&mut self) {
         use tokio::sync::broadcast::error::TryRecvError;
         loop {
-            match self.service_events.try_recv() {
+            match self.notifications.try_recv() {
                 Ok(ev) => {
-                    self.output.on_service_notification(&ev.source, ev.level, &ev.message);
+                    self.output.on_notification(&ev.source, ev.level, &ev.message);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Lagged(n)) => {
-                    self.output.on_service_notification(
+                    self.output.on_notification(
                         "system",
                         crate::output::NotifyLevel::Warning,
-                        &format!("Dropped {} service notifications (channel lagged)", n),
+                        &format!("Dropped {} notifications (channel lagged)", n),
                     );
                 }
                 Err(TryRecvError::Closed) => break,
@@ -667,7 +667,12 @@ impl Agent {
         let mode = self.resolve_execution_mode(user_input).await;
         let _ = self.apply_router_hook(mode, user_input).await;
 
-        let mut enriched_input = user_input.to_string();
+        // The todo list is model-authored planning state; showing it every turn
+        // keeps the current plan visible without a re-read. Absent when empty.
+        let mut enriched_input = match crate::tools::todo::current_context(&self.project_dir) {
+            Some(todos) => format!("{}\n\n{}", todos, user_input),
+            None => user_input.to_string(),
+        };
 
 
         // ── Sync global interrupt to per-session flag ─────────────────────

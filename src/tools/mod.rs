@@ -10,10 +10,6 @@ pub mod think;
 pub mod read_pdf;
 pub mod load_skill;
 pub mod create_skill;
-pub mod connect_service;
-pub mod query_service;
-pub mod subscribe_service;
-pub mod list_services;
 #[cfg(feature = "browser")]
 pub mod browser;
 pub mod script_tool;
@@ -128,18 +124,10 @@ impl ToolExecutor {
         #[cfg(feature = "browser")]
         executor.register(Box::new(browser::BrowserTool::new()));
         executor.register(Box::new(upload_image::UploadImageTool));
-        executor.register(Box::new(todo::TodoWriteTool));
-        executor.register(Box::new(todo::TodoUpdateTool));
-        executor.register(Box::new(todo::TodoReadTool));
+        executor.register(Box::new(todo::TodoTool));
         // executor.register(Box::new(git::GitTool)); // Removed - Git operations handled by run_command
 
 
-        // Service tools are available to all roles.
-        executor.register(Box::new(connect_service::ConnectServiceTool));
-        executor.register(Box::new(query_service::QueryServiceTool));
-        executor.register(Box::new(subscribe_service::SubscribeServiceTool));
-        executor.register(Box::new(subscribe_service::UnsubscribeServiceTool));
-        executor.register(Box::new(list_services::ListServicesTool));
 
         executor
     }

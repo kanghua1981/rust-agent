@@ -4,10 +4,10 @@
 
 ## ✨ 特性
 
-- **🔧 工具系统**: 内置 26 种工具 — 文件读写、批量文件操作、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF 读取、浏览器自动化、内部推理、外部服务连接、多 Agent 协作、任务管理、技能与记忆管理；另支持动态脚本工具（`tool.json`）
+- **🔧 工具系统**: 内置 16 种工具 — 文件读写、批量文件操作、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF 读取、浏览器自动化、内部推理、任务管理、技能与记忆管理；另支持动态脚本工具（`tool.json`）
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
-- **🛰️ 子代理委托**: 通过 `subagent`/`subagent_fork` 在进程内委托子代理，或通过 `call_node` 委托到外部节点（协作编排由模型驱动）
+- **🛰️ 子代理委托**: 通过 `subagent`/`subagent_fork` 在进程内委托子代理（协作编排由模型驱动）
 - **🎨 终端 UI**: 彩色输出、Markdown 渲染、Diff 预览、友好的交互界面
 - **📡 四种运行模式**: CLI 交互（默认）、JSON-over-stdio 协议、WebSocket 服务器、**MCP 工具服务器**（Claude Desktop / Cursor 直接接入）
 - **🔌 MCP 双向支持**: **作为 MCP 服务器**（`--mode mcp`）向任何 MCP 主机暴露全部内置工具；**作为 MCP 客户端**（`mcp.toml`）自动连接外部 MCP 服务器并将其工具注册到 Agent 工具列表，LLM 透明调用
@@ -22,7 +22,6 @@
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
 - **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示
 - **🛡️ 三种隔离模式**: `--isolation normal/container/sandbox` 按需选择；`normal` 直接运行、`container` namespace+rootfs 隔离直写、`sandbox` 额外叠加 overlayfs 保护（`/changes` · `/rollback` · `/commit`，Web UI 支持逐文件提交）；`extra_binds` 配置将 rustup/cargo/node 等工具链挂载进容器
-- **🤖 多 Agent 协作**: 通过 `call_node` 工具实现任务委派，支持按名称、直连 URL、标签路由和广播四种寻址方式（`any:<tag>` / `all:<tag>`）；实时事件代理及授权转发。先用 `list_nodes` 查看可用节点
 - **🛡️ 上下文安全截断**: 智能保持 tool_use/tool_result 配对完整性，避免 API 错误
 - **⚡ 高性能**: Rust 原生实现，启动快速，资源占用低
 
@@ -120,9 +119,9 @@ model = "qwen"
 
 > **提示**: `.env` 文件仍然有效，推荐只放 API Key；模型/provider/base_url 的管理交给 `models.toml`。
 
-### 子代理委托（进程内 + 外部节点）
+### 子代理委托（进程内）
 
-通过 **Plan 模式**、**进程内子代理委托** 与 **外部节点 call_node** 组合编排，无需固定流水线 DAG；编排顺序由模型根据任务自行决定。
+通过 **Plan 模式** 与 **进程内子代理委托** 组合编排，无需固定流水线 DAG；编排顺序由模型根据任务自行决定。
 
 #### Plan 模式（先分析后执行）
 
@@ -134,10 +133,6 @@ model = "qwen"
 - `subagent_followup` — 继续与仍在运行的子代理对话。
 - `subagent_terminate` — 结束子代理、释放配额。
 - `output_schema` — 要求子代理返回符合给定 JSON Schema 的结构化结果，便于主代理直接消费。
-
-#### 外部节点协作（call_node）
-
-`list_nodes` 发现可用节点，`call_node` 把任务委托给外部节点（节点名 / `ws://` URL / `any:<tag>` 广播）。节点在服务端以 `--mode server` 启动时暴露给本节点。
 
 > 组合式编排取代了旧的流水线 DAG 引擎。
 
@@ -203,62 +198,6 @@ model = "qwen"
 | `warning` | 非致命警告 |
 | `error` | 错误信息 |
 | `context_warning` | 上下文窗口压力通知 |
-
-#### 多 Agent 协作模式
-
-Agent 通过 `call_node` 工具实现任务委派，支持将复杂任务分发给其他 Agent 实例：
-
-**target 参数寻址方式**
-```bash
-# 1. 按名称（优先用 list_nodes 查看可用节点）
-target = "build-server"
-
-# 2. 直接 WebSocket URL
-target = "ws://192.168.1.10:9527"
-
-# 3. 标签路由：自动分配给第一个匹配的节点
-target = "any:gpu"
-
-# 4. 广播：向所有匹配节点广播
-target = "all:embedded"
-```
-
-**支持指定远端隔离模式**和工作目录，远端 Agent 的所有工具调用均实时回放到主 Agent。用前调用 `list_nodes` 确认可用节点名称。
-
-**节点配置（workspaces.toml）**
-
-在 `~/.config/rust_agent/workspaces.toml`（全局）或 `.agent/workspaces.toml`（项目级）配置多 Agent 拓扑：
-
-```toml
-# 集群共享 token（可选）
-[cluster]
-token = "my-secret-token-123"
-
-# 本机节点：LLM 可直接 call_node target="<name>"
-[[node]]
-name        = "upper-sdk"
-workdir     = "/home/user/upper-project"
-description = "上位机 SDK 工程（Qt + C++）"
-tags        = ["upper", "cpp"]
-sandbox     = false
-
-[[node]]
-name    = "firmware"
-workdir = "/home/user/firmware"
-tags    = ["embedded"]
-
-# 对等服务器：server 进程自动 probe，LLM 看到展开的 "子节点@peer" 记录
-[[peer]]
-name  = "gpu-box"
-url   = "ws://192.168.1.20:9527"
-token = "gpu-box-token"
-
-[[peer]]
-name = "pi"
-url  = "ws://raspberrypi.local:9527"
-```
-
-> **`[[node]]`**：本机可调用节点，LLM 直接感知。**`[[peer]]`**：对等 server 入口，仅 server 进程感知，LLM 看到展开的子节点。不配置 = 通用 Agent，行为不变。
 
 #### WebSocket 服务器模式（远程 / Web UI 集成）
 
@@ -658,7 +597,7 @@ Agent 在执行以下操作前会要求确认：
 
 也可以通过 `--yes` 启动参数或 `/yesall` 命令全局跳过。auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什么。
 
-只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`read_pdf`、`think`、`file_search`、`list_nodes`、`load_skill`、`connect_service`、`query_service`、`subscribe_service`、`unsubscribe_service`、`list_services`）不需要确认。
+只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`read_pdf`、`think`、`file_search`、`load_skill`、`todo`、`memory`）不需要确认。
 
 ---
 
@@ -802,7 +741,6 @@ src/
 ├── memory.rs        # 持久记忆系统（.agent/memory.md）
 ├── summary.rs       # 项目摘要管理（.agent/summary.md）
 ├── skills.rs        # Skills 加载系统（AGENT.md / SKILL.md + .agent/skills/），兼容 OpenClaw AgentSkills 格式
-├── workspaces.rs    # 多 Agent 节点配置解析（workspaces.toml）+ NodeRegistry 全局状态
 ├── worker.rs        # worker 子进程入口（收 WebSocket 连接并运行 Agent）
 ├── sandbox.rs       # Container / Sandbox 隔离实现（Linux namespace + overlayfs）
 ├── ui.rs            # 终端 UI 输出（颜色、Markdown 渲染，UTF-8 安全截断）
@@ -832,12 +770,6 @@ src/
     ├── think.rs           # 💭 内部推理（无副作用，不消耗工具配额）
     ├── read_pdf.rs        # 📄 PDF 文本提取（marker / pdftotext / mutool）
     ├── browser.rs         # 🌐 浏览器自动化（Chrome DevTools Protocol）
-    ├── call_node.rs       # 🤖 Agent 任务委派（名称/URL/标签路由，manager 专用）
-    ├── list_nodes.rs      # 📶 查看可用 Agent 节点（含在线状态，manager 专用）
-    ├── connect_service.rs # 🔌 注册外部服务（WebSocket/HTTP）
-    ├── query_service.rs   # ❓ 向已注册服务发送请求
-    ├── subscribe_service.rs # 📡 订阅/取消订阅服务推送
-    ├── list_services.rs   # 📋 列出已注册服务
     ├── load_skill.rs      # 📚 加载项目技能
     ├── create_skill.rs    # ✍️ 创建或更新项目技能
     └── script_tool.rs     # 🧩 动态脚本工具（扫描 tool.json，stdin JSON 协议）
@@ -883,16 +815,12 @@ src/
 | `list_directory` | 📂 | 列出目录内容（含大小/权限） | ❌ |
 | `think` | 💭 | 内部推理，无副作用 | ❌ |
 | `read_pdf` | 📄 | PDF 文本提取 | ❌ |
-| `call_node` | 🤖 | 委派任务给其他 Agent 节点（按名/URL/标签路由） | ✅ |
-| `list_nodes` | 📶 | 列出当前可用的 Agent 节点 | ❌ |
+| `upload_image` | 🖼️ | 把本地图片加入对话（供视觉模型） | ❌ |
+| `todo` | ✅ | 项目任务清单（每轮注入上下文） | ❌ |
+| `memory` | 🧠 | 管理持久记忆（.agent/memory.md） | ❌ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
 | `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
 | `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
-| `connect_service` | 🔌 | 注册外部服务（WebSocket/REST） | ❌ |
-| `query_service` | ❓ | 查询已注册的外部服务 | ❌ |
-| `subscribe_service` | 📡 | 订阅服务推送通知 | ❌ |
-| `unsubscribe_service` | 📡 | 取消订阅服务 | ❌ |
-| `list_services` | 📋 | 列出所有已注册服务 | ❌ |
 
 ### 外部依赖（可选）
 

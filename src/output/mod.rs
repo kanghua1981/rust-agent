@@ -179,17 +179,17 @@ pub trait AgentOutput: Send + Sync {
         }
     }
 
-    // ── Service notifications ───────────────────────────────────
-    /// A notification pushed by an external Service (e.g. CI alert, model response).
+    // ── External notifications ──────────────────────────────────
+    /// A notification pushed from outside the tool loop (e.g. an MCP server message).
     /// Rendered separately from the main conversation stream (status bar / side panel).
     /// Default implementation prints a prefixed warning line so old implementations work.
-    fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
+    fn on_notification(&self, source: &str, level: NotifyLevel, message: &str) {
         let icon = match level {
             NotifyLevel::Info    => "ℹ",
             NotifyLevel::Warning => "⚠",
             NotifyLevel::Alert   => "🔔",
         };
-        self.on_warning(&format!("[svc:{}] {} {}", source, icon, message));
+        self.on_warning(&format!("[{}] {} {}", source, icon, message));
     }
 }
 

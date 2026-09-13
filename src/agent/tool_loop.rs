@@ -68,7 +68,7 @@ impl Agent {
             }
 
             // ── 3. Service event drain ───────────────────────────────────
-            self.drain_service_events();
+            self.drain_notifications();
 
             // ── 4. Iteration guard ───────────────────────────────────────
             iterations += 1;

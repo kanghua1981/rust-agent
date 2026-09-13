@@ -10,7 +10,7 @@
 //! **HTTP + SSE**: connects to a remote server via HTTP POST + Server-Sent Events.
 //!   The client POSTs JSON-RPC requests and receives responses/notifications over
 //!   a persistent SSE stream.  Notifications are forwarded into the agent's
-//!   `push_service_event` channel so they surface between iterations.
+//!   `crate::notify::push` channel so they surface between iterations.
 //!
 //! # Configuration
 //!
@@ -63,7 +63,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 use crate::output::NotifyLevel;
-use crate::service::push_service_event;
+use crate::notify::push;
 use crate::tools::{Tool, ToolDefinition, ToolResult};
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -459,7 +459,7 @@ impl McpHttpConnection {
 }
 
 /// Background task: reads the SSE stream from `sse_url`, routes JSON-RPC
-/// responses to pending callers, and forwards notifications to `push_service_event`.
+/// responses to pending callers, and forwards notifications to `crate::notify::push`.
 async fn run_sse_task(
     http:        reqwest::Client,
     sse_url:     String,
@@ -531,7 +531,7 @@ async fn run_sse_task(
                                 let method  = msg["method"].as_str().unwrap_or("notification");
                                 let content = serde_json::to_string_pretty(&msg["params"])
                                     .unwrap_or_else(|_| msg.to_string());
-                                push_service_event(
+                                push(
                                     &source_name,
                                     NotifyLevel::Info,
                                     format!("[{}] {}", method, content),

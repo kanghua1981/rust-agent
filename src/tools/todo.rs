@@ -1,13 +1,15 @@
 //! Todo list tool — persistent per-project task tracking.
 //!
-//! Stored in `.agent/todo.json` under the project directory.
-//! Sub-agents identify themselves via the `owner` field so all agents
-//! share a single file and can see each other's task state.
+//! Stored in `.agent/todo.json`. The main agent and its sub-agents share the
+//! file, so `owner` records which one is responsible for an item.
 //!
-//! Three tools:
-//! - `todo_write`  — atomically replace the full task list
-//! - `todo_update` — update a single item's status / active_form / owner
-//! - `todo_read`   — return a formatted Markdown view of all tasks
+//! One tool with three actions:
+//! - `write`  — atomically replace the full task list
+//! - `update` — change one item's status / active_form / owner
+//! - `read`   — return a formatted Markdown view
+//!
+//! The list is also injected into every turn's input (see [`current_context`]),
+//! so the agent does not have to re-read it to know what it is working on.
 
 use std::path::Path;
 
@@ -15,6 +17,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{Tool, ToolDefinition, ToolResult};
+
+/// Maximum items rendered into the per-turn context block.
+///
+/// The block is rebuilt every turn, so it stays bounded; in-progress and pending
+/// items are kept ahead of finished ones.
+const MAX_CONTEXT_ITEMS: usize = 20;
 
 // ── Data model ────────────────────────────────────────────────────────────────
 
@@ -78,12 +86,12 @@ pub struct TodoItem {
     pub active_form: Option<String>,
     pub status: TodoStatus,
     pub priority: Priority,
-    /// Which agent owns this task: None = manager, Some("node-gpu") = sub-agent.
+    /// Which agent owns this task; `None` means the main agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
 }
 
-// ── Storage helpers ───────────────────────────────────────────────────────────
+// ── Storage ───────────────────────────────────────────────────────────────────
 
 fn todo_path(project_dir: &Path) -> std::path::PathBuf {
     project_dir.join(".agent").join("todo.json")
@@ -107,8 +115,7 @@ fn save_todos(project_dir: &Path, items: &[TodoItem]) -> std::io::Result<()> {
 }
 
 /// Auto-assign sequential ids to items that don't have one yet.
-fn assign_ids(items: &mut Vec<TodoItem>, existing: &[TodoItem]) {
-    // Find the max existing numeric id
+fn assign_ids(items: &mut [TodoItem], existing: &[TodoItem]) {
     let mut max_id: u32 = existing
         .iter()
         .chain(items.iter())
@@ -124,7 +131,7 @@ fn assign_ids(items: &mut Vec<TodoItem>, existing: &[TodoItem]) {
     }
 }
 
-// ── Markdown renderer ─────────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
 fn render_markdown(items: &[TodoItem]) -> String {
     if items.is_empty() {
@@ -173,73 +180,47 @@ fn render_markdown(items: &[TodoItem]) -> String {
     out
 }
 
-// ── TodoWriteTool ─────────────────────────────────────────────────────────────
-
-/// Atomically replace the entire todo list.
-pub struct TodoWriteTool;
-
-#[async_trait::async_trait]
-impl Tool for TodoWriteTool {
-
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "todo_write".to_string(),
-            description: r#"Write (replace) the full project todo list. Use this to create or reorganize tasks.
-Each item needs at minimum a `content` field. Provide the COMPLETE list every time — existing items not included will be removed.
-Use `todo_update` for quick single-item status changes during execution."#.to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "items": {
-                        "type": "array",
-                        "description": "Full list of todo items to save.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "description": "Unique short id like 't1'. Auto-assigned if omitted."
-                                },
-                                "content": {
-                                    "type": "string",
-                                    "description": "Task description."
-                                },
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                    "description": "Task status. Defaults to 'pending'."
-                                },
-                                "priority": {
-                                    "type": "string",
-                                    "enum": ["high", "medium", "low"],
-                                    "description": "Task priority. Defaults to 'medium'."
-                                },
-                                "owner": {
-                                    "type": "string",
-                                    "description": "Agent node name responsible for this task. Omit for the current agent."
-                                },
-                                "active_form": {
-                                    "type": "string",
-                                    "description": "Description of what is currently happening (only for in_progress items)."
-                                }
-                            },
-                            "required": ["content"]
-                        }
-                    }
-                },
-                "required": ["items"]
-            }),
-        }
+/// Render at most `max` items, keeping active work ahead of finished work.
+fn render_capped(items: &[TodoItem], max: usize) -> String {
+    if items.len() <= max {
+        return render_markdown(items);
     }
+    let mut ordered: Vec<&TodoItem> = items.iter().collect();
+    ordered.sort_by_key(|t| match t.status {
+        TodoStatus::InProgress => 0,
+        TodoStatus::Pending => 1,
+        _ => 2,
+    });
+    let kept: Vec<TodoItem> = ordered.into_iter().take(max).cloned().collect();
+    format!("{}\n*({} more items omitted)*\n",
+        render_markdown(&kept), items.len() - max)
+}
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+/// Render the current list for per-turn context injection.
+///
+/// Returns `None` when the list is empty, so an agent that never uses todos
+/// carries no context cost.
+pub fn current_context(project_dir: &Path) -> Option<String> {
+    let items = load_todos(project_dir);
+    if items.is_empty() {
+        return None;
+    }
+    Some(render_capped(&items, MAX_CONTEXT_ITEMS))
+}
+
+// ── TodoTool ──────────────────────────────────────────────────────────────────
+
+/// Read, replace, or update the project todo list.
+pub struct TodoTool;
+
+impl TodoTool {
+    fn write(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let raw_items = match input.get("items").and_then(|v| v.as_array()) {
             Some(arr) => arr,
-            None => return ToolResult::error("Missing required parameter: items"),
+            None => return ToolResult::error("write requires 'items'"),
         };
 
         let existing = load_todos(project_dir);
-
         let mut new_items: Vec<TodoItem> = raw_items
             .iter()
             .filter_map(|v| {
@@ -262,61 +243,17 @@ Use `todo_update` for quick single-item status changes during execution."#.to_st
             .collect();
 
         assign_ids(&mut new_items, &existing);
-
         if let Err(e) = save_todos(project_dir, &new_items) {
             return ToolResult::error(format!("Failed to save todo list: {e}"));
         }
-
-        let md = render_markdown(&new_items);
-        ToolResult::success(format!("Todo list saved ({} items).\n\n{md}", new_items.len()))
-    }
-}
-
-// ── TodoUpdateTool ────────────────────────────────────────────────────────────
-
-/// Update a single todo item's status, active_form, or owner.
-pub struct TodoUpdateTool;
-
-#[async_trait::async_trait]
-impl Tool for TodoUpdateTool {
-
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "todo_update".to_string(),
-            description: r#"Update a single todo item by id. Use this frequently during task execution to keep the list current:
-- Set status to `in_progress` when starting a task
-- Set `active_form` to describe what you're doing right now
-- Set status to `completed` or `cancelled` when done"#.to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "The todo item id to update (e.g. 't1')."
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "completed", "cancelled"],
-                        "description": "New status for the item."
-                    },
-                    "active_form": {
-                        "type": "string",
-                        "description": "Current action description. Pass null to clear."
-                    },
-                    "owner": {
-                        "type": "string",
-                        "description": "Reassign this task to another agent node."
-                    }
-                },
-                "required": ["id"]
-            }),
-        }
+        ToolResult::success(format!("Todo list saved ({} items).\n\n{}",
+            new_items.len(), render_markdown(&new_items)))
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    fn update(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
         let id = match input.get("id").and_then(|v| v.as_str()) {
             Some(id) => id,
-            None => return ToolResult::error("Missing required parameter: id"),
+            None => return ToolResult::error("update requires 'id'"),
         };
 
         let mut items = load_todos(project_dir);
@@ -332,7 +269,7 @@ impl Tool for TodoUpdateTool {
             }
         }
 
-        // active_form: explicit null clears it, string sets it, absent = unchanged
+        // active_form: explicit null clears it, a string sets it, absent = unchanged
         match input.get("active_form") {
             Some(serde_json::Value::Null) => item.active_form = None,
             Some(v) if v.is_string() => item.active_form = v.as_str().map(|s| s.to_string()),
@@ -343,7 +280,7 @@ impl Tool for TodoUpdateTool {
             item.owner = if owner.is_empty() { None } else { Some(owner.to_string()) };
         }
 
-        // Auto-clear active_form when task is no longer in_progress
+        // Auto-clear active_form when the task is no longer in_progress.
         if item.status != TodoStatus::InProgress {
             item.active_form = None;
         }
@@ -353,36 +290,134 @@ impl Tool for TodoUpdateTool {
         }
 
         let updated = items.iter().find(|t| t.id == id).unwrap();
-        ToolResult::success(format!(
-            "Updated [{}] → status: {}{}",
-            id,
-            updated.status.as_str(),
-            updated.active_form.as_deref().map(|a| format!(", active: {a}")).unwrap_or_default()
-        ))
+        ToolResult::success(format!("Updated [{}] → status: {}\n\n{}",
+            id, updated.status.as_str(), render_markdown(&items)))
     }
 }
 
-// ── TodoReadTool ──────────────────────────────────────────────────────────────
-
-/// Read the current todo list as formatted Markdown.
-pub struct TodoReadTool;
-
 #[async_trait::async_trait]
-impl Tool for TodoReadTool {
-
+impl Tool for TodoTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "todo_read".to_string(),
-            description: "Read the current project todo list. Call this at the start of a session or when you need to check task status.".to_string(),
+            name: "todo".to_string(),
+            description: r#"Manage the project todo list. It is persisted in .agent/todo.json and injected into your context on every turn, so you always see the current plan.
+
+Actions:
+- `write`  — replace the whole list. Pass `items` with the COMPLETE list; omitted items are removed.
+- `update` — change one item by `id`: `status` (pending/in_progress/completed/cancelled), `active_form` (what you are doing right now; null clears it), or `owner`.
+- `read`   — return the current list.
+
+Every action returns the full list. Keep at most one item in_progress while you work, and mark it completed before moving on."#.to_string(),
             parameters: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["write", "update", "read"],
+                        "description": "Which operation to perform."
+                    },
+                    "items": {
+                        "type": "array",
+                        "description": "Full list of todo items (action=write).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Unique short id like 't1'. Auto-assigned if omitted." },
+                                "content": { "type": "string", "description": "Task description." },
+                                "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"], "description": "Defaults to 'pending'." },
+                                "priority": { "type": "string", "enum": ["high", "medium", "low"], "description": "Defaults to 'medium'." },
+                                "owner": { "type": "string", "description": "Sub-agent responsible for this task. Omit for the main agent." },
+                                "active_form": { "type": "string", "description": "What is happening right now (in_progress items)." }
+                            },
+                            "required": ["content"]
+                        }
+                    },
+                    "id": { "type": "string", "description": "Item id to update (action=update)." },
+                    "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"], "description": "New status (action=update)." },
+                    "active_form": { "type": ["string", "null"], "description": "Current action; null clears it (action=update)." },
+                    "owner": { "type": "string", "description": "Reassign the item to a sub-agent (action=update)." }
+                },
+                "required": ["action"]
             }),
         }
     }
 
-    async fn execute(&self, _input: &serde_json::Value, project_dir: &Path) -> ToolResult {
-        let items = load_todos(project_dir);
-        ToolResult::success(render_markdown(&items))
+    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+        match input.get("action").and_then(|v| v.as_str()) {
+            Some("write") => self.write(input, project_dir),
+            Some("update") => self.update(input, project_dir),
+            Some("read") => ToolResult::success(render_markdown(&load_todos(project_dir))),
+            Some(other) => ToolResult::error(format!(
+                "Unknown action '{other}'. Valid actions: write, update, read.")),
+            None => ToolResult::error("Missing required parameter: action"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn write_list(dir: &Path, items: &serde_json::Value) -> ToolResult {
+        let tool = TodoTool;
+        let input = json!({ "action": "write", "items": items });
+        futures::executor::block_on(tool.execute(&input, dir))
+    }
+
+    #[test]
+    fn write_update_read_round_trip() {
+        let dir = tempdir().unwrap();
+        let out = write_list(dir.path(), &json!([
+            { "content": "first task" },
+            { "content": "second task", "status": "in_progress" }
+        ]));
+        assert!(!out.is_error);
+        assert!(out.output.contains("first task"));
+
+        let tool = TodoTool;
+        let out = futures::executor::block_on(tool.execute(
+            &json!({ "action": "update", "id": "t2", "status": "completed" }),
+            dir.path(),
+        ));
+        assert!(!out.is_error, "{}", out.output);
+        assert!(out.output.contains("completed"));
+
+        let out = futures::executor::block_on(tool.execute(
+            &json!({ "action": "read" }), dir.path()));
+        assert!(out.output.contains("first task"));
+    }
+
+    #[test]
+    fn unknown_action_is_rejected() {
+        let dir = tempdir().unwrap();
+        let tool = TodoTool;
+        let out = futures::executor::block_on(tool.execute(
+            &json!({ "action": "delete" }), dir.path()));
+        assert!(out.is_error);
+    }
+
+    #[test]
+    fn context_is_absent_until_something_is_written() {
+        let dir = tempdir().unwrap();
+        assert!(current_context(dir.path()).is_none());
+
+        write_list(dir.path(), &json!([{ "content": "only task" }]));
+        let ctx = current_context(dir.path()).expect("non-empty list must be injected");
+        assert!(ctx.contains("only task"));
+    }
+
+    #[test]
+    fn context_keeps_active_work_when_truncating() {
+        let dir = tempdir().unwrap();
+        let mut items: Vec<serde_json::Value> = (0..MAX_CONTEXT_ITEMS + 5)
+            .map(|i| json!({ "content": format!("task {i}") }))
+            .collect();
+        items.push(json!({ "content": "the active one", "status": "in_progress" }));
+        write_list(dir.path(), &serde_json::Value::Array(items));
+
+        let ctx = current_context(dir.path()).unwrap();
+        assert!(ctx.contains("the active one"), "in-progress work must survive truncation");
+        assert!(ctx.contains("more items omitted"));
     }
 }

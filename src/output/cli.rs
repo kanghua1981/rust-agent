@@ -207,13 +207,13 @@ impl AgentOutput for CliOutput {
         }
     }
 
-    fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
+    fn on_notification(&self, source: &str, level: NotifyLevel, message: &str) {
         use colored::Colorize;
         let (icon, msg_colored) = match level {
             NotifyLevel::Info    => ("ℹ", message.white().to_string()),
             NotifyLevel::Warning => ("⚠", message.yellow().to_string()),
             NotifyLevel::Alert   => ("🔔", message.red().bold().to_string()),
         };
-        println!("  {} {} {}", format!("[svc:{}]", source).magenta().bold(), icon, msg_colored);
+        println!("  {} {} {}", format!("[{}]", source).magenta().bold(), icon, msg_colored);
     }
 }

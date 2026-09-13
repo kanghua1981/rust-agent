@@ -290,8 +290,8 @@ impl AgentOutput for WsOutput {
         }));
     }
 
-    fn on_service_notification(&self, source: &str, level: NotifyLevel, message: &str) {
-        self.emit("service_notification", serde_json::json!({
+    fn on_notification(&self, source: &str, level: NotifyLevel, message: &str) {
+        self.emit("notification", serde_json::json!({
             "source": source,
             "level": level.as_str(),
             "message": message,

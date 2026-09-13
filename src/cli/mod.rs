@@ -683,7 +683,7 @@ pub async fn run(
         // called, so they never interfere with IME composition or raw-mode input.
         // (Using rustyline's ExternalPrinter would switch the read path from a
         // simple blocking read to select(), which disrupts CJK IME delivery.)
-        agent.drain_service_events();
+        agent.drain_notifications();
 
         let readline = rl.readline("🤖 > ");
 

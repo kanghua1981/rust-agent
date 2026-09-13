@@ -23,8 +23,6 @@ const CACHEABLE_TOOLS: &[&str] = &[
     "list_directory",
     "batch_read_files",
     "read_pdf",
-    "todo_read",
-    "list_services",
 ];
 
 /// Maximum characters before a tool result is truncated (Layer 2).
