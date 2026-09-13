@@ -4,7 +4,7 @@
 
 ## ✨ 特性
 
-- **🔧 工具系统**: 内置 13 种工具 — 文件读取与写入、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、浏览器自动化、任务管理、技能与记忆管理；另支持动态脚本工具（`tool.json`）与插件工具
+- **🔧 工具系统**: 内置 13 种工具 — 文件读取与写入、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、浏览器自动化、任务管理、技能与记忆管理；另支持插件工具（含插件自带的脚本工具）
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
 - **🛰️ 子代理委托**: 通过 `subagent`/`subagent_fork` 在进程内委托子代理（协作编排由模型驱动）
@@ -15,7 +15,6 @@
 - **🤖 模型管理**: 通过 `models.toml` 配置多个模型，运行时 `/model` 命令热切换
 - **📜 对话持久化**: 支持上下文保持、多会话管理、会话保存与恢复
 - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识；兼容 [OpenClaw AgentSkills](https://agentskills.io/) 格式（`SKILL.md`），可直接使用社区发布的技能包
-- **🧩 动态工具**: 在 Skill 目录加一个 `tool.json` 即可注册新工具，参数 JSON 通过 stdin 传递给任意 shell 脚本/可执行文件
 - **🔌 插件系统**: 在 `.agent/plugins/` 下放置独立插件目录，每个插件可携带工具、技能、Hooks 和自定义系统提示词；三种 Hook 模式（`fire_and_forget` / `blocking` / `intercepting`）覆盖 `agent.start`、`tool.before/after`、`router.decision` 等关键节点，无需修改任何 Rust 代码
 - **🧠 持久记忆**: 自动把项目知识记到 `.agent/memory.md`，跨会话保持
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
@@ -508,62 +507,6 @@ cp -r ~/Downloads/my-skill/ .agent/skills/
 git clone https://github.com/example/my-skill .agent/skills/my-skill
 ```
 
-### 🧩 动态工具（tool.json）
-
-在任意 Skill 目录里放一个 `tool.json`，Agent 启动时会自动扫描并注册为可调用工具，无需修改任何 Rust 代码。
-
-**`tool.json` 格式：**
-```json
-{
-  "name": "query-db",
-  "description": "根据 SQL 查询数据库并返回结果",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "sql": { "type": "string", "description": "SQL 查询语句" }
-    },
-    "required": ["sql"]
-  },
-  "command": "./query.sh",
-  "timeout_secs": 30
-}
-```
-
-**执行合同：**
-- Agent 调用工具时，LLM 传来的参数会被序列化为 JSON 并写入脚本的 **stdin**
-- 脚本工作目录为 Skill 目录，相对路径均有效
-- stdout 作为工具返回值，非零退出码会返回错误
-
-**目录结构示例：**
-```
-.agent/skills/
-└── query-db/
-    ├── SKILL.md      # 工具使用说明（注入系统 prompt）
-    ├── tool.json     # 工具定义（自动注册）
-    └── query.sh      # 实际执行的脚本
-```
-
-`query.sh` 从 stdin 读取 JSON 参数：
-```bash
-#!/bin/bash
-params=$(cat)  # 读取 stdin JSON
-sql=$(echo "$params" | jq -r '.sql')
-sqlite3 ./data.db "$sql"
-```
-
-或用 Python：
-```python
-#!/usr/bin/env python3
-import sys, json
-params = json.load(sys.stdin)
-result = run_query(params['sql'])
-print(result)
-```
-
-**扫描路径**（两者均支持）：
-- `.agent/skills/*/tool.json` — 原生格式
-- `skills/*/tool.json` — OpenClaw AgentSkills 目录布局兼容
-
 ---
 
 ## 🔌 支持的 LLM Provider
@@ -769,8 +712,7 @@ src/
     ├── list_dir.rs        # 📂 列出目录内容（含文件大小、权限）
     ├── browser.rs         # 🌐 浏览器自动化（Chrome DevTools Protocol）
     ├── load_skill.rs      # 📚 加载项目技能
-    ├── create_skill.rs    # ✍️ 创建或更新项目技能
-    └── script_tool.rs     # 🧩 动态脚本工具（扫描 tool.json，stdin JSON 协议）
+    └── create_skill.rs    # ✍️ 创建或更新项目技能
 ```
 
 ### 输出抽象层
@@ -979,12 +921,12 @@ your-project/
     ├── mcp.toml                    # MCP 客户端配置（可选）
     ├── skills/                     # 项目级 Skills
     │   ├── coding-style.md
-    │   └── my-tool/                # 目录 Skill（SKILL.md + tool.json + 脚本）
+    │   └── my-tool/                # 目录 Skill（SKILL.md + 脚本）
     └── plugins/                    # 插件目录（可选，每个子目录为一个插件）
         └── my-plugin/
             ├── plugin.toml         # 插件清单（必须）
             ├── system_prompt.md    # 追加到系统提示词（可选）
-            ├── tools/              # 动态工具（tool.json + 脚本）
+            ├── tools/              # 插件工具（tool.json + 脚本）
             ├── skills/             # 领域知识 Markdown
             └── hooks/              # 生命周期钩子（*.toml）
 ```
@@ -1008,7 +950,7 @@ your-project/
 .agent/plugins/my-plugin/
 ├── plugin.toml          # 插件清单（必须）
 ├── system_prompt.md     # 追加到系统提示词（可选）
-├── tools/               # 动态工具（tool.json + 脚本）
+├── tools/               # 插件工具（tool.json + 脚本）
 ├── skills/              # 领域知识 Markdown
 └── hooks/               # 生命周期钩子（*.toml）
 ```

@@ -9,7 +9,6 @@ pub mod load_skill;
 pub mod create_skill;
 #[cfg(feature = "browser")]
 pub mod browser;
-pub mod script_tool;
 pub mod upload_image;
 pub mod todo;
 pub mod memory_tool;
@@ -242,18 +241,6 @@ impl ToolExecutor {
     pub fn register_memory_tool(&mut self, memory: std::sync::Arc<dyn crate::memory::MemoryProvider>) {
         let tool = Box::new(memory_tool::MemoryTool::new(memory));
         self.register(tool);
-    }
-
-    /// Scan `workdir` for `tool.json` files and register each as a ScriptTool.
-    /// 保留此方法供测试和外部直接注入用。
-    /// 正常展运而言，script tools 应通过插件系统加载。
-    #[allow(dead_code)]
-    fn load_script_tools_from(&mut self, workdir: &std::path::Path) {
-        for st in script_tool::load_script_tools(workdir) {
-            let name = st.definition().name.clone();
-            tracing::info!("Loaded script tool: {name}");
-            self.tools.insert(name, Box::new(st));
-        }
     }
 
 

@@ -802,7 +802,7 @@ your-project/
     └── my-plugin/               # 插件根目录（名称即 ID）
         ├── plugin.toml          # 插件清单（必须）
         ├── system_prompt.md     # 追加到系统提示词（可选）
-        ├── tools/               # 动态工具定义（可选）
+        ├── tools/               # 插件工具定义（可选）
         │   ├── my_tool.json     # 工具 schema
         │   └── my_tool.sh       # 执行脚本
         ├── skills/              # 领域知识注入（可选）
@@ -827,7 +827,7 @@ enabled     = true      # false 可临时禁用，不删除目录
 
 ### 插件工具
 
-与 Skills 动态工具格式完全一致——在 `tools/` 下放 `.json` + 脚本即可：
+在插件的 `tools/` 下放一个 `.json`（schema）与同名脚本即可注册工具：
 
 ```json
 // tools/git_log.json
