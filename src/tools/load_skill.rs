@@ -16,6 +16,7 @@ impl LoadSkillTool {
 
 #[async_trait::async_trait]
 impl Tool for LoadSkillTool {
+    fn is_readonly(&self) -> bool { true }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

@@ -105,8 +105,6 @@ zstd = { version = "0.13", optional = true }
 # Async utilities
 futures-util = "0.3"
 
-# SQLite global database (bundled = no system dep)
-rusqlite = { version = "0.31", features = ["bundled"] }
 
 # PTY support (terminal feature)
 portable-pty = "0.8"

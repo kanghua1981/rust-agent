@@ -37,29 +37,6 @@ use crate::sandbox::Sandbox;
 //  Extra bind-mount descriptor
 // ═══════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone)]
-pub struct BindMount {
-    pub host: PathBuf,
-    pub target: PathBuf,
-    pub readonly: bool,
-}
-
-impl std::str::FromStr for BindMount {
-    type Err = String;
-    /// Parse "host_path:target_path[:ro]"
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.splitn(3, ':').collect();
-        if parts.len() < 2 {
-            return Err(format!("expected host:target[:ro], got '{}'", s));
-        }
-        Ok(BindMount {
-            host: PathBuf::from(parts[0]),
-            target: PathBuf::from(parts[1]),
-            readonly: parts.get(2).map(|s| *s == "ro").unwrap_or(false),
-        })
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  Entry point  (called BEFORE tokio runtime exists)
 // ═══════════════════════════════════════════════════════════════════
@@ -76,7 +53,6 @@ pub async fn run(
     fd: i32,
     isolation: IsolationMode,
     _worker_id: &str,
-    _extra_binds: Vec<BindMount>,
 ) -> Result<()> {
     run_async(config, project_dir, isolation, fd).await
 }

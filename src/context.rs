@@ -119,9 +119,6 @@ fn is_cjk(c: char) -> bool {
 /// The engine is consulted at the start of every turn and after every tool
 /// call to ensure the conversation stays within the model's context window.
 pub trait ContextEngine: Send + Sync {
-    /// Estimate the token count for `text` using the engine's tokenizer.
-    fn estimate_tokens(&self, text: &str, model: &str) -> usize;
-
     /// Return the maximum context window size (in tokens) for `model`.
     fn max_context_tokens(&self, model: &str) -> usize;
 
@@ -159,10 +156,6 @@ pub trait ContextEngine: Send + Sync {
 pub struct DefaultContextEngine;
 
 impl ContextEngine for DefaultContextEngine {
-    fn estimate_tokens(&self, text: &str, model: &str) -> usize {
-        TOKEN_COUNTER.count(text, model)
-    }
-
     fn max_context_tokens(&self, model: &str) -> usize {
         max_context_tokens(model)
     }
@@ -342,14 +335,10 @@ pub fn truncate_conversation(conversation: &mut Conversation, model: &str) {
 
 /// A planned truncation: describes what to keep and what to remove.
 pub struct TruncationPlan {
-    /// Number of messages to keep from the start of the conversation.
-    pub keep_start: usize,
     /// Index (inclusive) of the first message to remove.
     pub remove_start: usize,
     /// Index (exclusive) of the last message to remove.
     pub remove_end: usize,
-    /// Messages to keep from the end of the conversation.
-    pub kept_end: Vec<Message>,
     /// Total count of messages being removed.
     pub removed_count: usize,
 }
@@ -437,10 +426,8 @@ pub fn plan_truncation(conversation: &Conversation, model: &str) -> Option<Trunc
     let remove_end = msg_count - kept_end.len();
 
     Some(TruncationPlan {
-        keep_start: first_keep,
         remove_start,
         remove_end,
-        kept_end,
         removed_count,
     })
 }

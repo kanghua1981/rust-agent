@@ -7,29 +7,11 @@
 use crate::confirm::ConfirmAction;
 use crate::tools::ToolResult;
 
-// ── SubAgent / Service event types ──────────────────────────────────────────
-
-/// Events forwarded from a stdio sub-agent to the parent's output layer.
-/// The parent prefixes each event with `[sub:{task_id}]` so multiple concurrent
-/// sub-agents remain visually distinguishable in the output stream.
-#[derive(Debug, Clone)]
-pub enum SubAgentOutputEvent {
-    StreamStart,
-    StreamEnd,
-    Token(String),
-    ToolUse { name: String },
-    ToolDone { name: String, is_error: bool },
-    Done(String),
-    Error(String),
-}
-
-/// Severity level for notifications pushed by an external Service.
+/// Severity level for notifications pushed from outside the tool loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotifyLevel {
     Info,
     Warning,
-    /// Requires user attention — rendered more prominently.
-    Alert,
 }
 
 impl NotifyLevel {
@@ -37,7 +19,6 @@ impl NotifyLevel {
         match self {
             NotifyLevel::Info    => "info",
             NotifyLevel::Warning => "warning",
-            NotifyLevel::Alert   => "alert",
         }
     }
 }
@@ -147,38 +128,6 @@ pub trait AgentOutput: Send + Sync {
     /// An event forwarded from a stdio sub-agent.
     /// `task_id` is a short identifier (e.g. first 4 chars of UUID) used as prefix.
     /// Default implementation falls back to existing output methods with a prefix so
-    /// implementations that don't override this still produce readable output.
-    fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
-        let prefix = format!("[sub:{}]", task_id);
-        match event {
-            SubAgentOutputEvent::StreamStart => {}
-            SubAgentOutputEvent::StreamEnd   => {}
-            SubAgentOutputEvent::Token(t) => {
-                self.on_streaming_text(&format!("{} {}", prefix, t));
-            }
-            SubAgentOutputEvent::ToolUse { name } => {
-                self.on_warning(&format!("{} ⚙  {}", prefix, name));
-            }
-            SubAgentOutputEvent::ToolDone { name, is_error } => {
-                if *is_error {
-                    self.on_warning(&format!("{} ✗  {}", prefix, name));
-                } else {
-                    self.on_warning(&format!("{} ✓  {}", prefix, name));
-                }
-            }
-            SubAgentOutputEvent::Done(text) => {
-                if !text.is_empty() {
-                    self.on_warning(&format!("{} ✅ 完成: {}", prefix, crate::ui::truncate_str(text, 120)));
-                } else {
-                    self.on_warning(&format!("{} ✅ 完成", prefix));
-                }
-            }
-            SubAgentOutputEvent::Error(msg) => {
-                self.on_warning(&format!("{} ❌ {}", prefix, msg));
-            }
-        }
-    }
-
     // ── External notifications ──────────────────────────────────
     /// A notification pushed from outside the tool loop (e.g. an MCP server message).
     /// Rendered separately from the main conversation stream (status bar / side panel).
@@ -187,7 +136,6 @@ pub trait AgentOutput: Send + Sync {
         let icon = match level {
             NotifyLevel::Info    => "ℹ",
             NotifyLevel::Warning => "⚠",
-            NotifyLevel::Alert   => "🔔",
         };
         self.on_warning(&format!("[{}] {} {}", source, icon, message));
     }

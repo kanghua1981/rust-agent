@@ -400,26 +400,6 @@ impl SkillLoader {
     }
     
     /// 获取技能统计信息
-    #[cfg(test)]
-    pub fn stats(&self) -> SkillStats {
-        let mut stats = SkillStats::default();
-        
-        stats.total = self.loaded_skills.len();
-        stats.plugins = self.plugin_skills.len();
-        stats.tags = self.tag_index.len();
-        
-        // 计算平均技能长度
-        let total_chars: usize = self.loaded_skills.values()
-            .map(|s| s.content.len())
-            .sum();
-        
-        if stats.total > 0 {
-            stats.avg_length = total_chars / stats.total;
-        }
-        
-        stats
-    }
-    
     /// 向 SkillLoader 注册一个已构造好的技能（供系统默认插件和外部桥接调用）
     /// `skill.plugin_id` 必须已正确设置
     pub fn register_system_skill(&mut self, skill: SkillDefinition) -> Result<(), PluginError> {
@@ -447,20 +427,6 @@ impl SkillLoader {
             }
         }
     }
-}
-
-/// 技能统计信息
-#[derive(Debug, Clone, Default)]
-#[cfg(test)]
-pub struct SkillStats {
-    /// 技能总数
-    pub total: usize,
-    /// 插件数量
-    pub plugins: usize,
-    /// 标签数量
-    pub tags: usize,
-    /// 平均技能长度（字符数）
-    pub avg_length: usize,
 }
 
 #[cfg(test)]
@@ -515,20 +481,5 @@ This skill covers common Git commands and workflows used in daily development.
         let description = loader.extract_description_from_content(content);
         
         assert_eq!(description, "This skill covers common Git commands and workflows used in daily development.");
-    }
-    
-    #[test]
-    fn test_skill_stats() {
-        let stats = SkillStats {
-            total: 10,
-            plugins: 3,
-            tags: 5,
-            avg_length: 1500,
-        };
-        
-        assert_eq!(stats.total, 10);
-        assert_eq!(stats.plugins, 3);
-        assert_eq!(stats.tags, 5);
-        assert_eq!(stats.avg_length, 1500);
     }
 }

@@ -11,6 +11,8 @@ pub struct FileSearchTool;
 
 #[async_trait::async_trait]
 impl Tool for GrepSearchTool {
+    fn is_readonly(&self) -> bool { true }
+    fn is_cacheable(&self) -> bool { true }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -194,6 +196,8 @@ impl GrepSearchTool {
 
 #[async_trait::async_trait]
 impl Tool for FileSearchTool {
+    fn is_readonly(&self) -> bool { true }
+    fn is_cacheable(&self) -> bool { true }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

@@ -77,6 +77,20 @@ pub struct ToolExecutor {
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
+
+    /// Whether this tool only reads. Read-only tools are the ones the planning
+    /// phase may call, and the only ones exempt from the write-path guard.
+    fn is_readonly(&self) -> bool { false }
+
+    /// Whether two identical calls may share a cached result.
+    ///
+    /// Only for read-only tools whose output cannot change between calls.
+    fn is_cacheable(&self) -> bool { false }
+
+    /// Whether this tool changes files, so cached results for the paths it
+    /// touches must be invalidated.
+    fn is_write(&self) -> bool { false }
+
     async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult;
 
     /// Execute with path manager (optional, for tools that need advanced path handling)
@@ -143,7 +157,6 @@ impl ToolExecutor {
                     format!("{}__{}", tool.name, tool.plugin_id),
                     tool.description.clone(),
                     tool.parameters.clone(),
-                    tool.plugin_id.clone(),
                     pm.clone(),
                 );
                 self.register(Box::new(plugin_tool));
@@ -274,20 +287,10 @@ impl ToolExecutor {
     /// (e.g. `git status`, `git log`, `git diff`, `find`, `cat`) — the planner system
     /// prompt instructs it never to run commands that mutate state.
     pub fn readonly_definitions(&self) -> Vec<ToolDefinition> {
-        const READONLY_TOOLS: &[&str] = &[
-            "read_file",
-            "list_directory",
-            "grep_search",
-            "file_search",
-            "load_skill",
-            "run_command",
-            "browser",
-            // "git", // Removed - Git operations handled by run_command
-        ];
         self.tools
             .values()
+            .filter(|t| t.is_readonly())
             .map(|t| t.definition())
-            .filter(|d| READONLY_TOOLS.contains(&d.name.as_str()))
             .collect()
     }
 
@@ -304,11 +307,11 @@ impl ToolExecutor {
     ///    identical calls return the cached result immediately.
     /// 2. **Result size limit** — outputs exceeding 20K chars are truncated.
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolResult {
-        // ── Constants ────────────────────────────────────────────────────────
-        const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit_file"];
+        let is_write = self.tools.get(name).map_or(false, |t| t.is_write());
+        let is_cacheable = self.tools.get(name).map_or(false, |t| t.is_cacheable());
 
         // ── Layer 1: Cache lookup for read-only tools ─────────────────────
-        if cache::ToolResultCache::is_cacheable(name) {
+        if is_cacheable {
             let args_hash = cache::hash_args(name, input);
             if let Some(cached) = self.result_cache.borrow_mut().get(name, args_hash) {
                 tracing::debug!(tool = name, "cache hit");
@@ -320,7 +323,7 @@ impl ToolExecutor {
         // If an allowed_dir is set, reject write/edit tools that try to touch
         // paths outside it.  Read-only tools are not restricted.
         
-        if WRITE_TOOLS.contains(&name) {
+        if is_write {
             if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
                 // Use path manager if available, otherwise use old logic
                 if let Some(ref path_manager) = self.path_manager {
@@ -483,7 +486,7 @@ impl ToolExecutor {
         cache::enforce_result_size_limit(&mut final_result);
 
         // ── Layer 1: Cache or invalidate ─────────────────────────────────
-        if cache::ToolResultCache::is_cacheable(name) && !final_result.is_error {
+        if is_cacheable && !final_result.is_error {
             let args_hash = cache::hash_args(name, input);
             let file_path = input
                 .get("path")
@@ -500,7 +503,7 @@ impl ToolExecutor {
         }
 
         // Invalidate cache entries for paths touched by writes
-        if WRITE_TOOLS.contains(&name) && !final_result.is_error {
+        if is_write && !final_result.is_error {
             if let Some(path_str) = input.get("path").and_then(|v| v.as_str()) {
                 let path = if Path::new(path_str).is_absolute() {
                     PathBuf::from(path_str)
@@ -521,7 +524,6 @@ struct PluginToolWrapper {
     description: String,
     /// 来自插件工具定义的 JSON Schema，直接透传给 LLM
     parameters: serde_json::Value,
-    plugin_id: String,
     plugin_manager: Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>,
 }
 
@@ -538,7 +540,6 @@ impl PluginToolWrapper {
         name: String,
         description: String,
         parameters: Option<serde_json::Value>,
-        plugin_id: String,
         plugin_manager: Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>,
     ) -> Self {
         // 如果插件定义了参数 schema 则使用，否则回退到宽松的 additionalProperties
@@ -551,7 +552,6 @@ impl PluginToolWrapper {
             name: sanitize_tool_name(&name),
             description,
             parameters,
-            plugin_id,
             plugin_manager,
         }
     }
@@ -601,6 +601,24 @@ mod tests {
     use crate::plugin::hook_bus::HookBus;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
+
+    #[test]
+    fn tool_predicates_match_the_tools_they_describe() {
+        let executor = ToolExecutor::new(std::path::PathBuf::from("."), None);
+        let flag = |name: &str, f: fn(&dyn Tool) -> bool| {
+            let t = executor.tools.get(name).unwrap_or_else(|| panic!("unknown tool {name}"));
+            f(t.as_ref())
+        };
+
+        // A read-only tool the planner may call, whose output is cacheable.
+        assert!(flag("read_file", |t| t.is_readonly() && t.is_cacheable()));
+        assert!(flag("grep_search", |t| t.is_readonly() && t.is_cacheable()));
+        // Read-only but never cached: the result depends on the working tree.
+        assert!(flag("run_command", |t| t.is_readonly() && !t.is_cacheable()));
+        // Writes invalidate the cache and are hidden from the planner.
+        assert!(flag("write_file", |t| t.is_write() && !t.is_readonly()));
+        assert!(flag("edit_file", |t| t.is_write() && !t.is_readonly()));
+    }
 
     /// A `tool.before` hook must be able to attribute the call to its session:
     /// that is the audit path now that memory no longer records tool calls.

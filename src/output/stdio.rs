@@ -325,36 +325,6 @@ impl AgentOutput for StdioOutput {
             "max_tokens": max,
         }));
     }
-
-    fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
-        let (inner_type, inner_data) = match event {
-            SubAgentOutputEvent::StreamStart => ("stream_start", serde_json::json!({})),
-            SubAgentOutputEvent::StreamEnd   => ("stream_end",   serde_json::json!({})),
-            SubAgentOutputEvent::Token(t) => (
-                "streaming_token", serde_json::json!({ "token": t })
-            ),
-            SubAgentOutputEvent::ToolUse { name } => (
-                "tool_use", serde_json::json!({ "tool": name })
-            ),
-            SubAgentOutputEvent::ToolDone { name, is_error } => (
-                "tool_result", serde_json::json!({ "tool": name, "is_error": is_error })
-            ),
-            SubAgentOutputEvent::Done(text) => (
-                "done", serde_json::json!({ "text": text })
-            ),
-            SubAgentOutputEvent::Error(msg) => (
-                "error", serde_json::json!({ "message": msg })
-            ),
-        };
-        self.emit("agent_event", serde_json::json!({
-            "agent_id": task_id,
-            "event": {
-                "type": inner_type,
-                "data": inner_data,
-            }
-        }));
-    }
-
     fn on_notification(&self, source: &str, level: NotifyLevel, message: &str) {
         self.emit("notification", serde_json::json!({
             "source": source,

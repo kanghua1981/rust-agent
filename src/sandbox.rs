@@ -211,14 +211,6 @@ impl Sandbox {
         matches!(self.inner.lock().await.backend, Backend::Overlay { .. })
     }
 
-    /// Human-readable backend name.
-    pub async fn backend_name(&self) -> &'static str {
-        match self.inner.lock().await.backend {
-            Backend::Disabled => "disabled",
-            Backend::Overlay { .. } => "overlay",
-        }
-    }
-
     /// Number of tracked operations (files in overlay upper layer).
     pub async fn ops_count(&self) -> usize {
         match &self.inner.lock().await.backend {

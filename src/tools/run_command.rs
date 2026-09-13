@@ -7,6 +7,7 @@ pub struct RunCommandTool;
 
 #[async_trait::async_trait]
 impl Tool for RunCommandTool {
+    fn is_readonly(&self) -> bool { true }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

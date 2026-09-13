@@ -20,8 +20,6 @@ pub enum PluginStatus {
     Enabled,
     /// 已禁用
     Disabled,
-    /// 加载失败
-    Failed(String),
 }
 
 /// 插件实例
@@ -35,8 +33,6 @@ pub struct PluginInstance {
     pub path: PathBuf,
     /// 插件状态
     pub status: PluginStatus,
-    /// 加载时间
-    pub loaded_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// 插件信息（用于CLI显示）
@@ -75,7 +71,6 @@ impl PluginInstance {
             scope,
             path,
             status: PluginStatus::Loaded,
-            loaded_at: chrono::Utc::now(),
         }
     }
     
@@ -162,7 +157,7 @@ impl PluginManager {
             .map_err(|e| PluginError::Io(e))?;
         
         // 按优先级顺序加载所有作用域的插件
-        for scope in PluginScope::all_scopes() {
+        for scope in self.scope_manager.active_scopes() {
             if let Err(e) = self.load_plugins_in_scope(scope) {
                 tracing::warn!("Failed to load plugins in scope {:?}: {}", scope, e);
             }
@@ -626,7 +621,6 @@ impl PluginManager {
                 PluginStatus::Enabled => stats.enabled += 1,
                 PluginStatus::Disabled => stats.disabled += 1,
                 PluginStatus::Loaded => stats.loaded += 1,
-                PluginStatus::Failed(_) => stats.failed += 1,
             }
             
             match plugin.scope {
@@ -652,8 +646,6 @@ pub struct PluginStats {
     pub disabled: usize,
     /// 已加载但未启用插件数
     pub loaded: usize,
-    /// 加载失败插件数
-    pub failed: usize,
     /// 全局插件数
     pub global: usize,
     /// 项目插件数

@@ -3,7 +3,6 @@ mod commands;
 mod config;
 mod confirm;
 mod context;
-mod db;
 mod diff;
 mod llm;
 mod mcp_client;
@@ -219,10 +218,6 @@ async fn main() -> Result<()> {
     // Load config
     let config = config::Config::load(&args)?;
 
-    // Open the global database. Nothing reads it at runtime yet, but opening
-    // it applies any pending schema migrations.
-    let _global_db = std::sync::Arc::new(db::GlobalDb::open_or_create()?);
-    tracing::info!("Global DB ready: {}", _global_db.path().display());
 
     // Determine project directory
     let project_dir = if let Some(ref workdir) = args.workdir {
@@ -251,7 +246,7 @@ async fn main() -> Result<()> {
         };
         // Nodes are loaded from global.db by the worker — no need to pass
         // a serialized workspace list.
-        return worker::run(worker_config, project_dir, fd, args.isolation, &id, vec![]).await;
+        return worker::run(worker_config, project_dir, fd, args.isolation, &id, ).await;
     }
 
     // Server mode has its own event loop — launch and return

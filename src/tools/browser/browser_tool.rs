@@ -738,6 +738,7 @@ impl BrowserTool {
 
 #[async_trait::async_trait]
 impl Tool for BrowserTool {
+    fn is_readonly(&self) -> bool { true }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

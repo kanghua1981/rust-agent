@@ -20,8 +20,6 @@ pub struct ToolDefinition {
     pub parameters: Option<Value>,
     /// 工具脚本路径
     pub script_path: Option<PathBuf>,
-    /// 工具脚本内容（如果脚本很小，可以直接加载）
-    pub script_content: Option<String>,
     /// 工具类型
     pub tool_type: ToolType,
     /// 所属插件
@@ -142,18 +140,6 @@ impl ToolLoader {
         
         // 查找对应的脚本文件
         let script_path = self.find_script_file(json_path, &name)?;
-        let script_content = if let Some(ref path) = script_path {
-            // 如果脚本文件很小，可以预加载内容
-            if path.metadata().map(|m| m.len() < 1024 * 10).unwrap_or(false) {
-                std::fs::read_to_string(path)
-                    .map(Some)
-                    .unwrap_or(None)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         
         // 推断工具类型
         let tool_type = if let Some(ref path) = script_path {
@@ -170,7 +156,6 @@ impl ToolLoader {
             description,
             parameters,
             script_path,
-            script_content,
             tool_type,
             plugin_id: plugin_id.to_string(),
         })

@@ -16,13 +16,6 @@ use std::time::{Duration, Instant};
 use super::ToolResult;
 
 /// Tools whose results are safe to cache (pure read operators).
-const CACHEABLE_TOOLS: &[&str] = &[
-    "read_file",
-    "grep_search",
-    "file_search",
-    "list_directory",
-];
-
 /// Maximum characters before a tool result is truncated (Layer 2).
 const MAX_RESULT_CHARS: usize = 20_000;
 
@@ -57,11 +50,6 @@ impl ToolResultCache {
             hits: 0,
             misses: 0,
         }
-    }
-
-    /// Check if a tool name is eligible for caching.
-    pub fn is_cacheable(tool_name: &str) -> bool {
-        CACHEABLE_TOOLS.contains(&tool_name)
     }
 
     /// Look up a cached result.  Returns `None` if not found or expired.
@@ -225,12 +213,4 @@ mod tests {
         assert!(result.output.contains("truncated"));
     }
 
-    #[test]
-    fn test_cacheable_tools() {
-        assert!(ToolResultCache::is_cacheable("read_file"));
-        assert!(ToolResultCache::is_cacheable("grep_search"));
-        assert!(!ToolResultCache::is_cacheable("write_file"));
-        assert!(!ToolResultCache::is_cacheable("run_command"));
-        assert!(!ToolResultCache::is_cacheable("edit_file"));
-    }
 }

@@ -138,16 +138,21 @@ impl ScopeManager {
         scope.directory(&self.base_dirs)
     }
     
+    /// The scopes this manager loads from, in priority order.
+    ///
+    /// `new` allows every scope; `new_with_scopes` narrows it to the requested set.
+    pub fn active_scopes(&self) -> Vec<PluginScope> {
+        match &self.active_scopes {
+            Some(active) => active.clone(),
+            None => PluginScope::all_scopes(),
+        }
+    }
+
     /// 获取所有作用域的插件目录（按优先级排序）
-    /// 若通过 `new_with_scopes` 限制了作用域，则只返回指定作用域的目录。
     #[cfg(test)]
     pub fn all_plugin_dirs(&self) -> Vec<(PluginScope, PathBuf)> {
-        PluginScope::all_scopes()
+        self.active_scopes()
             .into_iter()
-            .filter(|scope| {
-                self.active_scopes.as_ref()
-                    .map_or(true, |active| active.contains(scope))
-            })
             .map(|scope| (scope, scope.directory(&self.base_dirs)))
             .collect()
     }

@@ -6,6 +6,8 @@ pub struct ReadFileTool;
 
 #[async_trait::async_trait]
 impl Tool for ReadFileTool {
+    fn is_readonly(&self) -> bool { true }
+    fn is_cacheable(&self) -> bool { true }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

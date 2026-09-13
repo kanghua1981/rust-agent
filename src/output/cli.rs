@@ -175,44 +175,11 @@ impl AgentOutput for CliOutput {
     fn on_context_warning(&self, usage_percent: f32, estimated: usize, max: usize) {
         crate::ui::print_context_warning(usage_percent, estimated, max);
     }
-
-    fn on_sub_agent_event(&self, task_id: &str, event: &SubAgentOutputEvent) {
-        use colored::Colorize;
-        use std::io::Write;
-        let prefix = format!("[sub:{}]", task_id).cyan().bold().to_string();
-        match event {
-            SubAgentOutputEvent::StreamStart => {}
-            SubAgentOutputEvent::StreamEnd   => { println!(); }
-            SubAgentOutputEvent::Token(t) => {
-                print!("{}", t);
-                std::io::stdout().flush().ok();
-            }
-            SubAgentOutputEvent::ToolUse { name } => {
-                println!("  {} ⚙  {}", prefix, name.bright_white());
-            }
-            SubAgentOutputEvent::ToolDone { name, is_error } => {
-                if *is_error {
-                    println!("  {} ✗  {}", prefix, name.red());
-                } else {
-                    println!("  {} ✓  {}", prefix, name.green());
-                }
-            }
-            SubAgentOutputEvent::Done(text) => {
-                let preview = crate::ui::truncate_str(text, 100);
-                println!("  {} ✅ {}", prefix, preview.dimmed());
-            }
-            SubAgentOutputEvent::Error(msg) => {
-                println!("  {} ❌ {}", prefix, msg.red());
-            }
-        }
-    }
-
     fn on_notification(&self, source: &str, level: NotifyLevel, message: &str) {
         use colored::Colorize;
         let (icon, msg_colored) = match level {
             NotifyLevel::Info    => ("ℹ", message.white().to_string()),
             NotifyLevel::Warning => ("⚠", message.yellow().to_string()),
-            NotifyLevel::Alert   => ("🔔", message.red().bold().to_string()),
         };
         println!("  {} {} {}", format!("[{}]", source).magenta().bold(), icon, msg_colored);
     }

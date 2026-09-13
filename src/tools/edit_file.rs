@@ -6,6 +6,7 @@ pub struct EditFileTool;
 
 #[async_trait::async_trait]
 impl Tool for EditFileTool {
+    fn is_write(&self) -> bool { true }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

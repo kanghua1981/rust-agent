@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
-use super::hook_loader::HookDefinition;
+use super::hook_loader::{HookDefinition, HookMode};
 
 // ── 公开类型 ──────────────────────────────────────────────────────────────────
 
@@ -135,7 +135,7 @@ impl HookBus {
     /// 用于通知、日志等不需要结果的场景。
     /// 使用 `Semaphore` 限制并发数：超过 `MAX_CONCURRENT_HOOKS` 时丢弃新 hook。
     pub fn emit(&self, event: HookEvent) {
-        let hooks = self.snapshot_matching(&event.name, &event.data);
+        let hooks = self.snapshot_matching(&event.name, &event.data, HookMode::FireAndForget);
         if hooks.is_empty() {
             return;
         }
@@ -191,7 +191,7 @@ impl HookBus {
     ///
     /// 单个 hook 失败只记录 warn，不影响后续 hook 或主流程。
     pub async fn emit_blocking(&self, event: HookEvent) {
-        let hooks = self.snapshot_matching(&event.name, &event.data);
+        let hooks = self.snapshot_matching(&event.name, &event.data, HookMode::Blocking);
         if hooks.is_empty() {
             return;
         }
@@ -235,7 +235,7 @@ impl HookBus {
     /// - 脚本超时     → 同上（视为 Continue）
     /// - stdout 非 JSON / 空 → 视为 Continue
     pub async fn emit_intercepting(&self, event: HookEvent) -> HookResult {
-        let hooks = self.snapshot_matching(&event.name, &event.data);
+        let hooks = self.snapshot_matching(&event.name, &event.data, HookMode::Intercepting);
         if hooks.is_empty() {
             return HookResult::Continue;
         }
@@ -313,12 +313,16 @@ impl HookBus {
     // ── 内部工具 ──────────────────────────────────────────────────────────────
 
     /// 获取某事件的匹配 hook 快照（持有读锁的时间仅限于 clone 操作）。
-    fn snapshot_matching(&self, event_name: &str, data: &Value) -> Vec<HookDefinition> {
+    /// Hooks registered for `event_name` that declared `mode` and match `data`.
+    ///
+    /// The declared mode decides how a hook runs, so a `fire_and_forget` hook is
+    /// never awaited and an `intercepting` hook is never fired blind.
+    fn snapshot_matching(&self, event_name: &str, data: &Value, mode: HookMode) -> Vec<HookDefinition> {
         let map = self.hooks.read().expect("HookBus RwLock poisoned");
         match map.get(event_name) {
             Some(hooks) => hooks
                 .iter()
-                .filter(|h| matches_filter(h, data))
+                .filter(|h| h.mode == mode && matches_filter(h, data))
                 .cloned()
                 .collect(),
             None => Vec::new(),

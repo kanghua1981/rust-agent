@@ -22,28 +22,6 @@ pub struct PathManager {
 }
 
 impl PathManager {
-    /// Create a new PathManager.
-    pub fn new(project_dir: PathBuf, sandbox: Option<Arc<Sandbox>>) -> Self {
-        let working_dir = if let Some(ref sandbox) = sandbox {
-            sandbox.working_dir().to_path_buf()
-        } else {
-            project_dir.clone()
-        };
-
-        let allowed_dir = if let Some(ref sandbox) = sandbox {
-            Some(sandbox.working_dir().to_path_buf())
-        } else {
-            None
-        };
-
-        Self {
-            original_project_dir: project_dir,
-            working_dir,
-            sandbox,
-            allowed_dir,
-        }
-    }
-
     /// Create a PathManager without sandbox.
     pub fn without_sandbox(project_dir: PathBuf) -> Self {
         Self {
@@ -153,11 +131,6 @@ impl PathManager {
         &self.working_dir
     }
 
-    /// Check if sandbox is enabled
-    pub fn is_sandbox_enabled(&self) -> bool {
-        self.sandbox.is_some()
-    }
-
     /// Update the allowed directory.
     pub fn set_allowed_dir(&mut self, dir: Option<PathBuf>) {
         self.allowed_dir = dir;
@@ -198,8 +171,6 @@ mod tests {
         // 测试工作目录
         assert_eq!(path_manager.working_dir(), project_dir);
         
-        // 测试沙盒状态
-        assert!(!path_manager.is_sandbox_enabled());
     }
 
     /// 测试路径权限检查
