@@ -538,8 +538,7 @@ pub async fn run(
     if legacy_mcp.exists() {
         output.on_warning(
             ".agent/mcp.toml 已废弃：MCP 服务配置请移至插件目录。\
-            \n  创建插件目录 .agent/plugins/<名称>/，并在其中新建 mcp/<服务名>.toml。\
-            \n  详见 docs/plugin_design.md。"
+            \n  创建插件目录 .agent/plugins/<名称>/，并在其中新建 mcp/<服务名>.toml。"
         );
     }
 
