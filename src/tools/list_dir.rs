@@ -1,4 +1,4 @@
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -42,7 +42,7 @@ impl Tool for ListDirTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
         let path = input
             .get("path")
             .and_then(|v| v.as_str())
@@ -52,37 +52,11 @@ impl Tool for ListDirTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let path = resolve_path_old(path, project_dir);
+        let path = match ctx.resolve(path) { Ok(path) => path, Err(e) => return ToolResult::error(e), };
 
         self.list_dir_internal(&path, recursive).await
     }
-    
-    async fn execute_with_path_manager(
-        &self, 
-        input: &serde_json::Value, 
-        path_manager: &crate::path_manager::PathManager
-    ) -> ToolResult {
-        let path = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
-        let recursive = input
-            .get("recursive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        // Check if path is allowed (for sandbox mode)
-        if !path_manager.is_path_allowed(path) {
-            return ToolResult::error(format!(
-                "Access denied: '{}' is outside the allowed directory.",
-                path
-            ));
-        }
-
-        let resolved_path = path_manager.resolve(path);
-        self.list_dir_internal(&resolved_path, recursive).await
     }
-}
 
 async fn list_dir_recursive(
     base: &Path,
@@ -274,11 +248,3 @@ fn resolve_path(path: &Path, project_dir: &Path) -> PathBuf {
 }
 
 // Keep old resolve_path for backward compatibility
-fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_dir.join(p)
-    }
-}

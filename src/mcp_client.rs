@@ -50,7 +50,6 @@
 //! `filesystem__read_file`, `github__search_repositories`, etc.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -64,7 +63,7 @@ use tokio::sync::Mutex;
 
 use crate::output::NotifyLevel;
 use crate::notify::push;
-use crate::tools::{Tool, ToolDefinition, ToolResult};
+use crate::tools::{Tool, ToolContext, ToolDefinition, ToolResult};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -567,7 +566,7 @@ impl Tool for McpClientTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, input: &Value, _project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &Value, _ctx: &ToolContext<'_>) -> ToolResult {
         let mut conn = self.connection.lock().await;
         match conn.call_tool(&self.original_name, input).await {
             Ok((text, is_error)) => {

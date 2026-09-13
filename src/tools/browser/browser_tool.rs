@@ -4,9 +4,8 @@ use crate::tools::browser::client::{ActionExecutor, BrowserAction, BrowserSessio
 use crate::tools::browser::config::ConfigManager;
 use crate::tools::browser::error::{BrowserError, BrowserResult};
 use crate::tools::browser::runtime::BrowserManager;
-use crate::tools::{Tool, ToolDefinition, ToolResult};
+use crate::tools::{Tool, ToolContext, ToolDefinition, ToolResult};
 use serde_json::Value;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -851,42 +850,39 @@ impl Tool for BrowserTool {
         }
     }
     
-    async fn execute(&self, input: &Value, _project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &Value, ctx: &ToolContext<'_>) -> ToolResult {
+        // Screenshots write a file, so resolve and authorise that path first.
+        if input.get("action").and_then(|v| v.as_str()) == Some("screenshot") {
+            if let Some(output_path) = input.get("output_path").and_then(|v| v.as_str()) {
+                let resolved = match ctx.resolve_for_write(output_path) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        return ToolResult::error(format!(
+                            "Permission denied for screenshot path: {}",
+                            e
+                        ))
+                    }
+                };
+                let mut new_input = input.clone();
+                if let Some(obj) = new_input.as_object_mut() {
+                    obj.insert(
+                        "output_path".to_string(),
+                        Value::String(resolved.display().to_string()),
+                    );
+                }
+                return match self.execute_internal(&new_input).await {
+                    Ok(result) => ToolResult::success(result),
+                    Err(e) => ToolResult::error(format!("Browser error: {}", e)),
+                };
+            }
+        }
+
         match self.execute_internal(input).await {
             Ok(result) => ToolResult::success(result),
             Err(e) => ToolResult::error(format!("Browser error: {}", e)),
         }
     }
-    
-    async fn execute_with_path_manager(
-        &self,
-        input: &Value,
-        path_manager: &crate::path_manager::PathManager,
-    ) -> ToolResult {
-        // Handle screenshot path resolution
-        if let Some(action) = input.get("action").and_then(|v| v.as_str()) {
-            if action == "screenshot" {
-                if let Some(output_path) = input.get("output_path").and_then(|v| v.as_str()) {
-                    // Check write permission for screenshot path
-                    if let Err(e) = path_manager.check_write_permission(output_path) {
-                        return ToolResult::error(format!("Permission denied for screenshot path: {}", e));
-                    }
-                    
-                    // Create a new input with resolved path
-                    let mut new_input = input.clone();
-                    let resolved_path = path_manager.resolve(output_path);
-                    if let Some(obj) = new_input.as_object_mut() {
-                        obj.insert("output_path".to_string(), Value::String(resolved_path.display().to_string()));
-                    }
-                    
-                    return self.execute(&new_input, path_manager.working_dir()).await;
-                }
-            }
-        }
-        
-        self.execute(input, path_manager.working_dir()).await
     }
-}
 
 impl BrowserTool {
     /// Internal execution method that returns BrowserResult

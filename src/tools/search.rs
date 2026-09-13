@@ -1,4 +1,4 @@
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -47,7 +47,7 @@ impl Tool for GrepSearchTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
         let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: pattern"),
@@ -68,46 +68,12 @@ impl Tool for GrepSearchTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(50) as usize;
 
-        self.grep_search_internal(pattern, search_path, include, case_sensitive, max_results, project_dir).await
-    }
-    
-    async fn execute_with_path_manager(
-        &self, 
-        input: &serde_json::Value, 
-        path_manager: &crate::path_manager::PathManager
-    ) -> ToolResult {
-        let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return ToolResult::error("Missing required parameter: pattern"),
+        let search_path = match ctx.resolve(search_path) {
+            Ok(path) => path,
+            Err(e) => return ToolResult::error(e),
         };
 
-        let search_path = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
-
-        let include = input.get("include").and_then(|v| v.as_str());
-        let case_sensitive = input
-            .get("case_sensitive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let max_results = input
-            .get("max_results")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50) as usize;
-
-        // Check if search path is allowed (for sandbox mode)
-        if !path_manager.is_path_allowed(search_path) {
-            return ToolResult::error(format!(
-                "Access denied: '{}' is outside the allowed directory.",
-                search_path
-            ));
-        }
-
-        let resolved_path = path_manager.resolve(search_path);
-        let working_dir = path_manager.working_dir();
-
-        self.grep_search_internal(pattern, &resolved_path.to_string_lossy(), include, case_sensitive, max_results, working_dir).await
+        self.grep_search_internal(pattern, &search_path.to_string_lossy(), include, case_sensitive, max_results, ctx.project_dir()).await
     }
 }
 
@@ -220,7 +186,7 @@ impl Tool for FileSearchTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
         let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: pattern"),
@@ -231,37 +197,14 @@ impl Tool for FileSearchTool {
             .and_then(|v| v.as_str())
             .unwrap_or(".");
 
-        self.file_search_internal(pattern, search_path, project_dir).await
-    }
-    
-    async fn execute_with_path_manager(
-        &self, 
-        input: &serde_json::Value, 
-        path_manager: &crate::path_manager::PathManager
-    ) -> ToolResult {
-        let pattern = match input.get("pattern").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return ToolResult::error("Missing required parameter: pattern"),
+        let search_path = match ctx.resolve(search_path) {
+            Ok(path) => path,
+            Err(e) => return ToolResult::error(e),
         };
 
-        let search_path = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
-
-        // Check if search path is allowed (for sandbox mode)
-        if !path_manager.is_path_allowed(search_path) {
-            return ToolResult::error(format!(
-                "Access denied: '{}' is outside the allowed directory.",
-                search_path
-            ));
-        }
-
-        let resolved_path = path_manager.resolve(search_path);
-        let working_dir = path_manager.working_dir();
-
-        self.file_search_internal(pattern, &resolved_path.to_string_lossy(), working_dir).await
+        self.file_search_internal(pattern, &search_path.to_string_lossy(), ctx.project_dir()).await
     }
+
 }
 
 impl FileSearchTool {

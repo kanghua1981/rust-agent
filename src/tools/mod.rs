@@ -73,6 +73,81 @@ pub struct ToolExecutor {
     result_cache: std::cell::RefCell<cache::ToolResultCache>,
 }
 
+/// What a tool needs from its caller to reach the filesystem.
+///
+/// Bundles the project directory with the optional path manager, so a tool has a
+/// single `execute` instead of one method per path-handling strategy. Under a
+/// sandbox the manager both redirects paths into the overlay and authorises them;
+/// without one, paths resolve relative to the project directory.
+pub struct ToolContext<'a> {
+    project_dir: &'a Path,
+    path_manager: Option<&'a crate::path_manager::PathManager>,
+}
+
+impl<'a> ToolContext<'a> {
+    pub fn new(
+        project_dir: &'a Path,
+        path_manager: Option<&'a crate::path_manager::PathManager>,
+    ) -> Self {
+        Self { project_dir, path_manager }
+    }
+
+    /// The directory a tool runs in: the sandbox working directory when one is
+    /// active, otherwise the project directory.
+    pub fn project_dir(&self) -> &Path {
+        match self.path_manager {
+            Some(pm) => pm.working_dir(),
+            None => self.project_dir,
+        }
+    }
+
+    /// Resolve a path the tool is about to read.
+    pub fn resolve(&self, path: &str) -> Result<PathBuf, String> {
+        match self.path_manager {
+            Some(pm) => {
+                if !pm.is_path_allowed(path) {
+                    return Err(format!(
+                        "Access denied: '{}' is outside the allowed directory.",
+                        path
+                    ));
+                }
+                Ok(pm.resolve(path))
+            }
+            None => Ok(resolve_against(self.project_dir, path)),
+        }
+    }
+
+    /// Resolve a path the tool is about to write.
+    pub fn resolve_for_write(&self, path: &str) -> Result<PathBuf, String> {
+        match self.path_manager {
+            Some(pm) => {
+                pm.check_write_permission(path)?;
+                Ok(pm.resolve(path))
+            }
+            None => Ok(resolve_against(self.project_dir, path)),
+        }
+    }
+
+    /// Check a write without resolving: the caller builds the path itself.
+    pub fn check_write(&self, path: &str) -> Result<(), String> {
+        match self.path_manager {
+            Some(pm) => pm.check_write_permission(path),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Resolve `path` with no path manager: absolute paths stay put, relative paths
+/// join the project directory.
+fn resolve_against(project_dir: &Path, path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        project_dir.join(p)
+    }
+}
+
 /// Trait that all tools must implement
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
@@ -91,17 +166,7 @@ pub trait Tool: Send + Sync {
     /// touches must be invalidated.
     fn is_write(&self) -> bool { false }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult;
-
-    /// Execute with path manager (optional, for tools that need advanced path handling)
-    async fn execute_with_path_manager(
-        &self, 
-        input: &serde_json::Value, 
-        path_manager: &crate::path_manager::PathManager
-    ) -> ToolResult {
-        // Default implementation falls back to execute with project_dir
-        self.execute(input, path_manager.working_dir()).await
-    }
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult;
 }
 
 impl ToolExecutor {
@@ -412,21 +477,10 @@ impl ToolExecutor {
             Some(tool) => {
                 use futures::FutureExt; // catch_unwind on futures
 
-                let result = if let Some(ref path_manager) = self.path_manager {
-                    // Use path manager if available
-                    std::panic::AssertUnwindSafe(
-                        tool.execute_with_path_manager(input, path_manager),
-                    )
+                let ctx = ToolContext::new(&self.project_dir, self.path_manager.as_deref());
+                let result = std::panic::AssertUnwindSafe(tool.execute(input, &ctx))
                     .catch_unwind()
-                    .await
-                } else {
-                    // Fall back to old method
-                    std::panic::AssertUnwindSafe(
-                        tool.execute(input, &self.project_dir),
-                    )
-                    .catch_unwind()
-                    .await
-                };
+                    .await;
 
                 match result {
                     Ok(r) => r,
@@ -568,7 +622,7 @@ impl Tool for PluginToolWrapper {
         }
     }
     
-    async fn execute(&self, input: &serde_json::Value, _project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, _ctx: &ToolContext<'_>) -> ToolResult {
         // 执行插件工具（self.name 已经是 name@plugin_id 格式）
         let mut pm_lock = self.plugin_manager.lock().await;
         match pm_lock.execute_tool(&self.name, input).await {
@@ -584,15 +638,7 @@ impl Tool for PluginToolWrapper {
             Err(e) => ToolResult::error(format!("Plugin tool execution failed: {}", e)),
         }
     }
-    
-    async fn execute_with_path_manager(
-        &self,
-        input: &serde_json::Value,
-        _path_manager: &crate::path_manager::PathManager,
-    ) -> ToolResult {
-        // 插件工具不使用路径管理器，直接调用execute
-        self.execute(input, Path::new(".")).await
-    }
+
 }
 
 #[cfg(test)]
@@ -601,6 +647,30 @@ mod tests {
     use crate::plugin::hook_bus::HookBus;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
+
+    /// The path guard lives in `ToolContext` now, so it is tested once here
+    /// instead of being re-implemented by every tool.
+    #[test]
+    fn context_rejects_paths_outside_the_allowed_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut path_manager =
+            crate::path_manager::PathManager::without_sandbox(dir.path().to_path_buf());
+        path_manager.set_allowed_dir(Some(dir.path().to_path_buf()));
+        let ctx = ToolContext::new(dir.path(), Some(&path_manager));
+
+        assert!(ctx.resolve("inside.rs").is_ok(), "paths under the sandbox must resolve");
+        assert!(ctx.resolve_for_write("inside.rs").is_ok());
+        assert!(ctx.resolve("/etc/passwd").is_err(), "reads outside the sandbox must be denied");
+        assert!(ctx.resolve_for_write("/etc/passwd").is_err(), "writes outside must be denied");
+    }
+
+    #[test]
+    fn context_without_a_path_manager_resolves_against_the_project_directory() {
+        let ctx = ToolContext::new(Path::new("/tmp/project"), None);
+        assert_eq!(ctx.project_dir(), Path::new("/tmp/project"));
+        assert_eq!(ctx.resolve("src/main.rs").unwrap(), PathBuf::from("/tmp/project/src/main.rs"));
+        assert_eq!(ctx.resolve("/etc/passwd").unwrap(), PathBuf::from("/etc/passwd"));
+    }
 
     #[test]
     fn tool_predicates_match_the_tools_they_describe() {

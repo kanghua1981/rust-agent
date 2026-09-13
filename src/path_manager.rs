@@ -137,18 +137,6 @@ impl PathManager {
     }
 }
 
-/// Resolve a path using the old logic (for backward compatibility).
-/// This is used during the transition period.
-#[cfg(test)]
-pub fn resolve_path_old(path: &str, project_dir: &Path) -> PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_dir.join(p)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,17 +190,4 @@ mod tests {
         assert!(normalized.ends_with("project/main.rs"));
     }
 
-    /// 测试向后兼容的路径解析函数
-    #[test]
-    fn test_resolve_path_old() {
-        let project_dir = PathBuf::from("/test/project");
-        
-        // 测试相对路径
-        let resolved = resolve_path_old("src/main.rs", &project_dir);
-        assert_eq!(resolved, project_dir.join("src/main.rs"));
-        
-        // 测试绝对路径
-        let resolved = resolve_path_old("/absolute/path", &project_dir);
-        assert_eq!(resolved, PathBuf::from("/absolute/path"));
-    }
 }

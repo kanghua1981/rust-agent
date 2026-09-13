@@ -1,4 +1,4 @@
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 use std::path::Path;
 use tokio::fs;
 
@@ -34,39 +34,17 @@ impl Tool for ReadFileTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: path"),
         };
 
-        let path = resolve_path_old(path, project_dir);
+        let path = match ctx.resolve(path) { Ok(path) => path, Err(e) => return ToolResult::error(e), };
 
         self.read_file_internal(&path, input).await
     }
-    
-    async fn execute_with_path_manager(
-        &self, 
-        input: &serde_json::Value, 
-        path_manager: &crate::path_manager::PathManager
-    ) -> ToolResult {
-        let path = match input.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return ToolResult::error("Missing required parameter: path"),
-        };
-
-        // Check if path is allowed (for sandbox mode)
-        if !path_manager.is_path_allowed(path) {
-            return ToolResult::error(format!(
-                "Access denied: '{}' is outside the allowed directory.",
-                path
-            ));
-        }
-
-        let resolved_path = path_manager.resolve(path);
-        self.read_file_internal(&resolved_path, input).await
     }
-}
 
 impl ReadFileTool {
     async fn read_file_internal(&self, path: &Path, input: &serde_json::Value) -> ToolResult {
@@ -126,11 +104,3 @@ impl ReadFileTool {
 }
 
 // Keep old resolve_path for backward compatibility
-fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_dir.join(p)
-    }
-}

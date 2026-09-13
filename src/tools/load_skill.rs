@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use super::{Tool, ToolDefinition, ToolResult};
-use std::path::Path;
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 
 pub struct LoadSkillTool {
     /// 插件管理器（在可用时统一查询项目技能 + 插件技能）
@@ -35,7 +34,8 @@ impl Tool for LoadSkillTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
+        let project_dir = ctx.project_dir();
         let name = match input.get("name").and_then(|v| v.as_str()) {
             Some(n) => n,
             None => return ToolResult::error("Missing required parameter: name"),
@@ -78,28 +78,4 @@ impl Tool for LoadSkillTool {
             }
         }
     }
-    
-    async fn execute_with_path_manager(
-        &self,
-        input: &serde_json::Value,
-        path_manager: &crate::path_manager::PathManager,
-    ) -> ToolResult {
-        // 优先查插件管理器（和 execute 逻辑相同）
-        if let Some(pm) = &self.plugin_manager {
-            let name = match input.get("name").and_then(|v| v.as_str()) {
-                Some(n) => n,
-                None => return ToolResult::error("Missing required parameter: name"),
-            };
-            let pm_lock = pm.lock().await;
-            if let Some(skill) = pm_lock.get_skill(name) {
-                let source = if skill.plugin_id == "@system" {
-                    skill.file_path.to_string_lossy().to_string()
-                } else {
-                    format!("{} (plugin: {})", skill.file_path.display(), skill.plugin_id)
-                };
-                return ToolResult::success(format!("# Skill: {} (from {})\n\n{}", skill.name, source, skill.content));
-            }
-        }
-        self.execute(input, path_manager.working_dir()).await
     }
-}

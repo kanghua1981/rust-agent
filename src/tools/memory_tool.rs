@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 use crate::memory::MemoryProvider;
 
 /// Maximum allowed length for a single memory entry (characters).
@@ -220,7 +220,8 @@ impl Tool for MemoryTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &std::path::Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
+        let project_dir = ctx.project_dir();
         let action = input
             .get("action")
             .and_then(|v| v.as_str())

@@ -1,7 +1,7 @@
 //! Multi-edit tool: apply multiple find-and-replace edits to a single file
 //! in one tool call, avoiding redundant LLM round-trips.
 
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 use std::path::Path;
 use tokio::fs;
 
@@ -46,7 +46,7 @@ impl Tool for MultiEditFileTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error("Missing required parameter: path"),
@@ -61,39 +61,11 @@ impl Tool for MultiEditFileTool {
             return ToolResult::error("edits array is empty");
         }
 
-        let path = resolve_path_old(path, project_dir);
+        let path = match ctx.resolve_for_write(path) { Ok(path) => path, Err(e) => return ToolResult::error(e), };
 
         self.multi_edit_internal(&path, input).await
     }
-    
-    async fn execute_with_path_manager(
-        &self, 
-        input: &serde_json::Value, 
-        path_manager: &crate::path_manager::PathManager
-    ) -> ToolResult {
-        let path = match input.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return ToolResult::error("Missing required parameter: path"),
-        };
-
-        let edits = match input.get("edits").and_then(|v| v.as_array()) {
-            Some(e) => e,
-            None => return ToolResult::error("Missing required parameter: edits (must be an array)"),
-        };
-
-        if edits.is_empty() {
-            return ToolResult::error("edits array is empty");
-        }
-
-        // Check write permission
-        if let Err(err) = path_manager.check_write_permission(path) {
-            return ToolResult::error(err);
-        }
-
-        let resolved_path = path_manager.resolve(path);
-        self.multi_edit_internal(&resolved_path, input).await
     }
-}
 
 impl MultiEditFileTool {
     async fn multi_edit_internal(&self, path: &Path, input: &serde_json::Value) -> ToolResult {
@@ -204,11 +176,3 @@ impl MultiEditFileTool {
 }
 
 // Keep old resolve_path for backward compatibility
-fn resolve_path_old(path: &str, project_dir: &Path) -> std::path::PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_dir.join(p)
-    }
-}

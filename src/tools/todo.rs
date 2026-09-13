@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 
 /// Maximum items rendered into the per-turn context block.
 ///
@@ -342,7 +342,8 @@ Every action returns the full list. Keep at most one item in_progress while you 
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, project_dir: &Path) -> ToolResult {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
+        let project_dir = ctx.project_dir();
         match input.get("action").and_then(|v| v.as_str()) {
             Some("write") => self.write(input, project_dir),
             Some("update") => self.update(input, project_dir),
@@ -362,7 +363,7 @@ mod tests {
     fn write_list(dir: &Path, items: &serde_json::Value) -> ToolResult {
         let tool = TodoTool;
         let input = json!({ "action": "write", "items": items });
-        futures::executor::block_on(tool.execute(&input, dir))
+        futures::executor::block_on(tool.execute(&input, &ToolContext::new(dir, None)))
     }
 
     #[test]
@@ -378,13 +379,13 @@ mod tests {
         let tool = TodoTool;
         let out = futures::executor::block_on(tool.execute(
             &json!({ "action": "update", "id": "t2", "status": "completed" }),
-            dir.path(),
+            &ToolContext::new(dir.path(), None),
         ));
         assert!(!out.is_error, "{}", out.output);
         assert!(out.output.contains("completed"));
 
         let out = futures::executor::block_on(tool.execute(
-            &json!({ "action": "read" }), dir.path()));
+            &json!({ "action": "read" }), &ToolContext::new(dir.path(), None)));
         assert!(out.output.contains("first task"));
     }
 
@@ -393,7 +394,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let tool = TodoTool;
         let out = futures::executor::block_on(tool.execute(
-            &json!({ "action": "delete" }), dir.path()));
+            &json!({ "action": "delete" }), &ToolContext::new(dir.path(), None)));
         assert!(out.is_error);
     }
 

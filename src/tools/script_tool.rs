@@ -38,7 +38,7 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{Tool, ToolContext, ToolDefinition, ToolResult};
 
 /// A tool backed by an external script, loaded from a `tool.json` file.
 pub struct ScriptTool {
@@ -73,98 +73,11 @@ impl Tool for ScriptTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, input: &serde_json::Value, _project_dir: &Path) -> ToolResult {
-        // Serialize the LLM-supplied parameters to JSON for the script.
-        let params_json = match serde_json::to_string(input) {
-            Ok(s) => s,
-            Err(e) => return ToolResult::error(format!("Failed to serialize parameters: {e}")),
-        };
-
-        tracing::info!(
-            "Executing script tool '{}': {} (in {})",
-            self.definition.name,
-            self.command,
-            self.skill_dir.display()
-        );
-
-        let mut cmd = Command::new("bash");
-        cmd.arg("-c")
-            .arg(&self.command)
-            .current_dir(&self.skill_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                return ToolResult::error(format!(
-                    "Failed to spawn command '{}': {e}",
-                    self.command
-                ))
-            }
-        };
-
-        // Write params JSON to stdin then close it.
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(params_json.as_bytes()).await;
-            let _ = stdin.write_all(b"\n").await;
-            // stdin is dropped here, signalling EOF to the child.
-        }
-
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(self.timeout_secs),
-            child.wait_with_output(),
-        )
-        .await;
-
-        match result {
-            Err(_) => ToolResult::error(format!(
-                "Script tool '{}' timed out after {}s",
-                self.definition.name, self.timeout_secs
-            )),
-            Ok(Err(e)) => ToolResult::error(format!("Script tool execution error: {e}")),
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-                if output.status.success() {
-                    let out = if stdout.is_empty() {
-                        if stderr.is_empty() {
-                            "(no output)".to_string()
-                        } else {
-                            stderr
-                        }
-                    } else {
-                        stdout
-                    };
-                    ToolResult::success(out)
-                } else {
-                    let code = output.status.code().unwrap_or(-1);
-                    let msg = if !stderr.is_empty() {
-                        format!("exit code {code}: {stderr}")
-                    } else if !stdout.is_empty() {
-                        format!("exit code {code}: {stdout}")
-                    } else {
-                        format!("exit code {code}")
-                    };
-                    ToolResult::error(msg)
-                }
-            }
-        }
-    }
-    
-    async fn execute_with_path_manager(
-        &self, 
-        input: &serde_json::Value, 
-        path_manager: &crate::path_manager::PathManager
-    ) -> ToolResult {
-        // For script tools, we need to check if the skill directory is allowed
-        // and use the path manager's working directory as the base
-        let skill_dir_path = path_manager.working_dir().join(&self.skill_dir);
-        
-        // Check if the skill directory is allowed (for sandbox mode)
-        if !path_manager.is_path_allowed(skill_dir_path.to_str().unwrap_or("")) {
+    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext<'_>) -> ToolResult {
+        // Scripts run from their plugin directory; under a sandbox that path must
+        // still resolve inside the allowed tree.
+        let skill_dir = ctx.project_dir().join(&self.skill_dir);
+        if ctx.resolve(&skill_dir.to_string_lossy()).is_err() {
             return ToolResult::error(format!(
                 "Access denied: Script tool '{}' directory '{}' is outside the allowed directory.",
                 self.definition.name,
@@ -182,13 +95,13 @@ impl Tool for ScriptTool {
             "Executing script tool '{}': {} (in {})",
             self.definition.name,
             self.command,
-            skill_dir_path.display()
+            skill_dir.display()
         );
 
         let mut cmd = Command::new("bash");
         cmd.arg("-c")
             .arg(&self.command)
-            .current_dir(&skill_dir_path)
+            .current_dir(&skill_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -251,7 +164,7 @@ impl Tool for ScriptTool {
             }
         }
     }
-}
+    }
 
 // ── Scanning ──────────────────────────────────────────────────────────────────
 
