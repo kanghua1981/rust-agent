@@ -121,29 +121,6 @@ impl Message {
             .collect::<Vec<_>>()
             .join("\n")
     }
-
-    /// Check if this message contains tool use requests
-    #[allow(dead_code)]
-    pub fn has_tool_use(&self) -> bool {
-        self.content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
-    }
-
-    /// Extract all tool use blocks
-    #[allow(dead_code)]
-    pub fn tool_uses(&self) -> Vec<(&str, &str, &serde_json::Value)> {
-        self.content
-            .iter()
-            .filter_map(|block| {
-                if let ContentBlock::ToolUse { id, name, input } = block {
-                    Some((id.as_str(), name.as_str(), input))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
 }
 
 /// The typed vocabulary of the session log.
@@ -151,7 +128,7 @@ impl Message {
 /// This is the append-only, replayable recording of a session — the source of
 /// truth. Message events carry the full message (any role), so
 /// [Conversation::derive_messages] reconstructs the model history from them;
-/// turn/tool/chunk/completion events are supplementary fidelity for replay and
+/// turn/tool/completion events are supplementary fidelity for replay and
 /// observability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
@@ -165,7 +142,6 @@ pub enum SessionEventKind {
     SystemMessage { message: Message },
     ToolCall { id: String, name: String, input: serde_json::Value },
     ToolResult { id: String, is_error: bool },
-    AssistantChunk { text: String },
     Compaction { surface_start: usize, surface_end: usize, summary: String },
     SessionEndSeed,
 }
@@ -527,15 +503,6 @@ Skills management:
         self.record(SessionEventKind::ToolResult {
             id: id.to_string(),
             is_error,
-        });
-    }
-
-    /// Record a raw assistant text chunk (log-only, token-level replay fidelity).
-    /// Reserved for the streaming hook in a later phase.
-    #[allow(dead_code)]
-    pub fn append_chunk(&mut self, text: &str) {
-        self.record(SessionEventKind::AssistantChunk {
-            text: text.to_string(),
         });
     }
 

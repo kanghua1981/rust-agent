@@ -58,7 +58,6 @@ pub fn print_diff(path: &str, old_content: &str, new_content: &str) {
 }
 
 /// Generate a diff string (for tool result output, not colored)
-#[allow(dead_code)]
 pub fn diff_string(path: &str, old_content: &str, new_content: &str) -> String {
     let old_lines: Vec<&str> = old_content.lines().collect();
     let new_lines: Vec<&str> = new_content.lines().collect();

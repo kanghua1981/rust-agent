@@ -183,7 +183,13 @@ pub fn load_skill_by_name(workdir: &Path, skill_name: &str) -> Option<Skill> {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let raw = std::fs::read_to_string(&readme).ok().unwrap_or_default();
+            let raw = match std::fs::read_to_string(&readme) {
+                Ok(raw) => raw,
+                Err(e) => {
+                    tracing::warn!("Failed to read skill file {}: {}", readme.display(), e);
+                    String::new()
+                }
+            };
             let fm = parse_frontmatter(&raw);
             let display_name = fm.name.clone().unwrap_or_else(|| humanize_name(&dir_stem));
 
@@ -199,7 +205,13 @@ pub fn load_skill_by_name(workdir: &Path, skill_name: &str) -> Option<Skill> {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let raw = std::fs::read_to_string(&path).ok().unwrap_or_default();
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(raw) => raw,
+                Err(e) => {
+                    tracing::warn!("Failed to read skill file {}: {}", path.display(), e);
+                    String::new()
+                }
+            };
             let fm = parse_frontmatter(&raw);
             let display_name = fm.name.clone().unwrap_or_else(|| humanize_name(&file_stem));
 

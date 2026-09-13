@@ -99,10 +99,28 @@ fn todo_path(project_dir: &Path) -> std::path::PathBuf {
 
 fn load_todos(project_dir: &Path) -> Vec<TodoItem> {
     let path = todo_path(project_dir);
-    match std::fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => Vec::new(),
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    match serde_json::from_str(&content) {
+        Ok(items) => items,
+        Err(e) => {
+            // Keep the unreadable file: the next save would otherwise destroy
+            // the task list without a trace.
+            let backup = path.with_extension(format!("corrupt-{}", now_millis()));
+            let _ = std::fs::rename(&path, &backup);
+            tracing::warn!("Unreadable {} ({}); kept a copy at {} and started empty",
+                path.display(), e, backup.display());
+            Vec::new()
+        }
     }
+}
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 fn save_todos(project_dir: &Path, items: &[TodoItem]) -> std::io::Result<()> {
@@ -387,6 +405,20 @@ mod tests {
         let out = futures::executor::block_on(tool.execute(
             &json!({ "action": "read" }), &ToolContext::new(dir.path(), None)));
         assert!(out.output.contains("first task"));
+    }
+
+    #[test]
+    fn a_corrupt_list_is_backed_up_instead_of_silently_emptied() {
+        let dir = tempdir().unwrap();
+        write_list(dir.path(), &json!([{ "content": "task" }]));
+        std::fs::write(todo_path(dir.path()), "{ not json").unwrap();
+
+        assert!(load_todos(dir.path()).is_empty());
+        let kept = std::fs::read_dir(dir.path().join(".agent")).unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("todo.corrupt-"))
+            .count();
+        assert_eq!(kept, 1, "the unreadable file must be kept, not overwritten");
     }
 
     #[test]
