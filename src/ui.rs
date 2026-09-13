@@ -82,7 +82,6 @@ pub fn print_assistant_text(text: &str) {
 pub fn print_tool_use(name: &str, input: &serde_json::Value) {
     let icon = match name {
         "read_file" => "📖",
-        "batch_read_files" => "📚",
         "write_file" => "✏️",
         "edit_file" => "🔧",
         "multi_edit_file" => "🔧",
@@ -90,8 +89,6 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
         "grep_search" => "🔍",
         "file_search" => "📁",
         "list_directory" => "📂",
-        "read_pdf" => "📄",
-        "think" => "💭",
         "load_skill" => "🎓",
         "create_skill" => "📝",
         _ => "🔨",
@@ -182,36 +179,7 @@ pub fn print_tool_use(name: &str, input: &serde_json::Value) {
                 );
             }
         }
-        "batch_read_files" => {
-            if let Some(paths) = input.get("paths").and_then(|v| v.as_array()) {
-                println!("   {} {} files", "Reading:".dimmed(), paths.len());
-                for p in paths.iter().take(5) {
-                    if let Some(s) = p.as_str() {
-                        println!("   {} {}", "•".dimmed(), s.bright_white());
-                    }
-                }
-                if paths.len() > 5 {
-                    println!("   {} ... and {} more", "•".dimmed(), paths.len() - 5);
-                }
-            }
-        }
-        "read_pdf" => {
-            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                let pages = match (input.get("start_page").and_then(|v| v.as_u64()),
-                                   input.get("end_page").and_then(|v| v.as_u64())) {
-                    (Some(s), Some(e)) => format!(" (pages {}-{})", s, e),
-                    (Some(s), None) => format!(" (from page {})", s),
-                    _ => String::new(),
-                };
-                println!("   {} {}{}", "Path:".dimmed(), path.bright_white(), pages);
-            }
-        }
-        "think" => {
-            if let Some(thought) = input.get("thought").and_then(|v| v.as_str()) {
-                let preview = truncate_str(thought, 100);
-                println!("   {}", preview.dimmed());
-            }
-        }
+
         "load_skill" => {
             if let Some(name) = input.get("name").and_then(|v| v.as_str()) {
                 println!("   {} {}", "Skill:".dimmed(), name.bright_white());

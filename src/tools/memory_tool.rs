@@ -24,30 +24,31 @@ use crate::memory::MemoryProvider;
 /// Entries exceeding this are rejected to prevent memory stuffing attacks.
 const MAX_ENTRY_CHARS: usize = 2000;
 
-/// Result of a security scan on memory content.
+/// Result of a security scan on text that will be replayed into a future prompt.
 #[derive(Debug)]
-struct SecurityScanResult {
-    passed: bool,
-    warnings: Vec<String>,
+pub(super) struct SecurityScanResult {
+    pub(super) passed: bool,
+    pub(super) warnings: Vec<String>,
 }
 
-/// Scan memory content for security concerns.
+/// Scan externally supplied text before storing it where a later session will
+/// replay it into a system prompt (memory entries, project skills).
 ///
 /// Detects:
 /// - Invisible/zero-width Unicode (U+200B, U+200C, U+200D, U+FEFF, U+2060, etc.)
 /// - Prompt injection patterns ("ignore previous instructions", "system:", etc.)
-/// - Excessive length (> MAX_ENTRY_CHARS)
+/// - Excessive length (> `max_chars`)
 ///
 /// Inspired by hermes-agent's `_scan_memory_content()`.
-fn scan_memory_content(content: &str, _action: &str) -> SecurityScanResult {
+pub(super) fn scan_untrusted_content(content: &str, max_chars: usize) -> SecurityScanResult {
     let mut warnings: Vec<String> = Vec::new();
 
     // ── Length check ────────────────────────────────────────────────────
-    if content.chars().count() > MAX_ENTRY_CHARS {
+    if content.chars().count() > max_chars {
         warnings.push(format!(
             "Entry is {} chars (max {}). This may be a memory-stuffing attempt.",
             content.chars().count(),
-            MAX_ENTRY_CHARS
+            max_chars
         ));
     }
 
@@ -242,7 +243,7 @@ impl Tool for MemoryTool {
                 let trimmed = fact.trim().to_string();
 
                 // Security scan before writing
-                let scan = scan_memory_content(&trimmed, "add");
+                let scan = scan_untrusted_content(&trimmed, MAX_ENTRY_CHARS);
                 if !scan.passed {
                     let warn_msg = scan.warnings.join("\n- ");
                     tracing::warn!("Memory tool security scan flagged add: {}", warn_msg);
@@ -284,7 +285,7 @@ impl Tool for MemoryTool {
                 }
 
                 // Security scan on new fact
-                let scan = scan_memory_content(new_fact.trim(), "replace");
+                let scan = scan_untrusted_content(new_fact.trim(), MAX_ENTRY_CHARS);
                 if !scan.passed {
                     let warn_msg = scan.warnings.join("\n- ");
                     tracing::warn!("Memory tool security scan flagged replace: {}", warn_msg);

@@ -1,0 +1,14 @@
+{
+  "name": "read_pdf",
+  "description": "Extract text content from a PDF file. Uses marker_single (Markdown with LaTeX, best for math) when installed, otherwise pdftotext. Pass start_page/end_page to limit the page range.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "Path to the PDF file." },
+      "start_page": { "type": "integer", "description": "First page to extract (1-based)." },
+      "end_page": { "type": "integer", "description": "Last page to extract (inclusive)." },
+      "max_chars": { "type": "integer", "description": "Truncate the extracted text beyond this many characters (default 20000)." }
+    },
+    "required": ["path"]
+  }
+}

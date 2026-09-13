@@ -857,7 +857,7 @@ LLM 调用时参数以 JSON 形式写入脚本 stdin，stdout 作为返回値，
 📋  5 skill(s) loaded:
   • Project Instructions (AGENT.md) [embedded]
   • Coding Style (.agent/skills/coding-style.md) [on-demand]
-  • Git Workflow (plugin:project-stats / guide.md) [on-demand]    ← 插件技能
+  • PDF Reading (plugin:pdf-reader / pdf-reading.md) [on-demand]   ← 插件技能
 ```
 
 ### Hooks（钩子事件）
@@ -913,7 +913,6 @@ payload 形如 `{"event","timestamp","session_id","data"}`。`tool.before` 的 `
 | `tool.after` | 工具调用后 | `tool_name`, `result`, `duration_ms` | ❌ |
 | `context.warning` | 上下文使用率超 80% | `usage_pct`, `tokens_used` | ❌ |
 | `context.critical` | 上下文使用率超 95% | `usage_pct`, `tokens_used` | ❌ |
-| `plan.complete` | 流水线通过 Checker | `mode`, `attempts`, `success` | ❌ |
 | `router.decision` | 自适应路由决策时 | `proposed_mode`, `task_preview` | ✅ |
 
 #### router.decision 拦截示例——高风险词强制走完整流水线
@@ -943,9 +942,9 @@ timeout_secs = 3
 插件的 `system_prompt.md` 以**追加方式**写入系统提示词，位于项目级 `system_prompt.md` 之后、skills 索引之前，适合注入工具使用规范或领域约束：
 
 ```markdown
-# Git 工具规范（由 project-stats 插件追加）
-- 查询提交历史时使用 git_log 工具，不要执行原始 git 命令
-- 写入代码前先用 word_count 评估规模
+# 发布流程（由某个插件追加）
+- 打 tag 前先跑完整的 `cargo test`，不要只跑改动的模块
+- 版本号以 `Cargo.toml` 为准，不要在脚本里硬编码
 ```
 
 结合 `.agent/system_prompt.md` 的 `# OVERRIDE` 覆盖机制，可以构建完全定制化的专属 Agent：
@@ -969,18 +968,16 @@ git clone https://github.com/example/agent-plugin-xxx .agent/plugins/xxx
 # 重启 Agent 即生效，无需其他配置
 ```
 
-项目在 `sample/` 目录下提供了两个完整示例：
+项目在 `sample/` 目录下提供了一个示例：
 
-#### `sample/project-stats/`——工具 + Hooks 综合示例
+#### `sample/pdf-reader/`——工具 + 技能示例
 
 | 组件 | 内容 |
 |------|------|
-| 工具 | `git_log`（Git 历史查询）、`word_count`（代码规模统计） |
-| 技能 | `git-workflow.md`（工具使用最佳实践） |
-| Hooks | `agent.start` fire_and_forget（写会话日志）、`tool.after` fire_and_forget（写审计日志）、`router.decision` intercepting（高风险词 → 强制 basic_loop） |
-| system_prompt.md | 限制 LLM 使用插件工具而非原始 git 命令 |
+| 工具 | `read_pdf`（marker_single → pdftotext 回退链、页范围、输出截断） |
+| 技能 | `pdf-reading.md`（没有插件时用 `run_command` 读 PDF 的正确姿势） |
 
-安装：`cp -r sample/project-stats .agent/plugins/project-stats`
+安装：`cp -r sample/pdf-reader .agent/plugins/pdf-reader`
 
 ---
 
@@ -1057,7 +1054,7 @@ Auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什
 
 ### 无需确认的操作
 
-`read_file`、`batch_read_files`、`grep_search`、`file_search`、`list_directory`、`read_pdf`、`think`、`load_skill`、`todo`、`memory` — 所有只读工具不需要确认。
+`read_file`、`grep_search`、`file_search`、`list_directory`、`load_skill`、`todo`、`memory` — 所有只读工具不需要确认。
 
 ---
 
@@ -1282,7 +1279,6 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 | 工具 | 图标 | 用途 | 需确认 |
 |------|------|------|--------|
 | `read_file` | 📖 | 读取文件内容（支持行范围） | ❌ |
-| `batch_read_files` | 📚 | 一次读取多个文件 | ❌ |
 | `write_file` | ✏️ | 创建或覆盖写入文件 | ✅ |
 | `edit_file` | 🔧 | 精确 find & replace 编辑 | ✅ |
 | `multi_edit_file` | 🔧 | 单文件多处批量编辑 | ✅ |
@@ -1290,14 +1286,12 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 | `grep_search` | 🔍 | 按正则搜索文件内容 | ❌ |
 | `file_search` | 📁 | 按 glob 搜索文件名 | ❌ |
 | `list_directory` | 📂 | 列出目录内容 | ❌ |
-| `think` | 💭 | 内部推理（无副作用） | ❌ |
-| `read_pdf` | 📄 | PDF 文本提取 | ❌ |
 | `upload_image` | 🖼️ | 把本地图片加入对话（供视觉模型） | ❌ |
 | `todo` | ✅ | 项目任务清单（每轮注入上下文） | ❌ |
 | `memory` | 🧠 | 管理持久记忆（.agent/memory.md） | ❌ |
-| `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
+| `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ❌ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
-| `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
+| `create_skill` | ✍️ | 创建或更新项目技能 | ❌ |
 
 ### 外部依赖（可选）
 
@@ -1305,7 +1299,6 @@ grep OVERLAY_FS /boot/config-$(uname -r)  # 应显示 CONFIG_OVERLAY_FS=y 或 =m
 
 | 工具 | 后端 | 安装方式 |
 |------|------|----------|
-| `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |
 | `browser` | Chrome / Chromium（headless CDP） | `apt install chromium` / `snap install chromium` |
 
 ---
@@ -1408,8 +1401,7 @@ your-project/
     │   ├── coding-style.md
     │   └── my-tool/        # 目录 Skill（SKILL.md + tool.json + 脚本）
     └── plugins/            # 插件目录（可选）
-        ├── project-stats/  # 示例：Git 统计 + 审计日志 + 路由优化
-        └── dev-cluster/    # 示例：多节点拓扑 + MCP 配置
+        └── pdf-reader/     # 示例：PDF 文本提取（工具 + 技能）
 ```
 
 建议在 `.gitignore` 中添加：

@@ -21,8 +21,6 @@ const CACHEABLE_TOOLS: &[&str] = &[
     "grep_search",
     "file_search",
     "list_directory",
-    "batch_read_files",
-    "read_pdf",
 ];
 
 /// Maximum characters before a tool result is truncated (Layer 2).

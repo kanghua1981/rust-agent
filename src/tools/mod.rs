@@ -5,9 +5,6 @@ pub mod multi_edit_file;
 pub mod run_command;
 pub mod search;
 pub mod list_dir;
-pub mod batch_read;
-pub mod think;
-pub mod read_pdf;
 pub mod load_skill;
 pub mod create_skill;
 #[cfg(feature = "browser")]
@@ -115,9 +112,6 @@ impl ToolExecutor {
         executor.register(Box::new(search::GrepSearchTool));
         executor.register(Box::new(search::FileSearchTool));
         executor.register(Box::new(list_dir::ListDirTool));
-        executor.register(Box::new(batch_read::BatchReadFilesTool));
-        executor.register(Box::new(think::ThinkTool));
-        executor.register(Box::new(read_pdf::ReadPdfTool));
         let pm_for_load_skill = executor.plugin_manager.clone();
         executor.register(Box::new(load_skill::LoadSkillTool::new(pm_for_load_skill)));
         executor.register(Box::new(create_skill::CreateSkillTool));
@@ -282,12 +276,9 @@ impl ToolExecutor {
     pub fn readonly_definitions(&self) -> Vec<ToolDefinition> {
         const READONLY_TOOLS: &[&str] = &[
             "read_file",
-            "batch_read_files",
-            "read_pdf",
             "list_directory",
             "grep_search",
             "file_search",
-            "think",
             "load_skill",
             "run_command",
             "browser",

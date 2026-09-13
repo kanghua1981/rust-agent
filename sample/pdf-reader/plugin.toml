@@ -1,0 +1,17 @@
+# PDF 文本提取插件
+# 内建的 read_pdf 工具已移除，这个插件是它的替代品：
+# 用同样的 fallback 链（marker_single → pdftotext）从 PDF 里取文本。
+
+name = "pdf-reader"
+version = "1.0.0"
+description = "Extract text from PDF files (marker_single, falling back to pdftotext)"
+author = "Rust Agent"
+license = "MIT"
+
+[permissions]
+level = "Safe"
+requires_approval = false
+max_instances = 1
+
+[components]
+scan_directories = ["tools", "skills"]

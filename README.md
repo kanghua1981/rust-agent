@@ -4,7 +4,7 @@
 
 ## ✨ 特性
 
-- **🔧 工具系统**: 内置 16 种工具 — 文件读写、批量文件操作、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、PDF 读取、浏览器自动化、内部推理、任务管理、技能与记忆管理；另支持动态脚本工具（`tool.json`）
+- **🔧 工具系统**: 内置 13 种工具 — 文件读取与写入、精确编辑与批量编辑、命令执行、代码/文件搜索、目录列表、浏览器自动化、任务管理、技能与记忆管理；另支持动态脚本工具（`tool.json`）与插件工具
 - **🔄 Agent 循环**: 自动编排 LLM 调用与工具执行，多轮迭代直到任务完成
 - **📋 Plan 模式**: `/plan` 命令先用只读工具分析项目，生成方案后再执行，避免盲目修改
 - **🛰️ 子代理委托**: 通过 `subagent`/`subagent_fork` 在进程内委托子代理（协作编排由模型驱动）
@@ -16,7 +16,7 @@
 - **📜 对话持久化**: 支持上下文保持、多会话管理、会话保存与恢复
 - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识；兼容 [OpenClaw AgentSkills](https://agentskills.io/) 格式（`SKILL.md`），可直接使用社区发布的技能包
 - **🧩 动态工具**: 在 Skill 目录加一个 `tool.json` 即可注册新工具，参数 JSON 通过 stdin 传递给任意 shell 脚本/可执行文件
-- **🔌 插件系统**: 在 `.agent/plugins/` 下放置独立插件目录，每个插件可携带工具、技能、Hooks 和自定义系统提示词；三种 Hook 模式（`fire_and_forget` / `blocking` / `intercepting`）覆盖 `agent.start`、`tool.before/after`、`router.decision`、`plan.complete` 等所有关键节点，无需修改任何 Rust 代码
+- **🔌 插件系统**: 在 `.agent/plugins/` 下放置独立插件目录，每个插件可携带工具、技能、Hooks 和自定义系统提示词；三种 Hook 模式（`fire_and_forget` / `blocking` / `intercepting`）覆盖 `agent.start`、`tool.before/after`、`router.decision` 等关键节点，无需修改任何 Rust 代码
 - **🧠 持久记忆**: 自动把项目知识记到 `.agent/memory.md`，跨会话保持
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
@@ -597,7 +597,7 @@ Agent 在执行以下操作前会要求确认：
 
 也可以通过 `--yes` 启动参数或 `/yesall` 命令全局跳过。auto-approve 时会显示 `⚡ auto-approved:` 提示，让你知道跳过了什么。
 
-只读工具（`read_file`、`grep_search`、`list_directory`、`batch_read_files`、`read_pdf`、`think`、`file_search`、`load_skill`、`todo`、`memory`）不需要确认。
+只读工具（`read_file`、`grep_search`、`list_directory`、`file_search`、`load_skill`、`todo`、`memory`）不需要确认。
 
 ---
 
@@ -767,8 +767,6 @@ src/
     ├── run_command.rs     # ⚡ 执行 Shell 命令（含超时控制）
     ├── search.rs          # 🔍 Grep 搜索 + 📁 文件名搜索
     ├── list_dir.rs        # 📂 列出目录内容（含文件大小、权限）
-    ├── think.rs           # 💭 内部推理（无副作用，不消耗工具配额）
-    ├── read_pdf.rs        # 📄 PDF 文本提取（marker / pdftotext / mutool）
     ├── browser.rs         # 🌐 浏览器自动化（Chrome DevTools Protocol）
     ├── load_skill.rs      # 📚 加载项目技能
     ├── create_skill.rs    # ✍️ 创建或更新项目技能
@@ -805,7 +803,6 @@ src/
 | 工具 | 图标 | 用途 | 需确认 |
 |------|------|------|--------|
 | `read_file` | 📖 | 读取文件内容（支持行范围选择） | ❌ |
-| `batch_read_files` | 📚 | 一次读取多个文件 | ❌ |
 | `write_file` | ✏️ | 创建或覆盖写入文件 | ✅ |
 | `edit_file` | 🔧 | 精确 find & replace 编辑 | ✅ |
 | `multi_edit_file` | 🔧 | 单文件多处批量编辑 | ✅ |
@@ -813,14 +810,12 @@ src/
 | `grep_search` | 🔍 | 按正则搜索文件内容 | ❌ |
 | `file_search` | 📁 | 按 glob 搜索文件名 | ❌ |
 | `list_directory` | 📂 | 列出目录内容（含大小/权限） | ❌ |
-| `think` | 💭 | 内部推理，无副作用 | ❌ |
-| `read_pdf` | 📄 | PDF 文本提取 | ❌ |
 | `upload_image` | 🖼️ | 把本地图片加入对话（供视觉模型） | ❌ |
 | `todo` | ✅ | 项目任务清单（每轮注入上下文） | ❌ |
 | `memory` | 🧠 | 管理持久记忆（.agent/memory.md） | ❌ |
 | `load_skill` | 📚 | 加载项目技能（.agent/skills/） | ❌ |
-| `create_skill` | ✍️ | 创建或更新项目技能 | ✅ |
-| `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ✅ |
+| `create_skill` | ✍️ | 创建或更新项目技能 | ❌ |
+| `browser` | 🌐 | 浏览器自动化（Chrome DevTools Protocol） | ❌ |
 
 ### 外部依赖（可选）
 
@@ -828,7 +823,6 @@ src/
 
 | 工具 | 后端 | 安装方式 |
 |------|------|----------|
-| `read_pdf` | marker_single → pdftotext → mutool | `pip install marker-pdf` / `apt install poppler-utils` / `apt install mupdf-tools` |
 
 ---
 
@@ -966,7 +960,7 @@ impl Tool for MyNewTool {
 5. 在 `src/ui.rs` 的 `print_tool_use()` 中添加图标和输入显示
 6. 如果需要确认，在 `needs_confirmation()` 和 `build_confirm_action()` 中添加
 
-参考实现：`src/tools/think.rs`（最简单）、`src/tools/browser.rs`（中等）、`src/tools/edit_file.rs`（复杂）
+参考实现：`src/tools/write_file.rs`（最简单）、`src/tools/todo.rs`（中等）、`src/tools/edit_file.rs`（复杂）
 
 ---
 
@@ -1061,7 +1055,6 @@ Agent 把事件 payload 以 JSON 放进子进程的 `AGENT_EVENT` 环境变量�
 | `tool.after` | 工具执行后 | ❌ |
 | `context.warning` | 上下文使用率 > 80% | ❌ |
 | `context.critical` | 上下文使用率 > 95% | ❌ |
-| `plan.complete` | 流水线通过 Checker | ❌ |
 | `router.decision` | 自适应路由决策时 | ✅ |
 
 `router.decision` intercepting Hook 通过 stdout 覆盖执行模式：
@@ -1072,14 +1065,11 @@ Agent 把事件 payload 以 JSON 放进子进程的 `AGENT_EVENT` 环境变量�
 
 ### 安装示例插件
 
-项目附带两个即用示例：
+项目附带一个即用示例：
 
 ```bash
-# Git 统计 + 操作审计 + 路由拦截（高风险任务强制走完整流水线）
-cp -r sample/project-stats .agent/plugins/project-stats
-
-# 多节点拓扑配置 + MCP 三种传输格式示例
-cp -r sample/dev-cluster .agent/plugins/dev-cluster
+# PDF 文本提取（marker_single → pdftotext 回退链）
+cp -r sample/pdf-reader .agent/plugins/pdf-reader
 
 # 重启 Agent 即生效
 ```
