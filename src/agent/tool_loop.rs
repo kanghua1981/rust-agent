@@ -393,9 +393,6 @@ impl Agent {
                     }
                 }
 
-                // Persistent memory recording
-                self.record_tool_to_memory(&tool_name, &tool_input, &result);
-
                 // upload_image handling (optional)
                 if opts.handle_upload_image
                     && tool_name == "upload_image"
@@ -457,11 +454,7 @@ impl Agent {
             let status =
                 context::check_context(conversation, &self.config.model);
             if status.needs_truncation {
-                context::truncate_conversation(
-                    conversation,
-                    &self.config.model,
-                    self.memory.as_ref(),
-                );
+                context::truncate_conversation(conversation, &self.config.model);
             }
 
             // ── 16. Stop reason ──────────────────────────────────────────

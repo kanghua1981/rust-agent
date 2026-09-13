@@ -1,294 +1,101 @@
 //! Memory provider abstraction.
 //!
-//! Defines the `MemoryProvider` trait that decouples the agent from any specific
-//! memory backend. The default implementation (`LocalFileMemory`) wraps the
-//! existing `Memory` struct and is a drop-in replacement with zero behaviour change.
-//!
-//! # Extension points
-//!
-//! The memory landscape is evolving rapidly (OpenViking, Anda Hippocampus, …).
-//! By programming to this trait, the agent can switch backends via configuration
-//! without touching agent logic:
+//! `MemoryProvider` decouples the agent from the concrete store. The default
+//! implementation (`LocalFileMemory`) wraps `Memory`, backed by
+//! `.agent/memory.md`.
 //!
 //! ```text
 //! Arc<dyn MemoryProvider>
-//!      │
-//!      ├── LocalFileMemory   ← default, no dependencies (.agent/memory.md)
-//!      ├── NullMemory        ← tests / sandboxes / stateless runs
-//!      └── HttpMemory        ← (future) any external memory service
+//!      |
+//!      +-- LocalFileMemory   <- default (.agent/memory.md)
+//!      +-- NullMemory        <- tests / sandboxes / stateless runs
 //! ```
 //!
 //! # Design
 //!
-//! All methods are **synchronous** with interior mutability (`Mutex`) so they can
-//! be called from both sync and async contexts without additional ceremony.
+//! All methods are **synchronous** with interior mutability (`Mutex`) so they
+//! can be called from both sync and async contexts. Writes are persisted as
+//! they happen, so there is no explicit flush step.
 
 use std::sync::Mutex;
 
 use super::Memory;
 
-// ── Event vocabulary ─────────────────────────────────────────────────────────
-
-/// Semantic events that the agent records as it operates.
-///
-/// Using an enum keeps the call-sites clean and lets each backend decide
-/// exactly how to represent each event in its storage model.
-pub enum MemoryEvent {
-    /// Raw knowledge facts extracted by LLM from the conversation.
-    KnowledgeExtracted { facts: Vec<String> },
-    FileRead { path: String },
-    FileWritten { path: String, lines: usize },
-    FileEdited { path: String },
-    FileMultiEdited { path: String, edits: usize },
-    FileSearched { path: String },
-    BatchFilesRead { paths: Vec<String> },
-    PdfRead { path: String },
-    CommandRun { command: String },
-    GrepSearch { pattern: String, path: Option<String> },
-    FileFind { pattern: String },
-    DirectoryListed { path: String },
-    Custom { action: String },
-}
-
 // ── Trait ────────────────────────────────────────────────────────────────────
 
 /// The interface every memory backend must implement.
 ///
-/// Three semantic categories mirror the Formation / Recall / Maintenance
-/// paradigm used in modern agent-memory literature:
+/// Three roles, mirroring the Formation / Recall / Maintenance paradigm:
 ///
-/// - **Formation** (`record_event`, `log_truncation`) — write new observations
-/// - **Recall**    (`recall`)                          — read for context injection
-/// - **Maintenance** (`flush`)                         — consolidate / persist
+/// - **Formation** (`add_knowledge`) — write durable project facts
+/// - **Recall** (`recall`) — render those facts for the system prompt
+/// - **Lifecycle** (`on_*`) — react to turn and session boundaries
 pub trait MemoryProvider: Send + Sync {
-    // ── Formation ──────────────────────────────────────────────────────────
-
-    /// Record an agent action event.
-    fn record_event(&self, event: MemoryEvent);
-
-    /// Record a context-window truncation summary (produced when history is compressed).
-    fn log_truncation(&self, summary: &str);
-
-    /// Record a complete interaction episode (prompt → outcome → lessons).
-    ///
-    /// Providers that support rich episode storage (e.g. `IntelligentMemory`)
-    /// override this. Simple providers use the no-op default.
-    #[allow(clippy::too_many_arguments)]
-    fn record_interaction(
-        &self,
-        _prompt: &str,
-        _intent_summary: &str,
-        _tools_used: &[String],
-        _outcome_success: bool,
-        _outcome_detail: &str,
-        _lessons: &[String],
-        _feedback: Option<&str>,
-        _tokens: u32,
-    ) {
-        // no-op for basic providers
-    }
-
     // ── Recall ─────────────────────────────────────────────────────────────
 
-    /// Return the **project knowledge** section for injection into the system prompt.
-    ///
-    /// Intentionally small (≤5 entries). File-map and session-log are *not*
-    /// included here — use `recall_relevant()` for per-turn contextual recall.
+    /// Render the project knowledge section for the system prompt.
     fn recall(&self) -> String;
 
-    /// Retrieve file-map and session-log entries relevant to `query`.
-    ///
-    /// Scores entries by keyword overlap and access frequency. The result is
-    /// prepended to the user message for the current turn only, so irrelevant
-    /// entries consume zero tokens.
-    fn recall_relevant(&self, query: &str) -> String;
+    // ── Formation ──────────────────────────────────────────────────────────
 
-    // ── Maintenance ────────────────────────────────────────────────────────
-
-    /// Persist any in-memory state to durable storage.
-    fn flush(&self) -> anyhow::Result<()>;
-
-    /// Directly add a knowledge fact to the knowledge section.
-    /// Used by the knowledge extraction pipeline.
+    /// Store a durable project fact.
     fn add_knowledge(&self, fact: &str);
-
-    /// Take a frozen snapshot of current knowledge for system prompt injection.
-    ///
-    /// Once taken, `recall()` returns the snapshot until `refresh_snapshot()` is
-    /// called. This protects LLM prefix cache by keeping the system prompt stable
-    /// across a session (the "frozen snapshot" pattern).
-    fn take_knowledge_snapshot(&self);
-
-    /// Refresh the frozen snapshot to include latest live knowledge.
-    /// Call at session boundaries (resume, branch, compress).
-    fn refresh_knowledge_snapshot(&self);
 
     // ── Introspection (for CLI display) ────────────────────────────────────
 
-    /// True if no entries have been recorded yet.
+    /// True if no knowledge has been recorded yet.
     fn is_empty(&self) -> bool;
 
-    /// Total number of entries across all sections.
+    /// Number of stored knowledge entries.
     fn entry_count(&self) -> usize;
 
-    /// Returns all knowledge entries (live, not snapshot).
+    /// All knowledge entries, without timestamps or sources.
     fn knowledge(&self) -> Vec<String>;
-
-    /// Returns `(path, description)` pairs for the file map.
-    fn file_map(&self) -> Vec<(String, String)>;
-
-    /// Returns session log entries.
-    fn session_log(&self) -> Vec<String>;
-
-    /// Returns the frozen knowledge snapshot (if any), otherwise live knowledge.
-    fn knowledge_snapshot(&self) -> Vec<String> { self.knowledge() }
 
     // ── Lifecycle hooks (default no-ops, override to opt in) ──────────────
 
     /// Called at the start of each turn with the user message.
     ///
     /// Use for turn-counting, scope management, periodic maintenance.
-    /// `remaining_tokens` and `model` provide runtime context; providers use what they need.
     fn on_turn_start(&self, _turn_number: u32, _message: &str, _remaining_tokens: u64, _model: &str) {}
-
-    /// Called when a session ends (explicit exit or timeout).
-    ///
-    /// `messages` is the full conversation history. Use for end-of-session
-    /// fact extraction, summarization, etc.
-    fn on_session_end(&self, _messages: &[crate::conversation::Message]) {}
 
     /// Called when the agent switches session_id mid-process.
     ///
     /// Fires on session resume, branch, reset, and context compression.
-    /// Providers that cache per-session state should update/reset their state here.
     fn on_session_switch(&self, _new_session_id: &str, _parent_session_id: &str, _reset: bool) {}
 
     /// Called before context compression discards old messages.
     ///
-    /// `messages` is the list about to be summarized/discarded. Use to extract
-    /// insights before they're lost. Return text to inject into the compression
-    /// summary prompt. Return empty string for no contribution.
+    /// Return text to inject into the compression summary prompt; an empty
+    /// string contributes nothing.
     fn on_pre_compress(&self, _messages: &[crate::conversation::Message]) -> String {
         String::new()
     }
 
-    /// Called when the built-in memory tool writes an entry (add/replace/remove).
-    ///
-    /// External providers can mirror built-in memory writes to their backend.
+    /// Called when the memory tool writes an entry (add/replace/remove).
     fn on_memory_write(&self, _action: &str, _target: &str, _content: &str) {}
-
-    /// Called when a sub-agent delegation completes.
-    ///
-    /// `task` is the delegation prompt, `result` is the sub-agent's final response,
-    /// `child_session_id` is the sub-agent's session identifier.
-    fn on_delegation(&self, _task: &str, _result: &str, _child_session_id: &str) {}
 }
 
 // ── LocalFileMemory ──────────────────────────────────────────────────────────
 
 /// Default implementation backed by `.agent/memory.md`.
-///
-/// Wraps the existing `Memory` struct with a `Mutex` to satisfy `Send + Sync`.
-/// Behaviour is identical to direct `Memory` usage — this is a zero-risk Phase 1
-/// refactor.
 pub struct LocalFileMemory {
     inner: Mutex<Memory>,
 }
 
 impl LocalFileMemory {
-    /// Load memory from `.agent/memory.md` under `project_dir`.
-    /// Returns an empty memory store if the file does not exist.
-    pub fn load(project_dir: &std::path::Path) -> Self {
+    /// Load memory from `.agent/memory.md` under `project_dir`, pruning each
+    /// section with `limits`. Returns an empty store if the file is missing.
+    pub fn load_with_limits(project_dir: &std::path::Path, limits: super::MemoryLimits) -> Self {
         Self {
-            inner: Mutex::new(Memory::load(project_dir)),
+            inner: Mutex::new(Memory::load_with_limits(project_dir, limits)),
         }
     }
 }
 
 impl MemoryProvider for LocalFileMemory {
-    fn record_event(&self, event: MemoryEvent) {
-        let mut m = self.inner.lock().unwrap();
-        match event {
-            MemoryEvent::FileRead { path } => {
-                m.touch_file(&path, "read");
-                m.log_action(&format!("read {}", path));
-            }
-            MemoryEvent::FileWritten { path, lines } => {
-                m.touch_file(&path, &format!("written ({} lines)", lines));
-                m.log_action(&format!("wrote {}", path));
-            }
-            MemoryEvent::FileEdited { path } => {
-                m.touch_file(&path, "edited");
-                m.log_action(&format!("edited {}", path));
-            }
-            MemoryEvent::FileMultiEdited { path, edits } => {
-                m.touch_file(&path, &format!("multi-edited ({} edits)", edits));
-                m.log_action(&format!("multi-edited {} ({} edits)", path, edits));
-            }
-            MemoryEvent::FileSearched { path } => {
-                m.touch_file(&path, "searched");
-            }
-            MemoryEvent::BatchFilesRead { paths } => {
-                let count = paths.len();
-                for p in &paths {
-                    m.touch_file(p, "read");
-                }
-                m.log_action(&format!("batch-read {} files", count));
-            }
-            MemoryEvent::PdfRead { path } => {
-                m.touch_file(&path, "read (PDF)");
-                m.log_action(&format!("read PDF {}", path));
-            }
-            MemoryEvent::CommandRun { command } => {
-                m.log_action(&format!("ran `{}`", command));
-            }
-            MemoryEvent::GrepSearch { pattern, path } => {
-                m.log_action(&format!("searched for `{}`", pattern));
-                if let Some(p) = path {
-                    m.touch_file(&p, "searched");
-                }
-            }
-            MemoryEvent::FileFind { pattern } => {
-                m.log_action(&format!("found files matching `{}`", pattern));
-            }
-            MemoryEvent::DirectoryListed { path } => {
-                m.log_action(&format!("listed {}", path));
-            }
-            MemoryEvent::KnowledgeExtracted { facts } => {
-                for fact in &facts {
-                    m.add_knowledge(fact);
-                }
-                m.log_action(&format!("extracted {} knowledge items", facts.len()));
-            }
-            MemoryEvent::Custom { action } => {
-                m.log_action(&action);
-            }
-        }
-
-        // Auto-save after each event — preserves current behaviour exactly.
-        if let Err(e) = m.save() {
-            tracing::warn!("Failed to auto-save memory: {}", e);
-        }
-    }
-
-    fn log_truncation(&self, summary: &str) {
-        let mut m = self.inner.lock().unwrap();
-        m.log_truncation_summary(summary);
-        if let Err(e) = m.save() {
-            tracing::warn!("Failed to save truncation summary to memory: {}", e);
-        }
-    }
-
     fn recall(&self) -> String {
         self.inner.lock().unwrap().to_system_prompt_knowledge()
-    }
-
-    fn recall_relevant(&self, query: &str) -> String {
-        self.inner.lock().unwrap().recall_relevant(query)
-    }
-
-    fn flush(&self) -> anyhow::Result<()> {
-        self.inner.lock().unwrap().save().map_err(Into::into)
     }
 
     fn add_knowledge(&self, fact: &str) {
@@ -297,21 +104,6 @@ impl MemoryProvider for LocalFileMemory {
         if let Err(e) = m.save() {
             tracing::warn!("Failed to save knowledge: {}", e);
         }
-    }
-
-    fn take_knowledge_snapshot(&self) {
-        self.inner.lock().unwrap().take_knowledge_snapshot();
-    }
-
-    fn refresh_knowledge_snapshot(&self) {
-        self.inner.lock().unwrap().refresh_knowledge_snapshot();
-    }
-
-    fn knowledge_snapshot(&self) -> Vec<String> {
-        self.inner.lock().unwrap()
-            .knowledge_snapshot
-            .clone()
-            .unwrap_or_else(|| self.inner.lock().unwrap().knowledge.clone())
     }
 
     fn is_empty(&self) -> bool {
@@ -323,18 +115,7 @@ impl MemoryProvider for LocalFileMemory {
     }
 
     fn knowledge(&self) -> Vec<String> {
-        self.inner.lock().unwrap().knowledge.clone()
-    }
-
-    fn file_map(&self) -> Vec<(String, String)> {
-        self.inner.lock().unwrap().file_map
-            .iter()
-            .map(|e| (e.path.clone(), format!("{} (×{}, {})", e.description, e.access_count, e.last_accessed)))
-            .collect()
-    }
-
-    fn session_log(&self) -> Vec<String> {
-        self.inner.lock().unwrap().session_log.clone()
+        self.inner.lock().unwrap().knowledge.iter().map(|k| k.text.clone()).collect()
     }
 }
 
@@ -345,22 +126,35 @@ impl MemoryProvider for LocalFileMemory {
 /// Useful for:
 /// - Unit tests that should not touch the filesystem
 /// - Sandboxed / ephemeral agent runs
-/// - `--no-memory` flag (future)
 pub struct NullMemory;
 
 impl MemoryProvider for NullMemory {
-    fn record_event(&self, _event: MemoryEvent) {}
-    fn log_truncation(&self, _summary: &str) {}
     fn recall(&self) -> String { String::new() }
-    fn recall_relevant(&self, _query: &str) -> String { String::new() }
-    fn flush(&self) -> anyhow::Result<()> { Ok(()) }
     fn add_knowledge(&self, _fact: &str) {}
-    fn take_knowledge_snapshot(&self) {}
-    fn refresh_knowledge_snapshot(&self) {}
-    fn knowledge_snapshot(&self) -> Vec<String> { vec![] }
     fn is_empty(&self) -> bool { true }
     fn entry_count(&self) -> usize { 0 }
     fn knowledge(&self) -> Vec<String> { vec![] }
-    fn file_map(&self) -> Vec<(String, String)> { vec![] }
-    fn session_log(&self) -> Vec<String> { vec![] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::MemoryLimits;
+    use tempfile::tempdir;
+
+    /// `recall()` is the only path that feeds project knowledge into the
+    /// system prompt, so a fact must survive a reload and show up there.
+    #[test]
+    fn recall_renders_stored_knowledge() {
+        let dir = tempdir().unwrap();
+        let memory = LocalFileMemory::load_with_limits(dir.path(), MemoryLimits::default());
+        assert!(memory.recall().is_empty());
+
+        memory.add_knowledge("The build uses cargo");
+        assert!(memory.recall().contains("The build uses cargo"));
+
+        let reloaded = LocalFileMemory::load_with_limits(dir.path(), MemoryLimits::default());
+        assert!(reloaded.recall().contains("The build uses cargo"));
+        assert_eq!(reloaded.knowledge(), vec!["The build uses cargo".to_string()]);
+    }
 }

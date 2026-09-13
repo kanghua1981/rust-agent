@@ -59,7 +59,7 @@ impl Agent {
             None => {
                 // Not enough messages to truncate meaningfully — fall back to
                 // the legacy truncation which handles small-conversation edge cases.
-                context::truncate_conversation(&mut self.conversation, &self.config.model, self.memory.as_ref());
+                context::truncate_conversation(&mut self.conversation, &self.config.model);
                 return;
             }
         };
@@ -89,7 +89,7 @@ impl Agent {
             }
         };
 
-        self.context_engine.apply_truncation(&mut self.conversation, &plan, &summary, self.memory.as_ref());
+        self.context_engine.apply_truncation(&mut self.conversation, &plan, &summary);
     }
 
     /// Use the LLM to generate a narrative summary of truncated messages.

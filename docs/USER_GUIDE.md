@@ -710,7 +710,7 @@ Agent 在每次交互后自动保存会话，支持跨天任务。
 
 ### 持久记忆
 
-Agent 自动将工具操作记录到 `.agent/memory.md`，跨会话保持：
+Agent 自动将项目知识记录到 `.agent/memory.md`，跨会话保持：
 
 ```
 🤖 > /memory
@@ -718,12 +718,6 @@ Agent 自动将工具操作记录到 `.agent/memory.md`，跨会话保持：
   📖 Project Knowledge:
     • Target board: RK3588 custom board
     • Toolchain: aarch64-linux-gnu-
-  📁 Key Files:
-    • src/main.c (edited)
-    • rk3588-myboard.dts (written)
-  📝 Session Log:
-    • edited src/main.c
-    • ran `make -j8`
 ```
 
 ### 项目摘要
@@ -897,15 +891,18 @@ timeout_secs = 5
 | `blocking` | 同步执行，Agent 等到脚本退出才继续 | 启动前探活检查 |
 | `intercepting` | 脚本 stdout 可修改 Agent 决策 | 路由覆盖、工具拦截 |
 
-Agent 把事件 payload 以 JSON 写入脚本 **stdin**：
+Agent 把事件 payload 以 JSON 放进子进程的 `AGENT_EVENT` 环境变量：
 
 ```bash
 #!/bin/bash
 # hooks/on_start.sh
-payload=$(cat)
-project_dir=$(echo "$payload" | jq -r '.project_dir')
-echo "[$(date)] agent started in $project_dir" >> /tmp/audit.log
+payload="$AGENT_EVENT"
+session_id=$(echo "$payload" | jq -r '.session_id')
+echo "[$(date)] session $session_id started" >> /tmp/audit.log
 ```
+
+payload 形如 `{"event","timestamp","session_id","data"}`。`tool.before` 的 `data` 是 `{"tool_name","params"}`，
+`tool.after` 是 `{"tool_name","success","output_preview"}`——两者都带 `session_id`，可直接做跨会话的工具调用审计。
 
 #### 已支持的 Hook 事件
 

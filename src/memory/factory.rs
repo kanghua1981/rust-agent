@@ -1,215 +1,168 @@
 //! Memory provider factory and configuration.
 //!
-//! Supports multiple memory backends with configuration-driven selection.
+//! Backend selection and the section caps applied to `.agent/memory.md`.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use super::provider::{LocalFileMemory, MemoryProvider, NullMemory};
-use super::http::HttpMemory;
-use super::intelligent::IntelligentMemory;
+use super::MemoryLimits;
 
-/// Memory backend type
+/// Memory backend type.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum MemoryBackend {
-    /// Local file-based memory (.agent/memory.md)
+    /// Project knowledge in `.agent/memory.md`.
     LocalFile,
-    /// Enriched provider: markdown log + JSON episode store (.agent/intelligent.json)
-    Intelligent,
-    /// HTTP-based external memory service
-    Http,
-    /// No-op memory for tests/sandboxes
+    /// No-op memory for tests and ephemeral runs.
     Null,
 }
 
-/// Configuration for memory system
+/// Configuration for the memory system.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct MemoryConfig {
-    /// Memory backend type
+    /// Memory backend type.
     pub backend: MemoryBackend,
-    
-    /// HTTP memory configuration (if backend is Http)
-    #[serde(default)]
-    pub http: HttpMemoryConfig,
-    
-    /// Maximum knowledge entries
+
+    /// Maximum knowledge entries.
     #[serde(default = "default_max_knowledge")]
     pub max_knowledge: usize,
-    
-    /// Maximum file map entries
-    #[serde(default = "default_max_file_map")]
-    pub max_file_map: usize,
-    
-    /// Maximum session log entries
-    #[serde(default = "default_max_session_log")]
-    pub max_session_log: usize,
-    
-    /// Knowledge extraction frequency (every N turns)
+
+    /// Character budget for the knowledge section (all entries combined).
+    #[serde(default = "default_max_knowledge_chars")]
+    pub max_knowledge_chars: usize,
+
+    /// Knowledge extraction frequency (every N turns).
     #[serde(default = "default_extraction_frequency")]
     pub extraction_frequency: usize,
 }
 
-/// HTTP memory configuration
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
-pub struct HttpMemoryConfig {
-    /// Base URL of the memory service
-    pub base_url: Option<String>,
-    
-    /// API key for authentication
-    pub api_key: Option<String>,
-    
-    /// Space/workspace ID
-    pub space_id: Option<String>,
-    
-    /// Request timeout in seconds
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
-    
-    /// Whether to enable async event sending
-    #[serde(default = "default_async_events")]
-    pub async_events: bool,
-    
-    /// Batch size for event sending
-    #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
-    
-    /// Cache TTL for recall results (seconds)
-    #[serde(default = "default_cache_ttl")]
-    pub cache_ttl: u64,
-}
-
-// Default values
 fn default_max_knowledge() -> usize { 10 }
-fn default_max_file_map() -> usize { 20 }
-fn default_max_session_log() -> usize { 30 }
+fn default_max_knowledge_chars() -> usize { 2200 }
 fn default_extraction_frequency() -> usize { 5 }
-fn default_timeout_secs() -> u64 { 30 }
-fn default_async_events() -> bool { true }
-fn default_batch_size() -> usize { 10 }
-fn default_cache_ttl() -> u64 { 300 } // 5 minutes
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            // Use Intelligent backend by default so that interaction episodes
-            // are automatically persisted to .agent/intelligent.json alongside
-            // the standard .agent/memory.md markdown log.
-            backend: MemoryBackend::Intelligent,
-            http: HttpMemoryConfig::default(),
+            backend: MemoryBackend::LocalFile,
             max_knowledge: default_max_knowledge(),
-            max_file_map: default_max_file_map(),
-            max_session_log: default_max_session_log(),
+            max_knowledge_chars: default_max_knowledge_chars(),
             extraction_frequency: default_extraction_frequency(),
         }
     }
 }
 
-/// Create a memory provider based on configuration
-pub fn create_memory_provider(
-    config: &MemoryConfig,
-    project_dir: &Path,
-) -> anyhow::Result<Arc<dyn MemoryProvider>> {
-    match config.backend {
-        MemoryBackend::LocalFile => {
-            Ok(Arc::new(LocalFileMemory::load(project_dir)))
-        }
-        MemoryBackend::Intelligent => {
-            Ok(Arc::new(IntelligentMemory::load(project_dir)))
-        }
-        MemoryBackend::Http => {
-            let http_config = super::http::HttpMemoryConfig {
-                base_url: config.http.base_url.clone()
-                    .ok_or_else(|| anyhow::anyhow!("HTTP memory requires base_url"))?,
-                api_key: config.http.api_key.clone(),
-                space_id: config.http.space_id.clone(),
-                timeout_secs: config.http.timeout_secs,
-            };
-            Ok(Arc::new(HttpMemory::new(http_config)))
-        }
-        MemoryBackend::Null => {
-            Ok(Arc::new(NullMemory))
+impl MemoryConfig {
+    /// Section caps handed to the markdown store.
+    pub fn limits(&self) -> MemoryLimits {
+        MemoryLimits {
+            knowledge: self.max_knowledge,
+            knowledge_chars: self.max_knowledge_chars,
         }
     }
 }
 
-/// Load memory configuration from file or use defaults
+/// Create the memory provider selected by `config`.
+pub fn create_memory_provider(config: &MemoryConfig, project_dir: &Path) -> Arc<dyn MemoryProvider> {
+    match config.backend {
+        MemoryBackend::LocalFile => {
+            Arc::new(LocalFileMemory::load_with_limits(project_dir, config.limits()))
+        }
+        MemoryBackend::Null => Arc::new(NullMemory),
+    }
+}
+
+/// Load memory configuration from `config_path`, or from `.agent/memory.toml`
+/// when no explicit path is given. Missing or unparsable files yield defaults.
 pub fn load_memory_config(config_path: Option<&Path>) -> MemoryConfig {
-    if let Some(path) = config_path {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            match toml::from_str(&content) {
-                Ok(config) => return config,
-                Err(e) => {
-                    tracing::warn!("Failed to parse memory config {}: {}", path.display(), e);
-                }
-            }
+    // An explicit path comes from the resolved project directory. It must not
+    // fall through to the working directory: that would load the configuration
+    // of whichever project happens to be the current directory.
+    let path = config_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Path::new(".agent").join("memory.toml"));
+
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return MemoryConfig::default();
+    };
+    match toml::from_str(&content) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!("Failed to parse memory config {}: {}; using defaults", path.display(), e);
+            MemoryConfig::default()
         }
     }
-    
-    // Try to load from default location
-    let default_path = Path::new(".agent").join("memory.toml");
-    if let Ok(content) = std::fs::read_to_string(&default_path) {
-        match toml::from_str(&content) {
-            Ok(config) => return config,
-            Err(e) => {
-                tracing::warn!("Failed to parse default memory config: {}", e);
-            }
-        }
-    }
-    
-    // Fall back to defaults
-    MemoryConfig::default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    
+
     #[test]
     fn test_default_config() {
         let config = MemoryConfig::default();
-        assert!(matches!(config.backend, MemoryBackend::Intelligent));
+        assert!(matches!(config.backend, MemoryBackend::LocalFile));
         assert_eq!(config.max_knowledge, 10);
-        assert_eq!(config.max_file_map, 20);
-        assert_eq!(config.max_session_log, 30);
+        assert_eq!(config.max_knowledge_chars, 2200);
         assert_eq!(config.extraction_frequency, 5);
     }
-    
+
     #[test]
     fn test_create_local_memory() {
         let temp_dir = tempdir().unwrap();
-        let config = MemoryConfig::default();
-
-        let memory = create_memory_provider(&config, temp_dir.path()).unwrap();
-        // A freshly created provider with no recorded events is empty
+        let memory = create_memory_provider(&MemoryConfig::default(), temp_dir.path());
         assert!(memory.is_empty());
         assert_eq!(memory.entry_count(), 0);
     }
-    
+
+    #[test]
+    fn test_configured_caps_reach_the_provider() {
+        let temp_dir = tempdir().unwrap();
+        // These caps used to be dead config: the store pruned with hard-coded
+        // constants instead of the values parsed from `.agent/memory.toml`.
+        let config: MemoryConfig = toml::from_str(
+            "backend = \"LocalFile\"\nmax_knowledge = 2\n",
+        ).unwrap();
+
+        let memory = create_memory_provider(&config, temp_dir.path());
+        for i in 0..3 {
+            memory.add_knowledge(&format!("fact number {}", i));
+        }
+        let knowledge = memory.knowledge();
+        assert_eq!(knowledge.len(), 2);
+        assert_eq!(knowledge[1], "fact number 2");
+    }
+
+    #[test]
+    fn explicit_config_path_does_not_fall_back_to_the_working_directory() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("absent.toml");
+        let config = load_memory_config(Some(&missing));
+        assert_eq!(config.max_knowledge, MemoryConfig::default().max_knowledge);
+    }
+
+    #[test]
+    fn unparsable_config_falls_back_to_defaults() {
+        let dir = tempdir().unwrap();
+        let broken = dir.path().join("memory.toml");
+        std::fs::write(&broken, "backend = 12\n").unwrap();
+        let config = load_memory_config(Some(&broken));
+        assert!(matches!(config.backend, MemoryBackend::LocalFile));
+    }
+
     #[test]
     fn test_parse_config_toml() {
         let toml_content = r#"
-backend = "Http"
+backend = "Null"
 max_knowledge = 15
-max_file_map = 25
-
-[http]
-base_url = "http://localhost:8080"
-api_key = "test-key"
-space_id = "test-space"
-timeout_secs = 60
-async_events = true
-batch_size = 20
-cache_ttl = 600
+max_knowledge_chars = 4096
+extraction_frequency = 2
 "#;
-        
+
         let config: MemoryConfig = toml::from_str(toml_content).unwrap();
-        assert!(matches!(config.backend, MemoryBackend::Http));
+        assert!(matches!(config.backend, MemoryBackend::Null));
         assert_eq!(config.max_knowledge, 15);
-        assert_eq!(config.max_file_map, 25);
-        assert_eq!(config.http.base_url, Some("http://localhost:8080".to_string()));
-        assert_eq!(config.http.api_key, Some("test-key".to_string()));
-        assert_eq!(config.http.timeout_secs, 60);
-        assert_eq!(config.http.batch_size, 20);
+        assert_eq!(config.max_knowledge_chars, 4096);
+        assert_eq!(config.extraction_frequency, 2);
     }
 }

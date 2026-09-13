@@ -48,27 +48,26 @@ impl Agent {
                 .filter(|l| l.len() > 10)
                 .take(3)
                 .collect();
-            if !facts.is_empty() {
-                self.memory.record_event(crate::memory::MemoryEvent::KnowledgeExtracted { facts });
+            for fact in &facts {
+                self.memory.add_knowledge(fact);
             }
         }
     }
 
-    /// Manually consolidate memory: read recent session log and all existing knowledge,
-    /// ask LLM to distill into improved knowledge entries and compress the log.
+    /// Manually consolidate memory: read the recent conversation and all existing
+    /// knowledge, then ask the LLM to distill improved knowledge entries.
     ///
     /// Called by the `/consolidate` CLI command.
     pub async fn consolidate_memory(&self) -> anyhow::Result<usize> {
         let existing_knowledge = self.memory.knowledge();
-        let session_log = self.memory.session_log();
 
-        if session_log.is_empty() && existing_knowledge.is_empty() {
+        if existing_knowledge.is_empty() && self.conversation.messages.is_empty() {
             return Ok(0);
         }
 
         let mut prompt = String::from(
             "You are distilling an AI agent's memory. \
-            Given the session log and existing knowledge below, \
+            Given the recent conversation and existing knowledge below, \
             produce an improved, deduplicated list of up to 10 project knowledge facts.\n\
             Rules: each fact must be a single sentence, durable across sessions, \
             no timestamps, no trivial observations.\n\
@@ -81,10 +80,16 @@ impl Agent {
                 prompt.push_str(&format!("- {}\n", k));
             }
         }
-        if !session_log.is_empty() {
-            prompt.push_str("\n## Session Log (most recent activity)\n");
-            for entry in session_log.iter().rev().take(30) {
-                prompt.push_str(&format!("- {}\n", entry));
+        let window: Vec<&Message> = self.conversation.messages.iter().rev().take(20).rev().collect();
+        if !window.is_empty() {
+            prompt.push_str("\n## Recent Conversation\n");
+            for msg in window {
+                let role = match msg.role {
+                    Role::User => "User",
+                    Role::Assistant => "Assistant",
+                    Role::System => continue,
+                };
+                prompt.push_str(&format!("{}: {}\n", role, msg.text_content()));
             }
         }
 
@@ -106,8 +111,8 @@ impl Agent {
             .collect();
 
         let count = facts.len();
-        if count > 0 {
-            self.memory.record_event(crate::memory::MemoryEvent::KnowledgeExtracted { facts });
+        for fact in &facts {
+            self.memory.add_knowledge(fact);
         }
         Ok(count)
     }

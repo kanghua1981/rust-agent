@@ -73,6 +73,9 @@ pub struct ToolExecutor {
     plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>,
     /// Hook 事件总线（与 Agent 共享同一 Arc）
     hook_bus: Option<Arc<crate::plugin::hook_bus::HookBus>>,
+    /// Current session id, included in `tool.before` / `tool.after` payloads
+    /// so an audit hook can attribute a tool call to its session.
+    session_id: Option<String>,
     /// In-memory cache for read-only tool results (Layer 1).
     result_cache: std::cell::RefCell<cache::ToolResultCache>,
 }
@@ -103,6 +106,7 @@ impl ToolExecutor {
             allowed_dir: None,
             plugin_manager,
             hook_bus: None,
+            session_id: None,
             result_cache: std::cell::RefCell::new(cache::ToolResultCache::new(200, 120)), // 200 entries, 2-min TTL
         };
 
@@ -272,6 +276,11 @@ impl ToolExecutor {
         self.hook_bus = bus;
     }
 
+    /// Set the session id attached to tool hook events.
+    pub fn set_session_id(&mut self, session_id: Option<String>) {
+        self.session_id = session_id;
+    }
+
     /// Get all tool definitions for the LLM
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|t| t.definition()).collect()
@@ -311,12 +320,10 @@ impl ToolExecutor {
     /// prevents orphaned `tool_use` blocks without matching `tool_result`
     /// in the conversation, which would cause Anthropic API 400 errors.
     ///
-    /// ## 3-Layer Persistence
+    /// ## 2-Layer Persistence
     /// 1. **Memory cache** — read-only tool results are cached; repeated
     ///    identical calls return the cached result immediately.
     /// 2. **Result size limit** — outputs exceeding 20K chars are truncated.
-    /// 3. **Session log** — results are recorded to persistent memory by
-    ///    the Agent (see `record_tool_to_memory`).
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolResult {
         // ── Constants ────────────────────────────────────────────────────────
         const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit_file"];
@@ -395,7 +402,7 @@ impl ToolExecutor {
             use crate::plugin::hook_bus::{HookEvent, HookResult};
             let event = HookEvent::new(
                 "tool.before",
-                "none",
+                self.session_id.clone().unwrap_or_else(|| "none".to_string()),
                 serde_json::json!({ "tool_name": name, "params": input }),
             );
             match bus.emit_intercepting(event).await {
@@ -483,7 +490,7 @@ impl ToolExecutor {
             let preview: String = tool_result.output.chars().take(200).collect();
             bus.emit(HookEvent::new(
                 "tool.after",
-                "none",
+                self.session_id.clone().unwrap_or_else(|| "none".to_string()),
                 serde_json::json!({
                     "tool_name": name,
                     "success":        !tool_result.is_error,
@@ -606,6 +613,46 @@ impl Tool for PluginToolWrapper {
     ) -> ToolResult {
         // 插件工具不使用路径管理器，直接调用execute
         self.execute(input, Path::new(".")).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::hook_bus::HookBus;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    /// A `tool.before` hook must be able to attribute the call to its session:
+    /// that is the audit path now that memory no longer records tool calls.
+    #[tokio::test]
+    async fn tool_before_hook_carries_the_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("audit-plugin");
+        let hooks_dir = plugin.join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+
+        let captured = dir.path().join("captured.json");
+        let script = plugin.join("record.sh");
+        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' \"$AGENT_EVENT\" > '{}'\n", captured.display())).unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        std::fs::write(hooks_dir.join("before.toml"),
+            "event = \"tool.before\"\nmode = \"intercepting\"\nscript = \"record.sh\"\ntimeout = 10\n").unwrap();
+
+        let bus = Arc::new(HookBus::new());
+        bus.register_plugin_hooks("audit-plugin", &plugin);
+
+        let mut executor = ToolExecutor::new(dir.path().to_path_buf(), None);
+        executor.set_session_id(Some("session-42".to_string()));
+        executor.set_hook_bus(Some(bus));
+
+        executor.execute("list_directory", &serde_json::json!({ "path": "." })).await;
+
+        let payload = std::fs::read_to_string(&captured).unwrap();
+        assert!(payload.contains("\"session_id\":\"session-42\""), "payload: {payload}");
+        assert!(payload.contains("\"tool_name\":\"list_directory\""), "payload: {payload}");
     }
 }
 

@@ -188,29 +188,6 @@ fn handle_slash_command(input: &str, agent: &mut Agent) -> SlashResult {
                         println!("    {} {}", "•".dimmed(), fact);
                     }
                 }
-                let file_map = mem.file_map();
-                if !file_map.is_empty() {
-                    println!("  {} {}:", "📁", "Key Files".bright_cyan());
-                    for (path, desc) in &file_map {
-                        if desc.is_empty() {
-                            println!("    {} {}", "•".dimmed(), path.bright_white());
-                        } else {
-                            println!(
-                                "    {} {} {}",
-                                "•".dimmed(),
-                                path.bright_white(),
-                                format!("({})", desc).dimmed()
-                            );
-                        }
-                    }
-                }
-                let session_log = mem.session_log();
-                if !session_log.is_empty() {
-                    println!("  {} {}:", "📝", "Session Log".bright_cyan());
-                    for entry in &session_log {
-                        println!("    {} {}", "•".dimmed(), entry.dimmed());
-                    }
-                }
             }
             SlashResult::Continue
         }
@@ -318,7 +295,7 @@ fn handle_new_session_command(name: &str, agent: &mut Agent) {
     auto_save_session(agent);
 
     // Create a fresh conversation (keeping system prompt)
-    agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+    agent.reset_conversation();
     agent.set_session_id(name.to_string());
 
     // Persist empty session immediately
@@ -355,7 +332,7 @@ fn handle_switch_session_command(name: &str, agent: &mut Agent) {
         }
         Ok(None) => {
             // Session doesn't exist — create it
-            agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+            agent.reset_conversation();
             agent.set_session_id(name.to_string());
             let _ = persistence::save_local_named_session(name, &agent.conversation, &agent.project_dir);
             let _ = persistence::write_active_session_name(&agent.project_dir, name);

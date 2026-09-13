@@ -5,10 +5,9 @@
 //! (write_file, edit_file, multi_edit_file) automatically invalidate cache
 //! entries for the paths they touch.
 //!
-//! ## 3-Layer Design
+//! ## 2-Layer Design
 //! 1. **Memory cache** (this module) — fast, ephemeral, per-session
 //! 2. **Result size limits** — prevent context pollution from huge outputs
-//! 3. **Session log persistence** — already handled by `record_tool_to_memory`
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

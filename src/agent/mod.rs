@@ -20,7 +20,7 @@ use anyhow::Result;
 use crate::config::{Config, Provider};
 use crate::context;
 use crate::conversation::{ContentBlock, Conversation, Message, Role};
-use crate::memory::{LocalFileMemory, MemoryEvent, MemoryProvider};
+use crate::memory::MemoryProvider;
 use crate::model_manager;
 use crate::output::{AgentOutput, SilentOutput};
 use crate::path_manager;
@@ -217,14 +217,10 @@ impl Agent {
     }
 
     pub fn new(config: Config, project_dir: PathBuf, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
-        let memory: Arc<dyn MemoryProvider> = crate::memory::create_memory_provider(
-            &config.memory,
-            &project_dir,
-        ).unwrap_or_else(|e| {
-            tracing::warn!("Failed to create memory provider: {}, falling back to local file memory", e);
-            Arc::new(LocalFileMemory::load(&project_dir))
-        });
-        let conversation = Conversation::new(&project_dir);
+        let memory: Arc<dyn MemoryProvider> =
+            crate::memory::create_memory_provider(&config.memory, &project_dir);
+        let mut conversation = Conversation::new(&project_dir);
+        conversation.push_memory_knowledge(&memory.recall());
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
         let effective_dir = sandbox.working_dir().to_path_buf();
@@ -282,12 +278,7 @@ impl Agent {
         
         // Register memory tool so the LLM can manage its own memory
         agent.tool_executor.register_memory_tool(memory);
-        
-        // Take the initial frozen snapshot of knowledge for the system prompt.
-        // This locks the knowledge in place for the session, protecting LLM prefix
-        // cache (subsequent tool writes don't change the system prompt).
-        agent.memory.take_knowledge_snapshot();
-        
+
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {
             let sandbox_note = "\n\n## Sandbox Mode\n\
@@ -305,7 +296,10 @@ impl Agent {
 
     /// Create agent with a restored conversation
     pub fn with_conversation(config: Config, project_dir: PathBuf, conversation: Conversation, session_id: String, output: Arc<dyn AgentOutput>, sandbox: Sandbox, plugin_manager: Option<Arc<tokio::sync::Mutex<crate::plugin::PluginManager>>>) -> Self {
-        let memory: Arc<dyn MemoryProvider> = Arc::new(LocalFileMemory::load(&project_dir));
+        // Restored sessions must use the same configured backend as `new()`:
+        // hard-coding a backend here used to silently drop memory writes.
+        let memory: Arc<dyn MemoryProvider> =
+            crate::memory::create_memory_provider(&config.memory, &project_dir);
         let conv_depth = conversation.delegation_depth;
         let models_cfg = model_manager::load();
         let role_configs = build_role_configs(&config, &models_cfg);
@@ -363,9 +357,7 @@ impl Agent {
         // Register memory tool so the LLM can manage its own memory
         agent.tool_executor.register_memory_tool(memory);
         
-        // Take the initial frozen snapshot (for restored conversation).
-        agent.memory.take_knowledge_snapshot();
-        
+
         // 在沙盒模式下，添加路径使用说明到系统提示词
         if agent.sandbox.working_dir() != &agent.project_dir {
             let sandbox_note = "\n\n## Sandbox Mode\n\
@@ -391,6 +383,7 @@ impl Agent {
         let old_id = self.session_id.take();
         let old_str = old_id.as_deref().unwrap_or("");
         self.session_id = Some(id.clone());
+        self.tool_executor.set_session_id(self.session_id.clone());
         self.memory.on_session_switch(&id, old_str, false);
     }
 
@@ -398,6 +391,7 @@ impl Agent {
     /// 由 cli.rs 在 load_all_plugins 完成后调用，同时也将 hook_bus 传递给内部的 ToolExecutor。
     pub fn set_hook_bus(&mut self, bus: Option<Arc<crate::plugin::hook_bus::HookBus>>) {
         self.tool_executor.set_hook_bus(bus.clone());
+        self.tool_executor.set_session_id(self.session_id.clone());
         self.hook_bus = bus;
     }
 
@@ -673,13 +667,7 @@ impl Agent {
         let mode = self.resolve_execution_mode(user_input).await;
         let _ = self.apply_router_hook(mode, user_input).await;
 
-        // Prepend relevant memory context — used by all execution modes.
-        let recall = self.memory.recall_relevant(user_input);
-        let mut enriched_input = if recall.is_empty() {
-            user_input.to_string()
-        } else {
-            format!("{}\n\n{}", recall, user_input)
-        };
+        let mut enriched_input = user_input.to_string();
 
 
         // ── Sync global interrupt to per-session flag ─────────────────────
@@ -739,10 +727,6 @@ impl Agent {
             defs
         };
 
-        // Per-turn tracking for record_interaction (zero extra LLM calls)
-        let turn_start_tokens = self.total_input_tokens + self.total_output_tokens;
-        let msg_count_before = self.conversation.messages.len();
-
         let opts = ToolLoopOptions {
             role: "agent".to_string(),
             enable_guardrails: true,
@@ -754,8 +738,8 @@ impl Agent {
         // Temporarily take ownership of the conversation so we can pass
         // a `&mut Conversation` to `run_tool_loop` without conflicting with
         // the `&mut self` borrow also required by that method.
-        let mut conversation =
-            std::mem::replace(&mut self.conversation, Conversation::new(&self.project_dir));
+        let placeholder = self.fresh_conversation();
+        let mut conversation = std::mem::replace(&mut self.conversation, placeholder);
         let mut final_text = self
             .run_tool_loop(&mut conversation, &tool_defs, &opts)
             .await?;
@@ -781,30 +765,10 @@ impl Agent {
                 .unwrap_or_default();
         }
 
-        // Derive turn_tools_used and turn_had_errors from the messages added
-        // during this turn (scanned from the conversation).
-        // NOTE: msg_count_before may exceed current len if run_tool_loop
-        // internally truncated the conversation (e.g. context compression).
-        let start_idx = msg_count_before.min(self.conversation.messages.len());
-        let new_msgs = &self.conversation.messages[start_idx..];
-        let mut turn_tools_used: Vec<String> = Vec::new();
-        let mut turn_had_errors = false;
-        for msg in new_msgs {
-            for block in &msg.content {
-                if let ContentBlock::ToolUse { name, .. } = block {
-                    turn_tools_used.push(name.clone());
-                }
-                if let ContentBlock::ToolResult { is_error, .. } = block {
-                    if is_error.unwrap_or(false) {
-                        turn_had_errors = true;
-                    }
-                }
-            }
-        }
-
-        // Periodic knowledge extraction: every 5 turns, silently distill facts.
+        // Periodic knowledge extraction, every `extraction_frequency` turns.
         self.knowledge_extract_turns += 1;
-        if self.knowledge_extract_turns % 5 == 0 {
+        let extract_every = self.config.memory.extraction_frequency.max(1) as u32;
+        if self.knowledge_extract_turns % extract_every == 0 {
             self.extract_and_store_knowledge().await;
         }
 
@@ -831,34 +795,6 @@ impl Agent {
             );
         }
 
-        // Record complete interaction episode to intelligent memory.
-        // intent_summary = first sentence of the assistant reply (zero extra tokens).
-        let intent_summary = {
-            let text = final_text.trim();
-            text.split(['.', '\n', '\u{3002}']) // '。' for CJK
-                .next()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| text.chars().take(120).collect())
-        };
-        let turn_tokens = ((self.total_input_tokens + self.total_output_tokens)
-            .saturating_sub(turn_start_tokens)) as u32;
-        let (outcome_ok, outcome_detail) = if turn_had_errors {
-            (false, "One or more tool calls encountered errors".to_string())
-        } else {
-            (true, intent_summary.clone())
-        };
-        self.memory.record_interaction(
-            user_input,
-            &intent_summary,
-            &turn_tools_used,
-            outcome_ok,
-            &outcome_detail,
-            &[], // lessons extracted separately by extract_and_store_knowledge
-            None,
-            turn_tokens,
-        );
-
         Ok(final_text)
     }
 
@@ -872,14 +808,25 @@ impl Agent {
         &self.role_token_usage
     }
 
+    /// Build a conversation whose system prompt carries the project summary,
+    /// skills, and the current memory knowledge.
+    pub fn fresh_conversation(&self) -> Conversation {
+        let mut conversation = Conversation::new(&self.project_dir);
+        conversation.push_memory_knowledge(&self.memory.recall());
+        conversation
+    }
+
+    /// Rebuild the active conversation from the project directory.
+    pub fn reset_conversation(&mut self) {
+        let conversation = self.fresh_conversation();
+        self.conversation = conversation;
+    }
+
     /// Reset the conversation — clears all messages AND rebuilds the
-    /// system prompt from the project directory.  This ensures that
-    /// `/clear` followed by `/save` does not persist stale project
-    /// context (summary, skills, memory) that was loaded at startup.
+    /// system prompt from the project directory, so `/clear` followed by
+    /// `/save` does not persist stale project context that was loaded at startup.
     pub fn reset(&mut self) {
-        // Rebuild the entire conversation, which re-reads .agent/summary.md,
-        // .agent/skills/, .agent/memory.md, and custom system_prompt.md files.
-        self.conversation = Conversation::new(&self.project_dir);
+        self.reset_conversation();
         self.total_input_tokens = 0;
         self.total_output_tokens = 0;
         self.role_token_usage.clear();
@@ -894,9 +841,6 @@ impl Agent {
             - Use `/changes` to see modified files, `/rollback` to undo, `/commit` to apply changes.";
             self.conversation.system_prompt.push_str(sandbox_note);
         }
-
-        // Re-take knowledge snapshot so the fresh system prompt is frozen
-        self.memory.take_knowledge_snapshot();
     }
     // ── Loop detection / guardrail helpers ──────────────────────────────
 
@@ -923,5 +867,5 @@ fn build_role_configs(
 
 mod compaction;
 mod knowledge;
-mod memory_ops;
+mod project_summary;
 mod subagent;

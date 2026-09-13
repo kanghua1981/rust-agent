@@ -17,7 +17,7 @@
 - **📚 Skills 系统**: 通过 Markdown 文件注入项目级别的专家知识；兼容 [OpenClaw AgentSkills](https://agentskills.io/) 格式（`SKILL.md`），可直接使用社区发布的技能包
 - **🧩 动态工具**: 在 Skill 目录加一个 `tool.json` 即可注册新工具，参数 JSON 通过 stdin 传递给任意 shell 脚本/可执行文件
 - **🔌 插件系统**: 在 `.agent/plugins/` 下放置独立插件目录，每个插件可携带工具、技能、Hooks 和自定义系统提示词；三种 Hook 模式（`fire_and_forget` / `blocking` / `intercepting`）覆盖 `agent.start`、`tool.before/after`、`router.decision`、`plan.complete` 等所有关键节点，无需修改任何 Rust 代码
-- **🧠 持久记忆**: 自动记录所有工具操作到 `.agent/memory.md`，跨会话保持
+- **🧠 持久记忆**: 自动把项目知识记到 `.agent/memory.md`，跨会话保持
 - **📋 项目摘要**: 通过 `/summary` 命令生成项目概述，跨会话复用
 - **✏️ 自定义系统提示词**: 支持全局和项目级别的 `system_prompt.md` 定制 LLM 行为
 - **🔒 安全确认**: 文件写入和命令执行前需用户确认，auto-approve 时也有可见提示
@@ -429,7 +429,7 @@ git push origin fix/gpio-pullup
 | `/model add <alias>` | 交互式添加新模型配置 |
 | `/model remove <alias>` | 删除模型配置 |
 | `/model default <alias>` | 设置默认模型 |
-| `/memory` | 显示持久记忆（项目知识、文件操作记录） |
+| `/memory` | 显示持久记忆（项目知识） |
 | `/summary` | 查看或生成项目摘要 |
 | `/summary generate` | 强制（重新）生成项目摘要 |
 | `/plan <任务>` | 让 Agent 先用只读工具分析，生成执行计划 |
@@ -465,24 +465,16 @@ Agent 支持**自动保存**对话，适合跨天的长任务：
 
 ### 持久记忆 (`.agent/memory.md`)
 
-Agent 会自动将以下信息记录到 `.agent/memory.md`，跨会话持久化：
+Agent 会自动将项目知识记录到 `.agent/memory.md`，跨会话持久化（带写入时间与来源，超出上限时淘汰最旧的）。
 
-- **项目知识**：在对话中发现的重要事实
-- **文件操作记录**：读取、写入、编辑过的文件
-- **会话日志**：执行过的关键操作
+工具调用本身不写入记忆：当前会话的消息流已完整保存，跨会话审计走 `tool.before` / `tool.after` Hook（payload 携带 `session_id`）。
 
 ```
 🤖 > /memory
-🧠  Agent Memory (15 entries):
+🧠  Agent Memory (2 entries):
   📖 Project Knowledge:
     • Target board: RK3588 custom board
     • Toolchain: aarch64-linux-gnu-
-  📁 Key Files:
-    • src/main.c (edited)
-    • kernel/arch/arm64/boot/dts/rockchip/rk3588-myboard.dts (written)
-  📝 Session Log:
-    • edited src/main.c
-    • ran `make -j8`
 ```
 
 ### 项目摘要 (`.agent/summary.md`)
@@ -1130,7 +1122,7 @@ command      = "./hooks/on_start.sh"
 timeout_secs = 5
 ```
 
-Agent 将事件 payload 以 JSON 写入脚本 stdin；脚本 stdout 在 `intercepting` 模式下作为决策覆盖指令。
+Agent 把事件 payload 以 JSON 放进子进程的 `AGENT_EVENT` 环境变量（不是 stdin）；脚本 stdout 在 `intercepting` 模式下作为决策覆盖指令。payload 形如 `{"event","timestamp","session_id","data"}`：`tool.before` 的 `data` 是 `{"tool_name","params"}`，`tool.after` 是 `{"tool_name","success","output_preview"}`，两者都带 `session_id`，可直接做跨会话的工具调用审计。
 
 **已支持的 Hook 事件：**
 

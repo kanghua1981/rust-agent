@@ -239,6 +239,17 @@ impl Conversation {
         }
     }
 
+    /// Append the project knowledge section to the system prompt.
+    ///
+    /// The agent calls this with `MemoryProvider::recall()`, so the memory store
+    /// and the system prompt stay on one path.
+    pub fn push_memory_knowledge(&mut self, section: &str) {
+        if section.is_empty() {
+            return;
+        }
+        self.system_prompt.push_str(section);
+    }
+
     pub fn new(project_dir: &Path) -> Self {
         let mut system_prompt = Self::build_system_prompt(project_dir);
 
@@ -253,15 +264,6 @@ impl Conversation {
         if !loaded.is_empty() {
             system_prompt.push_str(&loaded.to_system_prompt_section());
             tracing::info!("Loaded {} skill(s) into system prompt", loaded.len());
-        }
-
-        // Load persistent memory — only knowledge facts go into the system prompt.
-        // File-map and session-log are injected per-turn via recall_relevant() in agent.rs.
-        let mem = crate::memory::Memory::load(project_dir);
-        let knowledge_section = mem.to_system_prompt_knowledge();
-        if !knowledge_section.is_empty() {
-            system_prompt.push_str(&knowledge_section);
-            tracing::info!("Loaded {} knowledge entries into system prompt", mem.knowledge.len());
         }
 
 

@@ -51,7 +51,7 @@ pub(super) async fn handle_control_cmd(
 
         ControlCmd::NewSession => {
             let name = agent.session_id().map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
-            agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+            agent.reset_conversation();
             if let Err(e) = crate::persistence::save_local_named_session(
                 &name, &agent.conversation, &agent.project_dir,
             ) { tracing::warn!("save_local_named_session on new_session: {}", e); }
@@ -135,7 +135,7 @@ pub(super) async fn handle_control_cmd(
                 }
                 Ok(None) => {
                     // Create new session
-                    agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+                    agent.reset_conversation();
                     agent.set_session_id(name.clone());
                     let _ = crate::persistence::save_local_named_session(
                         &name, &agent.conversation, &agent.project_dir,
@@ -160,7 +160,7 @@ pub(super) async fn handle_control_cmd(
             let _ = crate::persistence::save_local_named_session(
                 &old_name, &agent.conversation, &agent.project_dir,
             );
-            agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+            agent.reset_conversation();
             agent.set_session_id(name.clone());
             if let Err(e) = crate::persistence::save_local_named_session(
                 &name, &agent.conversation, &agent.project_dir,
@@ -185,7 +185,7 @@ pub(super) async fn handle_control_cmd(
                 Ok(()) => {
                     // If deleted the active session, reset to default
                     if name == active {
-                        agent.conversation = crate::conversation::Conversation::new(&agent.project_dir);
+                        agent.reset_conversation();
                         agent.set_session_id("default".to_string());
                         let _ = crate::persistence::write_active_session_name(&agent.project_dir, "default");
                     }

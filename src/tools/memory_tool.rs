@@ -6,15 +6,14 @@
 //! - `remove`  — remove a knowledge entry matched by substring
 //! - `read`    — read current memory contents
 //!
-//! Memory is persisted to `.agent/memory.md` (and `.agent/intelligent.json`
-//! when using the IntelligentMemory backend).
+//! Memory is persisted to `.agent/memory.md`.
 //!
 //! Behavioral notes (injected into the tool description):
 //! - Use `add` to record durable project facts: architecture decisions,
 //!   file locations, build conventions, coding patterns.
 //! - Use `replace` to update stale facts.
 //! - Use `remove` sparingly — only for facts proven wrong.
-//! - `read` returns a snapshot; knowledge facts, file map, and recent session entries.
+//! - `read` returns a snapshot of the current knowledge facts.
 
 use std::sync::Arc;
 
@@ -408,47 +407,17 @@ impl Tool for MemoryTool {
                 }
 
                 let knowledge = self.memory.knowledge();
-                let file_map = self.memory.file_map();
-                let session_log = self.memory.session_log();
 
                 let mut output = String::new();
 
-                if knowledge.is_empty() && file_map.is_empty() && session_log.is_empty() {
+                if knowledge.is_empty() {
                     output.push_str("Memory is empty. No entries recorded yet.");
                 } else {
                     output.push_str("## Knowledge Facts\n\n");
-                    if knowledge.is_empty() {
-                        output.push_str("_(none)_\n");
-                    } else {
-                        for (i, k) in knowledge.iter().enumerate() {
-                            output.push_str(&format!("{}. {}\n", i + 1, k));
-                        }
+                    for (i, k) in knowledge.iter().enumerate() {
+                        output.push_str(&format!("{}. {}\n", i + 1, k));
                     }
-
-                    output.push_str("\n## File Map\n\n");
-                    if file_map.is_empty() {
-                        output.push_str("_(none)_\n");
-                    } else {
-                        for (path, desc) in file_map.iter().rev().take(10) {
-                            output.push_str(&format!("- {} — {}\n", path, desc));
-                        }
-                    }
-
-                    output.push_str("\n## Recent Session Log (last 5 entries)\n\n");
-                    if session_log.is_empty() {
-                        output.push_str("_(none)_\n");
-                    } else {
-                        for entry in session_log.iter().rev().take(5) {
-                            output.push_str(&format!("- {}\n", entry));
-                        }
-                    }
-
-                    output.push_str(&format!(
-                        "\nTotal: {} knowledge facts, {} tracked files, {} log entries.",
-                        knowledge.len(),
-                        file_map.len(),
-                        session_log.len(),
-                    ));
+                    output.push_str(&format!("\nTotal: {} knowledge facts.", knowledge.len()));
                 }
                 ToolResult::success(output)
             }
